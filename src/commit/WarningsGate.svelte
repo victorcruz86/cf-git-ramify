@@ -12,6 +12,7 @@
   const AUTOCRLF_KEY = "core.autocrlf";
   const AUTOCRLF_VALUE = "input";
   const SUGGESTED_FIX = `git config --global ${AUTOCRLF_KEY} ${AUTOCRLF_VALUE}`;
+  const BYTES_PER_MB = 1024 * 1024;
 
   interface Asking {
     warning: CommitWarning;
@@ -19,7 +20,12 @@
     answer: (proceed: boolean) => void;
   }
 
-  let { repo }: { repo: string } = $props();
+  // `ReturnResult.CLOSE_WINDOW`: the handlers that answer it on Cancel also close the commit window. The CRLF and
+  // large file ones answer `CANCEL` and leave it open.
+  const CLOSES_THE_WINDOW = new Set<CommitWarning["kind"]>(["detachedHead", "rebasing", "badFileNames"]);
+
+  // `onclosewindow` is for the modal dialog; the non-modal view has no window to close and just stops.
+  let { repo, onclosewindow }: { repo: string; onclosewindow?: () => void } = $props();
 
   let asking = $state.raw<Asking | null>(null);
   let dontWarn = $state(false);
@@ -38,6 +44,7 @@
   }
 
   function finish(proceed: boolean) {
+    if (!proceed && asking && CLOSES_THE_WINDOW.has(asking.warning.kind)) onclosewindow?.();
     const answer = asking?.answer;
     asking = null;
     answer?.(proceed);
@@ -61,6 +68,15 @@
   async function commitAsIs() {
     await silence({ warnCrlf: false });
     finish(true);
+  }
+
+  // `GitBundle` `commit.check.warning.title.large.file`: `{0,choice,1#file|2#files}`, and the size cut to whole MB.
+  // The numbers are formatted as `MessageFormat` does, with a separator for the thousands.
+  function largeFilesText(files: [string, number][]): string {
+    const count = files.length;
+    const megabytes = Math.floor(files.reduce((sum, [, size]) => sum + size, 0) / BYTES_PER_MB);
+    const number = (value: number) => value.toLocaleString("en-US");
+    return `You are about to commit a large file into the repository: ${number(count)} ${count === 1 ? "file" : "files"} with the total size of ${number(megabytes)}MB.`;
   }
 
   async function proceed() {
@@ -106,6 +122,55 @@
       <button type="button" class="button default" data-autofocus onclick={() => finish(false)}>
         Cancel
       </button>
+    {/snippet}
+  </Dialog>
+{:else if asking?.warning.kind === "largeFiles"}
+  {@const files = asking.warning.paths}
+  {@const action = asking.action}
+  <!-- `CommitProblem.showModalSolution`: Yes is the commit, No is `Cancel`. -->
+  <Dialog
+    title="Commit Check Failed"
+    width={520}
+    onclose={() => finish(false)}
+    onsubmit={() => finish(true)}
+  >
+    <div class="warning">
+      <Icon name="warning" size={24} />
+      <p>
+        {largeFilesText(files)}<br />
+        It is not recommended to store large files in a Git repository. Consider using Git LFS.
+      </p>
+    </div>
+    {#snippet footer()}
+      <button type="button" class="button" onclick={() => finish(false)}>Cancel</button>
+      <button class="button default" data-autofocus>{action}</button>
+    {/snippet}
+  </Dialog>
+{:else if asking?.warning.kind === "badFileNames"}
+  <!-- `GitFileNameCommitProblem`: only the first of the problems is told, as IntelliJ does. -->
+  {@const first = asking.warning.paths[0]}
+  {@const action = asking.action}
+  <Dialog
+    title="File Name Is Not Allowed on Windows"
+    width={520}
+    onclose={() => finish(false)}
+    onsubmit={() => finish(true)}
+  >
+    <div class="warning">
+      <Icon name="warning" size={24} />
+      <p>
+        {#if first?.problem === "reserved"}
+          Some files use reserved names that are not allowed on Windows: '{first.name}'.<br />
+          If you commit, it will not be possible to check out the Git repository on Windows.
+        {:else}
+          Some of the file names contain characters that are not allowed on Windows: '{first?.name}'.<br />
+          If you commit, it might not be possible to check out the Git repository on Windows.
+        {/if}
+      </p>
+    </div>
+    {#snippet footer()}
+      <button type="button" class="button" onclick={() => finish(false)}>Cancel</button>
+      <button class="button default" data-autofocus>{action}</button>
     {/snippet}
   </Dialog>
 {:else if asking}

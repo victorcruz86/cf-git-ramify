@@ -26,6 +26,9 @@ const SETTINGS: Settings = {
   stagingArea: true,
   warnCrlf: true,
   warnDetached: true,
+  warnLargeFiles: true,
+  largeFilesLimitMb: 50,
+  warnBadFileNames: true,
   signCommits: false,
   signingKey: null,
   useCredentialHelper: true,
@@ -39,6 +42,8 @@ const SETTINGS: Settings = {
   mergeAutoApply: false,
   mergeWhitespace: "default",
   cherryPickSuffix: true,
+  nonModalCommit: true,
+  clearInitialCommitMessage: false,
 };
 
 const LISTS = {

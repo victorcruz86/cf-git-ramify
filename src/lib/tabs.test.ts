@@ -1,14 +1,34 @@
 import { expect, test, vi } from "vitest";
-import { nextTab, onTabRequested, requestTab } from "./tabs";
+import { orderContents, onTabRequested, requestTab, toolWindows, type ContentId } from "./tabs";
 
-test("shortcut_goes_to_its_tab", () => {
-  expect(nextTab("commit", "log")).toBe("log");
-  expect(nextTab("log", "commit")).toBe("commit");
+const ALL: ContentId[] = ["console", "log", "stash", "local-changes", "shelf"];
+
+test("tabs are ordered by IntelliJ's weights", () => {
+  expect(orderContents(ALL)).toEqual(["local-changes", "shelf", "stash", "log", "console"]);
 });
 
-test("shortcut_of_the_active_tab_toggles", () => {
-  expect(nextTab("commit", "commit")).toBe("log");
-  expect(nextTab("log", "log")).toBe("commit");
+test("a Stash tab goes after Shelf and before Log", () => {
+  expect(orderContents(["log", "stash", "local-changes", "shelf"])).toEqual([
+    "local-changes",
+    "shelf",
+    "stash",
+    "log",
+  ]);
+  expect(orderContents(["console", "log", "stash"])).toEqual(["stash", "log", "console"]);
+});
+
+test("in modal mode Local Changes is in the Git window and there is no Commit window", () => {
+  expect(toolWindows("modal", ["console", "log", "local-changes"])).toEqual({
+    commit: null,
+    git: ["local-changes", "log", "console"],
+  });
+});
+
+test("in non-modal mode Local Changes, Shelf and Stash go to the Commit window", () => {
+  expect(toolWindows("non-modal", ALL)).toEqual({
+    commit: ["local-changes", "shelf", "stash"],
+    git: ["log", "console"],
+  });
 });
 
 test("whoever_requests_a_tab_gets_it_from_whoever_listens", () => {
@@ -16,9 +36,9 @@ test("whoever_requests_a_tab_gets_it_from_whoever_listens", () => {
   const stop = onTabRequested(shown);
 
   requestTab("console");
+  requestTab("commit");
   stop();
   requestTab("log");
 
-  expect(shown).toHaveBeenCalledTimes(1);
-  expect(shown).toHaveBeenCalledWith("console");
+  expect(shown.mock.calls).toEqual([["console"], ["commit"]]);
 });

@@ -8,6 +8,7 @@
 import { get } from "svelte/store";
 import {
   commitDetails,
+  effectiveStaging,
   repoState,
   repoStatus,
   rewriteAutosquash,
@@ -40,7 +41,9 @@ import {
   type Undone,
 } from "../lib/api";
 import { finishRebase, rebasedMessage, type RebaseUi, type Saving } from "../branches/merging";
-import { buildTree } from "../commit/tree";
+import type { CheckinRequest } from "../commit/checkin";
+import type { CommitRequestInput } from "../commit/dialogStore";
+import { listFiles } from "../commit/tree";
 import { errorText } from "../lib/errors";
 import { dismiss, notifications, notify, type Notification } from "../lib/notifications";
 import { taskResult } from "../lib/tasks";
@@ -63,7 +66,7 @@ export const isEditing = (action: VcsAction): action is EditingAction =>
   action.kind === "squashInto" ||
   action.kind === "interactiveRebase";
 
-// What the Commit view receives from Fixup… and Squash Into…: the proposed message and, if the
+// What the non-modal Commit view receives from Fixup… and Squash Into…: the proposed message and, if the
 // `Commit and Rebase…` executor is offered, the rebase base (`<hash>~`).
 // `head` is the HEAD seen when proposing: if it changes, the executor is no longer valid.
 export interface CommitProposal {
@@ -92,8 +95,8 @@ export interface EditingUi extends RebaseUi {
   editMessage(request: CommitMessageRequest): Promise<string | null>;
   // `ChangeListChooser`, titled `Select Target Changelist`: `null` if cancelled.
   chooseChangelist(lists: ChangeList[], initial: string): Promise<ChosenChangelist | null>;
-  // `CommitChangeListDialog.showCommitDialog`: the Commit view with the proposed message.
-  showCommit(proposal: CommitProposal): void;
+  // `CommitChangeListDialog.showCommitDialog`: the dialog (or the Commit view) with the proposed message.
+  showCommit(input: CommitRequestInput): void;
   // `GitInteractiveRebaseDialog` with the log's rows: what was chosen, or `null` if cancelled.
   interactiveRebase(commits: RebaseCommit[]): Promise<RebasePlan | null>;
 }
@@ -123,8 +126,9 @@ export interface EditingApi {
   changelists(): Promise<Changelists>;
   // The files move to the list (new if it does not exist), which becomes active if requested.
   moveToChangelist(paths: string[], name: string, setActive: boolean): Promise<void>;
-  // The default list has some change (`changeList.changes` of the repository).
-  hasDefaultChanges(): Promise<boolean>;
+  // The changes of the active list (`changeList.changes` of the repository) as a request for the Commit
+  // Changes dialog, or `null` if it has none.
+  activeChanges(): Promise<CheckinRequest | null>;
   // Interactively Rebase from Here…: the base and the log's rows, if they are usable.
   interactiveStart(hash: string): Promise<InteractiveStart>;
   // `rebase --interactive <parent>`; without `plan`, git generates the list and the window shows it.
@@ -133,7 +137,7 @@ export interface EditingApi {
 
 const result = async <T>(id: Promise<number>) => taskResult<T>(await id);
 
-const backend: EditingApi = {
+export const backend: EditingApi = {
   state: repoState,
   check: (hashes, kind) => result(rewriteCheck(hashes, kind)),
   details: commitDetails,
@@ -146,7 +150,7 @@ const backend: EditingApi = {
   checkSingle: (hash, action) => result(rewriteCheckSingle(hash, action)),
   uncommit: (hash, head) => result(rewriteUncommit(hash, head)),
   autosquash: (base) => result(rewriteAutosquash(base)),
-  stagingArea: async () => (await settingsGet()).stagingArea,
+  stagingArea: async () => effectiveStaging(await settingsGet()),
   changelists: currentLists,
   // Only what is still changed: after the reset, a path that is no longer there has no list.
   moveToChangelist: async (paths, name, setActive) => {
@@ -157,15 +161,19 @@ const backend: EditingApi = {
       setActive,
     );
   },
-  hasDefaultChanges: async () => {
+  activeChanges: async () => {
     const status = await repoStatus(false);
-    // With the staging area the changelists are not read, and everything versioned counts as the default
+    // With the staging area the changelists are not read, and everything versioned counts as the active
     // list.
-    if ((await settingsGet()).stagingArea) {
-      return status.some(({ state }) => !["untracked", "ignored", "unmerged"].includes(state));
+    if (effectiveStaging(await settingsGet())) {
+      const paths = status
+        .filter(({ state }) => !["untracked", "ignored", "unmerged"].includes(state))
+        .map(({ path }) => path);
+      return paths.length > 0 ? { kind: "project", paths, lists: [] } : null;
     }
-    const active = buildTree(status, await currentLists(), false).find((node) => node.active);
-    return (active?.paths.length ?? 0) > 0;
+    const lists = await currentLists();
+    const paths = listFiles(status, lists).get(lists.active) ?? [];
+    return paths.length > 0 ? { kind: "project", paths, lists: [lists.active] } : null;
   },
   interactiveStart: (hash) => result(rewriteInteractiveStart(hash)),
   interactive: (hash, plan, head) => result(rewriteInteractive(hash, plan, head)),
@@ -471,8 +479,8 @@ export function editingFlow(ui: EditingUi, api: EditingApi = backend) {
     }
   }
 
-  // `GitAutoSquashCommitAction.actionPerformedAfterChecks`: the Commit view with `fixup! <subject>` or
-  // `squash! <subject>`, and `Commit and Rebase…` if there is no operation in progress.
+  // `GitAutoSquashCommitAction.actionPerformedAfterChecks`: the commit dialog with the active list's changes
+  // and `fixup! <subject>` or `squash! <subject>`, and `Commit and Rebase…` if there is no operation in progress.
   async function autosquash(kind: "fixup" | "squashInto", { hash, subject }: AppliedCommit, started: number) {
     const texts = AUTOSQUASH[kind];
     try {
@@ -481,15 +489,16 @@ export function editingFlow(ui: EditingUi, api: EditingApi = backend) {
         notify({ kind: "error", title: texts.failure, body: reason });
         return;
       }
-      if (!(await api.hasDefaultChanges())) {
+      const request = await api.activeChanges();
+      if (!request) {
         notify({ kind: "info", ...NOTHING_TO_COMMIT });
         return;
       }
       const state = await api.state();
       if (generation !== started) return;
       // `getProhibitedStateMessage`: only with the normal repository or with a detached HEAD.
-      const rebaseFrom = state.operation === null ? `${hash}~` : null;
-      ui.showCommit({ message: `${texts.prefix} ${subject}`, rebaseFrom, head: state.head });
+      const executor = state.operation === null ? { rebaseFrom: `${hash}~`, head: state.head } : {};
+      ui.showCommit({ request, prefilled: `${texts.prefix} ${subject}`, ...executor });
     } catch (failure) {
       if (!isCancelled(failure)) {
         notify({ kind: "error", title: texts.failure, body: errorText(failure) });

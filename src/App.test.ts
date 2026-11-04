@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import App from "./App.svelte";
+import { closeCommitDialog, openCommitDialog, requestCommit } from "./commit/dialogStore";
 import { dismiss, notifications } from "./lib/notifications";
 import { requestTab } from "./lib/tabs";
 
@@ -22,6 +23,10 @@ vi.stubGlobal(
     disconnect() {}
   },
 );
+
+// The diff panel of the dialog measures text with CodeMirror, and jsdom does no layout.
+Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+Element.prototype.scrollIntoView = () => {};
 
 function mockCommands(commands: Record<string, () => unknown>) {
   vi.mocked(invoke).mockImplementation(async (command) => {
@@ -61,6 +66,9 @@ const SETTINGS = {
   stagingArea: false,
   warnCrlf: true,
   warnDetached: true,
+  warnLargeFiles: true,
+  largeFilesLimitMb: 50,
+  warnBadFileNames: true,
   signCommits: false,
   signingKey: null,
   useCredentialHelper: true,
@@ -74,7 +82,11 @@ const SETTINGS = {
   mergeAutoApply: false,
   mergeWhitespace: "default",
   cherryPickSuffix: true,
+  nonModalCommit: false,
+  clearInitialCommitMessage: false,
 };
+
+const NON_MODAL = { ...SETTINGS, nonModalCommit: true };
 
 function mockApp(commands: Record<string, () => unknown> = {}) {
   mockCommands({
@@ -152,7 +164,7 @@ test("a_log_error_comes_out_as_a_notification_and_does_not_stay_in_commit", asyn
 
   const notifications = await screen.findByRole("region", { name: "Notifications" });
   expect(within(notifications).getByText("git log failed: corrupted")).toBeTruthy();
-  await fireEvent.click(screen.getByRole("tab", { name: "Commit" }));
+  await fireEvent.click(screen.getByRole("tab", { name: "Local Changes" }));
   expect(within(notifications).getByText("git log failed: corrupted")).toBeTruthy();
   expect(document.querySelector("p.error")).toBeNull();
   await fireEvent.click(within(notifications).getByRole("button", { name: "Close" }));
@@ -174,40 +186,239 @@ test("console_tab_with_show_console_tab", async () => {
   requestTab("console");
 
   await vi.waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
-  expect(screen.getByRole("tab", { name: "Commit" }).getAttribute("aria-selected")).toBe("false");
+  expect(screen.getByRole("tab", { name: "Local Changes" }).getAttribute("aria-selected")).toBe("false");
   expect(await screen.findByText("10:42:07.123: [a] git fetch origin")).toBeTruthy();
-  await fireEvent.click(screen.getByRole("tab", { name: "Commit" }));
+  await fireEvent.click(screen.getByRole("tab", { name: "Local Changes" }));
   expect(tab.getAttribute("aria-selected")).toBe("false");
   await fireEvent.click(tab);
   expect(tab.getAttribute("aria-selected")).toBe("true");
 });
 
-test("commit_and_log_shortcuts_do_not_go_through_the_console", async () => {
+const tabState = (name: string) =>
+  screen.getByRole("tab", { name }).getAttribute("aria-selected");
+
+test("in non-modal mode cmd 9 and cmd 0 switch between the Git and Commit windows", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    log_open: () => ({ viewId: 1, count: 0 }),
+  });
+  render(App);
+  await screen.findByRole("textbox", { name: "Commit Message" });
+  expect(tabState("Commit")).toBe("true");
+  expect(tabState("Git")).toBe("false");
+  expect(calls("log_open")).toHaveLength(0);
+
+  await fireEvent.keyDown(window, { key: "9", metaKey: true });
+  expect(tabState("Git")).toBe("true");
+  expect(tabState("Commit")).toBe("false");
+  expect(tabState("Log")).toBe("true");
+  await fireEvent.click(screen.getByRole("tab", { name: "Console" }));
+
+  await fireEvent.keyDown(window, { key: "0", metaKey: true });
+  expect(tabState("Commit")).toBe("true");
+  expect(tabState("Git")).toBe("false");
+  expect(screen.queryByRole("tab", { name: "Console" })).toBeNull();
+
+  // The window comes back on the tab it had.
+  await fireEvent.keyDown(window, { key: "9", metaKey: true });
+  expect(tabState("Console")).toBe("true");
+});
+
+test("in modal mode the app opens on Local Changes without loading the log", async () => {
+  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+  render(App);
+
+  const tab = await screen.findByRole("tab", { name: "Local Changes" });
+
+  expect(tab.getAttribute("aria-selected")).toBe("true");
+  expect(tabState("Git")).toBe("true");
+  expect(screen.queryByRole("tab", { name: "Commit" })).toBeNull();
+  expect(await screen.findByText("main")).toBeTruthy();
+  expect(calls("log_open")).toHaveLength(0);
+});
+
+test("the stripe has a single Git button in modal mode", async () => {
+  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+  render(App);
+  await screen.findByRole("tab", { name: "Local Changes" });
+
+  const stripe = screen.getByRole("tablist", { name: "Tool windows" });
+
+  expect(within(stripe).getAllByRole("tab").map((button) => button.getAttribute("aria-label"))).toEqual(["Git"]);
+});
+
+test("cmd 0 does nothing in modal mode", async () => {
   mockApp({
     initial_repo: () => "/repo/a",
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
   render(App);
-  const console = await screen.findByRole("tab", { name: "Console" });
-  await fireEvent.click(console);
+  await openLogTab();
+  expect(tabState("Log")).toBe("true");
 
-  await fireEvent.keyDown(window, { key: "9", metaKey: true });
-  expect(screen.getByRole("tab", { name: "Log" }).getAttribute("aria-selected")).toBe("true");
-  await fireEvent.click(console);
   await fireEvent.keyDown(window, { key: "0", metaKey: true });
-  expect(screen.getByRole("tab", { name: "Commit" }).getAttribute("aria-selected")).toBe("true");
+
+  expect(tabState("Log")).toBe("true");
+  expect(tabState("Local Changes")).toBe("false");
 });
 
-test("opens_on_commit_without_loading_the_log", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+test("cmd 9 shows the Git window with Local Changes, Log and Console in that order", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    log_open: () => ({ viewId: 1, count: 0 }),
+  });
+  render(App);
+  await screen.findByRole("tab", { name: "Local Changes" });
+
+  await fireEvent.keyDown(window, { key: "9", metaKey: true });
+
+  const tabs = within(screen.getByRole("tablist", { name: "Git" })).getAllByRole("tab");
+  expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Local Changes", "Log", "Console"]);
+  expect(tabState("Local Changes")).toBe("true");
+  // Pressed again with the window active, it does nothing.
+  await openLogTab();
+  await fireEvent.keyDown(window, { key: "9", metaKey: true });
+  expect(tabState("Log")).toBe("true");
+  expect(tabState("Local Changes")).toBe("false");
+});
+
+test("switching the setting moves Local Changes between the Commit and Git windows", async () => {
+  await openRepo();
+  expect(within(screen.getByRole("tablist", { name: "Git" })).getByRole("tab", { name: "Local Changes" })).toBeTruthy();
+
+  deliver("settings-changed", NON_MODAL);
+
+  await screen.findByRole("tab", { name: "Commit" });
+  expect(tabState("Commit")).toBe("true");
+  expect(screen.queryByRole("tab", { name: "Local Changes" })).toBeNull();
+  await fireEvent.click(screen.getByRole("tab", { name: "Git" }));
+  const tabs = within(screen.getByRole("tablist", { name: "Git" })).getAllByRole("tab");
+  expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Log", "Console"]);
+
+  deliver("settings-changed", SETTINGS);
+
+  await screen.findByRole("tab", { name: "Local Changes" });
+  expect(tabState("Local Changes")).toBe("true");
+  expect(screen.queryByRole("tab", { name: "Commit" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Commit Message" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Commit…" })).toBeTruthy();
+});
+
+test("a draft and a line selection of the Commit view survive switching to modal and back", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_status: () => [CHANGE],
+    file_hunks: () => [{ id: "h1", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 }],
+    diff_window_open: () => undefined,
+  });
+  vi.mocked(emit).mockClear();
+  render(App);
+  const check = () =>
+    screen.getByRole("treeitem", { name: /a\.txt/ }).querySelector("[role=checkbox]");
+  await fireEvent.input(await screen.findByRole("textbox", { name: "Commit Message" }), {
+    target: { value: "draft" },
+  });
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  deliver("selection-changed", {
+    path: "a.txt",
+    selection: [{ hunk: "h1", lines: [0] }],
+    included: true,
+    places: {},
+  });
+  await vi.waitFor(() => expect(check()?.getAttribute("aria-checked")).toBe("mixed"));
+
+  deliver("settings-changed", SETTINGS);
+  await screen.findByRole("tab", { name: "Local Changes" });
+  expect(screen.queryByRole("textbox", { name: "Commit Message" })).toBeNull();
+  deliver("settings-changed", NON_MODAL);
+
+  const field = (await screen.findByRole("textbox", {
+    name: "Commit Message",
+  })) as HTMLTextAreaElement;
+  expect(field.value).toBe("draft");
+  await vi.waitFor(() => expect(check()?.getAttribute("aria-checked")).toBe("mixed"));
+  await fireEvent.dblClick(screen.getByRole("treeitem", { name: /a\.txt/ }));
+  deliver("diff-ready");
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ selections: { "a.txt": [{ hunk: "h1", lines: [0] }] } }),
+    ),
+  );
+});
+
+test("arrow keys in the tab strip of the Git window keep the focus on the strip", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    log_open: () => ({ viewId: 1, count: 0 }),
+  });
+  render(App);
+  await openLogTab();
+  const log = screen.getByRole("tab", { name: "Log" });
+  log.focus();
+
+  await fireEvent.keyDown(log, { key: "ArrowLeft" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(tabState("Local Changes")).toBe("true");
+  expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Local Changes" }));
+});
+
+test("in modal mode Local Changes has no checkboxes and no commit message", async () => {
+  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO, repo_status: () => [CHANGE] });
   render(App);
 
-  const tab = await screen.findByRole("tab", { name: "Commit" });
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
 
-  expect(tab.getAttribute("aria-selected")).toBe("true");
-  expect(await screen.findByText("main")).toBeTruthy();
-  expect(calls("log_open")).toHaveLength(0);
+  expect(within(screen.getByRole("tree")).queryAllByRole("checkbox")).toEqual([]);
+  expect(screen.queryByRole("textbox", { name: "Commit Message" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Commit…" })).toBeTruthy();
+});
+
+test("in modal mode Commit… and cmd K open the Commit Changes dialog, which keeps the keys while open", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    merge_message: () => null,
+    messages_last: () => null,
+    repo_has_commit_hooks: () => false,
+    worktree_sides: () => ({
+      old: { kind: "text", content: "a\n" },
+      new: { kind: "text", content: "b\n" },
+      hunks: [],
+      editable: true,
+      note: null,
+      hash: "hash",
+      conflicted: false,
+    }),
+    log_open: () => ({ viewId: 1, count: 0 }),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  await fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
+
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  expect(await within(dialog).findByRole("treeitem", { name: "a.txt" })).toBeTruthy();
+  await fireEvent.keyDown(window, { key: "9", code: "Digit9", metaKey: true });
+  expect(screen.getAllByRole("dialog", { name: "Commit Changes" })).toHaveLength(1);
+
+  await fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
+    key: "Escape",
+  });
+  expect(screen.queryByRole("dialog", { name: "Commit Changes" })).toBeNull();
+
+  await openLogTab();
+  await fireEvent.keyDown(window, { key: "k", code: "KeyK", metaKey: true });
+  expect(await screen.findByRole("dialog", { name: "Commit Changes" })).toBeTruthy();
 });
 
 test("log_tab_loads_once", async () => {
@@ -220,7 +431,7 @@ test("log_tab_loads_once", async () => {
 
   await openLogTab();
   await screen.findByText("This repository has no commits yet");
-  await fireEvent.click(screen.getByRole("tab", { name: "Commit" }));
+  await fireEvent.click(screen.getByRole("tab", { name: "Local Changes" }));
   await openLogTab();
 
   expect(calls("log_open")).toHaveLength(1);
@@ -245,45 +456,31 @@ test("changing_repository_reloads_the_log", async () => {
   expect(calls("log_open")).toHaveLength(2);
 });
 
-test("shortcuts_switch_tabs", async () => {
+test("in non-modal mode cmd_k_from_the_log_goes_back_to_commit_and_to_the_message", async () => {
   mockApp({
     initial_repo: () => "/repo/a",
     repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
   render(App);
-  const log = await screen.findByRole("tab", { name: "Log" });
-
-  await fireEvent.keyDown(window, { key: "9", metaKey: true });
-  expect(log.getAttribute("aria-selected")).toBe("true");
-
-  await fireEvent.keyDown(window, { key: "0", metaKey: true });
-  expect(log.getAttribute("aria-selected")).toBe("false");
-});
-
-test("cmd_k_from_the_log_goes_back_to_commit_and_to_the_message", async () => {
-  mockApp({
-    initial_repo: () => "/repo/a",
-    repo_open: () => INFO,
-    log_open: () => ({ viewId: 1, count: 0 }),
-  });
-  render(App);
+  await fireEvent.click(await screen.findByRole("tab", { name: "Git" }));
   await openLogTab();
   await screen.findByText("This repository has no commits yet");
 
   await fireEvent.keyDown(window, { key: "k", code: "KeyK", metaKey: true });
 
-  const commit = screen.getByRole("tab", { name: "Commit" });
-  expect(commit.getAttribute("aria-selected")).toBe("true");
+  expect(tabState("Commit")).toBe("true");
   await vi.waitFor(() =>
     expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Commit Message" })),
   );
 });
 
-test("the_commit_view_stays_alive_when_switching_tabs", async () => {
+test("the commit view stays alive when switching tabs", async () => {
   mockApp({
     initial_repo: () => "/repo/a",
     repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
   render(App);
@@ -292,7 +489,7 @@ test("the_commit_view_stays_alive_when_switching_tabs", async () => {
   })) as HTMLTextAreaElement;
   await fireEvent.input(field, { target: { value: "draft" } });
 
-  await openLogTab();
+  await fireEvent.click(screen.getByRole("tab", { name: "Git" }));
   await fireEvent.click(screen.getByRole("tab", { name: "Commit" }));
 
   expect(field.isConnected).toBe(true);
@@ -303,6 +500,7 @@ test("after_a_commit_the_log_is_reloaded", async () => {
   mockApp({
     initial_repo: () => "/repo/a",
     repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
     repo_status: () => [
       { path: "a.txt", oldPath: null, state: "modified", staged: false, unstaged: true },
@@ -310,6 +508,7 @@ test("after_a_commit_the_log_is_reloaded", async () => {
     commit_changes: () => "hash",
   });
   render(App);
+  await fireEvent.click(await screen.findByRole("tab", { name: "Git" }));
   await openLogTab();
   await screen.findByText("This repository has no commits yet");
   await fireEvent.click(screen.getByRole("tab", { name: "Commit" }));
@@ -321,7 +520,7 @@ test("after_a_commit_the_log_is_reloaded", async () => {
   await vi.waitFor(() => expect(calls("commit_changes")).toHaveLength(1));
   await screen.findByText("1 file committed: message");
 
-  await openLogTab();
+  await fireEvent.click(screen.getByRole("tab", { name: "Git" }));
   await vi.waitFor(() => expect(calls("log_open")).toHaveLength(2));
 });
 
@@ -347,7 +546,7 @@ test("cmd_r_outside_the_log_does_not_read_it", async () => {
     log_open: () => ({ viewId: 1, count: 0, collapsible: true }),
   });
   render(App);
-  await screen.findByRole("tab", { name: "Commit" });
+  await screen.findByRole("tab", { name: "Local Changes" });
 
   await fireEvent.keyDown(window, { key: "r", code: "KeyR", metaKey: true });
 
@@ -472,11 +671,14 @@ test("measure_mode_with_a_late_first_frame_does_not_switch_to_measuring_without_
 });
 
 const CHANGE = { path: "a.txt", oldPath: null, state: "modified", staged: false, unstaged: true };
+// How a pending backend call ends.
+type Settle = { resolve: (value: unknown) => void; reject: (failure: unknown) => void };
 
 test("show_diff_opens_the_diff_window_and_tells_it_what_is_chosen", async () => {
   mockApp({
     initial_repo: () => "/repo/a",
     repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
     diff_window_open: () => undefined,
   });
@@ -492,6 +694,539 @@ test("show_diff_opens_the_diff_window_and_tells_it_what_is_chosen", async () => 
     expect(vi.mocked(emit)).toHaveBeenCalledWith(
       "selection-state",
       expect.objectContaining({ selections: {} }),
+    ),
+  );
+});
+
+test("in modal mode a double click in Local Changes opens the diff window without line checkboxes", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    diff_window_open: () => undefined,
+  });
+  vi.mocked(emit).mockClear();
+  render(App);
+
+  await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
+
+  await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
+  expect(calls("diff_window_open")[0][1]).toEqual({ path: "a.txt" });
+  deliver("diff-ready");
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith("selection-state", {
+      owner: "none",
+      included: [],
+      selections: {},
+      lists: null,
+    }),
+  );
+});
+
+test("switching to modal mode takes the line checkboxes away from an open diff window", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_status: () => [CHANGE],
+    diff_window_open: () => undefined,
+  });
+  vi.mocked(emit).mockClear();
+  render(App);
+  await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
+  await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
+  deliver("diff-ready");
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ owner: "commit-view", included: ["a.txt"] }),
+    ),
+  );
+  vi.mocked(emit).mockClear();
+
+  deliver("settings-changed", SETTINGS);
+
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ owner: "none", included: [], selections: {} }),
+    ),
+  );
+  // The window asks again when it is reopened: what the Commit view kept is not sent.
+  vi.mocked(emit).mockClear();
+  deliver("diff-ready");
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ owner: "none" }),
+    ),
+  );
+  expect(vi.mocked(emit)).not.toHaveBeenCalledWith(
+    "selection-state",
+    expect.objectContaining({ owner: "commit-view" }),
+  );
+  // Nobody listens: a change that still arrives from the window does not come back.
+  deliver("selection-changed", {
+    path: "a.txt",
+    selection: [{ hunk: "h1", lines: [0] }],
+    included: true,
+    places: {},
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(vi.mocked(emit)).not.toHaveBeenCalledWith(
+    "selection-state",
+    expect.objectContaining({ selections: { "a.txt": expect.anything() } }),
+  );
+});
+
+test("a diff window opened from the Commit Changes dialog follows the dialog and is cleared when it closes", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    merge_message: () => null,
+    messages_last: () => null,
+    repo_has_commit_hooks: () => false,
+    diff_window_open: () => undefined,
+    file_hunks: () => [{ id: "h1", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 }],
+    worktree_sides: () => ({
+      old: { kind: "text", content: "a\n" },
+      new: { kind: "text", content: "b\n" },
+      hunks: [],
+      editable: true,
+      note: null,
+      hash: "hash",
+      conflicted: false,
+    }),
+  });
+  vi.mocked(emit).mockClear();
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  await fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+
+  await fireEvent.dblClick(await within(dialog).findByRole("treeitem", { name: "a.txt" }));
+
+  await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
+  deliver("diff-ready");
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ owner: "dialog", included: ["a.txt"], selections: {} }),
+    ),
+  );
+
+  // A line checkbox of the window reaches the dialog, which publishes it back.
+  deliver("selection-changed", {
+    path: "a.txt",
+    selection: [{ hunk: "h1", lines: [0] }],
+    included: true,
+    places: {},
+  });
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({
+        owner: "dialog",
+        selections: { "a.txt": [{ hunk: "h1", lines: [0] }] },
+      }),
+    ),
+  );
+  await vi.waitFor(() =>
+    expect(
+      within(dialog).getByRole("treeitem", { name: "a.txt" }).querySelector("[role=checkbox]")?.getAttribute("aria-checked"),
+    ).toBe("mixed"),
+  );
+
+  vi.mocked(emit).mockClear();
+  await fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
+    key: "Escape",
+  });
+
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith("selection-state", {
+      owner: "none",
+      included: [],
+      selections: {},
+      lists: null,
+    }),
+  );
+});
+
+const DIALOG_COMMANDS = {
+  merge_message: () => null,
+  messages_last: () => null,
+  repo_has_commit_hooks: () => false,
+  diff_window_open: () => undefined,
+  file_hunks: () => [{ id: "h1", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 }],
+  worktree_sides: () => ({
+    old: { kind: "text", content: "a\n" },
+    new: { kind: "text", content: "b\n" },
+    hunks: [],
+    editable: true,
+    note: null,
+    hash: "hash",
+    conflicted: false,
+  }),
+};
+const LINE_CHANGE = {
+  path: "a.txt",
+  selection: [{ hunk: "h1", lines: [0] }],
+  included: true,
+  places: {},
+};
+
+test("a line chosen in the diff window comes back to the Commit view when the dialog opened over it closes", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_status: () => [CHANGE],
+    ...DIALOG_COMMANDS,
+  });
+  vi.mocked(emit).mockClear();
+  render(App);
+  await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
+  await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
+  deliver("diff-ready");
+  deliver("selection-changed", LINE_CHANGE);
+  const chosen = { a: [{ hunk: "h1", lines: [0] }] };
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ owner: "commit-view", selections: { "a.txt": chosen.a } }),
+    ),
+  );
+
+  // The dialog is not reachable from the non-modal entry points: it opens as the executors of part 3 do.
+  openCommitDialog({ request: { kind: "project", paths: [], lists: [] }, executor: "commit" });
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ owner: "dialog", selections: {} }),
+    ),
+  );
+  vi.mocked(emit).mockClear();
+  await fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
+    key: "Escape",
+  });
+
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ owner: "commit-view", selections: { "a.txt": chosen.a } }),
+    ),
+  );
+});
+
+test("the commit of the dialog runs after the dialog has closed", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    changelists_set_comment: () => LISTS,
+    commit_changes: () => "hash",
+    ...DIALOG_COMMANDS,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  await fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  await within(dialog).findByRole("treeitem", { name: "a.txt" });
+  const message = within(dialog).getByRole("textbox", { name: "Commit Message" });
+  await fireEvent.input(message, { target: { value: "Message" } });
+
+  await fireEvent.keyDown(message, { key: "Enter", metaKey: true });
+
+  await vi.waitFor(() => expect(calls("commit_changes")).toHaveLength(1));
+  expect(screen.queryByRole("dialog", { name: "Commit Changes" })).toBeNull();
+  await vi.waitFor(() =>
+    expect(get(notifications).map(({ title }) => title)).toEqual(["1 file committed: Message"]),
+  );
+});
+
+test("a line lost by a commit that failed after the dialog closed reaches the diff window", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    ...DIALOG_COMMANDS,
+    changelists_set_comment: () => LISTS,
+    commit_changes_selected: () => {
+      throw { kind: "selection_lost", message: "x", details: { path: "a.txt", hunks: ["h1"] } };
+    },
+  });
+  vi.mocked(emit).mockClear();
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  await fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  await fireEvent.dblClick(await within(dialog).findByRole("treeitem", { name: "a.txt" }));
+  await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
+  deliver("diff-ready");
+  deliver("selection-changed", LINE_CHANGE);
+  await vi.waitFor(() =>
+    expect(
+      within(dialog).getByRole("treeitem", { name: "a.txt" }).querySelector("[role=checkbox]")?.getAttribute("aria-checked"),
+    ).toBe("mixed"),
+  );
+  const message = within(dialog).getByRole("textbox", { name: "Commit Message" });
+  await fireEvent.input(message, { target: { value: "Message" } });
+
+  await fireEvent.keyDown(message, { key: "Enter", metaKey: true });
+
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-lost",
+      expect.objectContaining({ path: "a.txt", hunks: ["h1"] }),
+    ),
+  );
+  expect(screen.queryByRole("dialog", { name: "Commit Changes" })).toBeNull();
+});
+
+const FIXUP_REQUEST = {
+  request: { kind: "project" as const, paths: ["a.txt"], lists: ["default"] },
+  prefilled: "fixup! one",
+  rebaseFrom: "abc~",
+  head: INFO.head,
+};
+
+// Opens the dialog of a fixup and picks `Commit and Rebase…`.
+async function commitAndRebase() {
+  requestCommit(FIXUP_REQUEST);
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  await within(dialog).findByRole("treeitem", { name: "a.txt" });
+  await vi.waitFor(() =>
+    expect((within(dialog).getByRole("textbox", { name: "Commit Message" }) as HTMLTextAreaElement).value).toBe(
+      "fixup! one",
+    ),
+  );
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Other Commit Actions" }));
+  await fireEvent.click(screen.getByRole("menuitem", { name: /Commit and Rebase…/ }));
+}
+
+test("Commit and Rebase… of the dialog rebases from the base once the commit after closing is made", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    changelists_set_comment: () => LISTS,
+    commit_changes: () => "hash",
+    rewrite_autosquash: () => 7,
+    ...DIALOG_COMMANDS,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  await commitAndRebase();
+
+  await vi.waitFor(() => expect(calls("rewrite_autosquash")).toHaveLength(1));
+  expect(screen.queryByRole("dialog", { name: "Commit Changes" })).toBeNull();
+  expect(calls("commit_changes")).toHaveLength(1);
+  expect(calls("rewrite_autosquash")[0][1]).toEqual({ base: "abc~" });
+});
+
+test.each([
+  ["made", (finish: Settle) => finish.resolve("hash"), "1 file committed: fixup! one"],
+  ["failed", (finish: Settle) => finish.reject({ kind: "git", message: "hook failed" }), "hook failed"],
+])(
+  "a dialog commit %s after another repository was opened leaves that repository alone",
+  async (_, settle, notice) => {
+    let finish: Settle = { resolve: () => {}, reject: () => {} };
+    let opened = 0;
+    mockApp({
+      initial_repo: () => "/repo/a",
+      repo_open: () => (++opened === 1 ? INFO : { ...INFO, path: "/repo/b" }),
+      repo_status: () => [CHANGE],
+      changelists_set_comment: () => LISTS,
+      commit_changes: () => new Promise((resolve, reject) => (finish = { resolve, reject })),
+      rewrite_autosquash: () => 7,
+      ...DIALOG_COMMANDS,
+    });
+    render(App);
+    await screen.findByRole("treeitem", { name: /a\.txt/ });
+    await commitAndRebase();
+    await vi.waitFor(() => expect(calls("commit_changes")).toHaveLength(1));
+
+    const input = screen.getByLabelText("Repository path");
+    await fireEvent.input(input, { target: { value: "/repo/b" } });
+    await fireEvent.submit(input.closest("form")!);
+    await vi.waitFor(() => expect(calls("repo_open")).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    settle(finish);
+
+    // The outcome is still notified; the draft of repository B, its lists and its HEAD are not touched.
+    await vi.waitFor(() => expect(get(notifications).map(({ title }) => title)).toContain(notice));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls("changelists_set_comment")).toHaveLength(0);
+    expect(calls("rewrite_autosquash")).toHaveLength(0);
+  },
+);
+
+test("a commit of the dialog that fails after closing does not push", async () => {
+  openWithBranches({
+    ...PUSH_COMMANDS,
+    ...DIALOG_COMMANDS,
+    repo_status: () => [CHANGE],
+    changelists_set_comment: () => LISTS,
+    commit_changes: () => {
+      throw { kind: "git", message: "hook failed" };
+    },
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  await fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  await within(dialog).findByRole("treeitem", { name: "a.txt" });
+  await fireEvent.input(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
+    target: { value: "Message" },
+  });
+
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Other Commit Actions" }));
+  await fireEvent.click(screen.getByRole("menuitem", { name: /Commit and Push…/ }));
+
+  await vi.waitFor(() => expect(get(notifications).map(({ title }) => title)).toContain("hook failed"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(calls("commit_changes")).toHaveLength(1);
+  expect(screen.queryByRole("dialog", { name: "Push Commits to rama" })).toBeNull();
+  expect(calls("push_info")).toHaveLength(0);
+});
+
+test("cmd K opens the dialog from Local Changes and from the Log in modal mode", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    log_open: () => ({ viewId: 1, count: 0 }),
+    ...DIALOG_COMMANDS,
+  });
+  render(App);
+  await fireEvent.click(await screen.findByRole("tree"));
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  await fireEvent.keyDown(screen.getByRole("tree"), { key: "k", code: "KeyK", metaKey: true });
+  const first = await screen.findByRole("dialog", { name: "Commit Changes" });
+  await fireEvent.keyDown(within(first).getByRole("textbox", { name: "Commit Message" }), {
+    key: "Escape",
+  });
+  expect(screen.queryByRole("dialog", { name: "Commit Changes" })).toBeNull();
+
+  await openLogTab();
+  await fireEvent.keyDown(window, { key: "k", code: "KeyK", metaKey: true });
+
+  expect(await screen.findByRole("dialog", { name: "Commit Changes" })).toBeTruthy();
+});
+
+test("in non-modal mode cmd K still focuses the Commit tool window message", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    log_open: () => ({ viewId: 1, count: 0 }),
+  });
+  render(App);
+  await fireEvent.click(await screen.findByRole("tab", { name: "Git" }));
+  await openLogTab();
+  await screen.findByText("This repository has no commits yet");
+
+  await fireEvent.keyDown(window, { key: "k", code: "KeyK", metaKey: true });
+
+  expect(screen.queryByRole("dialog", { name: "Commit Changes" })).toBeNull();
+  expect(tabState("Commit")).toBe("true");
+  await vi.waitFor(() =>
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Commit Message" })),
+  );
+});
+
+test("cmd alt K in modal mode opens the dialog", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    log_open: () => ({ viewId: 1, count: 0 }),
+    ...DIALOG_COMMANDS,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  await openLogTab();
+
+  await fireEvent.keyDown(window, { key: "˚", code: "KeyK", metaKey: true, altKey: true });
+
+  expect(await screen.findByRole("dialog", { name: "Commit Changes" })).toBeTruthy();
+});
+
+test("a fixup request in modal mode opens the dialog with the message and Commit and Rebase…", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    ...DIALOG_COMMANDS,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  requestCommit({
+    request: { kind: "project", paths: ["a.txt"], lists: ["default"] },
+    prefilled: "fixup! one",
+    rebaseFrom: "abc~",
+    head: INFO.head,
+  });
+
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  await vi.waitFor(() =>
+    expect((within(dialog).getByRole("textbox", { name: "Commit Message" }) as HTMLTextAreaElement).value).toBe(
+      "fixup! one",
+    ),
+  );
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Other Commit Actions" }));
+  expect(screen.getByRole("menuitem", { name: /Commit and Rebase…/ })).toBeTruthy();
+  closeCommitDialog();
+});
+
+test("a fixup request in non-modal mode goes to the Commit view", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_status: () => [CHANGE],
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  requestCommit({
+    request: { kind: "project", paths: ["a.txt"], lists: ["default"] },
+    prefilled: "squash! one",
+    rebaseFrom: "abc~",
+    head: INFO.state.head,
+  });
+
+  await screen.findByRole("button", { name: "Commit and Rebase…" });
+  expect(screen.queryByRole("dialog", { name: "Commit Changes" })).toBeNull();
+  expect((screen.getByRole("textbox", { name: "Commit Message" }) as HTMLTextAreaElement).value).toBe(
+    "squash! one",
+  );
+});
+
+test("in non-modal mode the Commit view still owns the line checkboxes of the diff window", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_status: () => [CHANGE],
+    diff_window_open: () => undefined,
+  });
+  vi.mocked(emit).mockClear();
+  render(App);
+  await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
+  await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
+
+  deliver("diff-ready");
+
+  await vi.waitFor(() =>
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      "selection-state",
+      expect.objectContaining({ owner: "commit-view" }),
     ),
   );
 });
@@ -515,6 +1250,7 @@ test("the_selection_of_the_diff_window_reaches_the_commit_view", async () => {
   mockApp({
     initial_repo: () => "/repo/a",
     repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
     commit_changes_selected: () => "hash",
   });
@@ -548,6 +1284,7 @@ test("if_another_repository_cannot_be_opened_the_current_one_stays", async () =>
       if (opened++ === 0) return INFO;
       throw { kind: "failed", message: "There are unsaved changes" };
     },
+    settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
   });
   render(App);
@@ -613,17 +1350,26 @@ test("the Settings menu opens the settings", async () => {
 test("saved settings apply without restarting", async () => {
   await openRepo();
 
-  deliver("settings-changed", { ...SETTINGS, stagingArea: true });
+  deliver("settings-changed", { ...SETTINGS, nonModalCommit: true, stagingArea: true });
 
   expect(await screen.findByRole("treeitem", { name: /^Staged/ })).toBeTruthy();
   expect(screen.queryByRole("treeitem", { name: /^Changes/ })).toBeNull();
+});
+
+test("staging area saved while the commit interface is modal is not in effect", async () => {
+  await openRepo();
+
+  deliver("settings-changed", { ...SETTINGS, nonModalCommit: false, stagingArea: true });
+
+  expect(await screen.findByRole("treeitem", { name: /^Changes/ })).toBeTruthy();
+  expect(screen.queryByRole("treeitem", { name: /^Staged/ })).toBeNull();
 });
 
 test("with staging area saved it starts without changelists", async () => {
   mockApp({
     repo_open: () => INFO,
     initial_repo: () => "/repo/a",
-    settings_get: () => ({ ...SETTINGS, stagingArea: true }),
+    settings_get: () => ({ ...SETTINGS, nonModalCommit: true, stagingArea: true }),
   });
   render(App);
 
@@ -824,6 +1570,7 @@ const PUSH_COMMANDS = {
 test("cmd_alt_k_commits_and_opens_the_push_dialog", async () => {
   openWithBranches({
     ...PUSH_COMMANDS,
+    settings_get: () => NON_MODAL,
     repo_status: () => [{ path: "a.txt", state: "modified", staged: false, unstaged: true }],
     commit_changes: () => "hash",
   });
@@ -997,7 +1744,7 @@ test("view_commits_of_a_pull_opens_the_update_info_tab_with_the_path_filter", as
   await waitFor(() => expect(calls("log_view_open")).toHaveLength(1));
   const filter = (calls("log_view_open")[0][1] as { spec: { filter: unknown } }).spec.filter;
   expect(filter).toMatchObject({ ranges: [range], paths: ["src"] });
-  const stripe = screen.getByRole("tablist", { name: "Tool windows" });
+  const stripe = screen.getByRole("tablist", { name: "Git" });
   expect(within(stripe).getByRole("tab", { name: "Log" }).getAttribute("aria-selected")).toBe("true");
   const tab = await screen.findByRole("tab", { name: /^Update Info: / });
   expect(tab.getAttribute("aria-selected")).toBe("true");

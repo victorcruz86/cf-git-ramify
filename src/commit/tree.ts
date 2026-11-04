@@ -174,13 +174,15 @@ export function fileNodes(
     : sortFiles(changes.map((change) => nodeIn(scope, parts, change)));
 }
 
-// The active list first and then the others by name; `Unversioned Files` last and only if it has
-// files, as in the Commit window.
-export function buildTree(
-  changes: FileChange[],
-  lists: Changelists,
-  groupByDirectory: boolean,
-): TreeNode[] {
+interface Classified {
+  // Per list, its files and the ones that only have hunks in it.
+  versioned: Map<string, FileChange[]>;
+  parts: Map<string, Set<string>>;
+  unversioned: FileChange[];
+  conflicted: FileChange[];
+}
+
+function classify(changes: FileChange[], lists: Changelists): Classified {
   const versioned = new Map<string, FileChange[]>();
   const parts = new Map<string, Set<string>>();
   const unversioned: FileChange[] = [];
@@ -208,7 +210,30 @@ export function buildTree(
       parts.set(id, (parts.get(id) ?? new Set()).add(change.path));
     }
   }
+  return { versioned, parts, unversioned, conflicted };
+}
 
+// `ChangesBrowserConflictsNode`: before the lists, and its files do not go into a commit.
+function conflictsNode(conflicted: FileChange[], groupByDirectory: boolean): TreeNode[] {
+  if (conflicted.length === 0) return [];
+  const files = fileNodes(CONFLICTS_ID, new Set(), conflicted, groupByDirectory);
+  return [withoutCheck(group(CONFLICTS_ID, "conflicts", CONFLICTS_TITLE, files))];
+}
+
+function unversionedNode(unversioned: FileChange[], groupByDirectory: boolean): TreeNode[] {
+  if (unversioned.length === 0) return [];
+  const files = fileNodes(UNVERSIONED_ID, new Set(), unversioned, groupByDirectory);
+  return [group(UNVERSIONED_ID, "unversioned", UNVERSIONED_TITLE, files)];
+}
+
+// The active list first and then the others by name; `Unversioned Files` last and only if it has
+// files, as in the Commit window.
+export function buildTree(
+  changes: FileChange[],
+  lists: Changelists,
+  groupByDirectory: boolean,
+): TreeNode[] {
+  const { versioned, parts, unversioned, conflicted } = classify(changes, lists);
   const ordered = [...lists.lists].sort(
     (left, right) =>
       Number(right.id === lists.active) - Number(left.id === lists.active) ||
@@ -224,30 +249,46 @@ export function buildTree(
       list.id === lists.active,
     ),
   );
-  // `ChangesBrowserConflictsNode`: before the lists, and its files do not go into a commit.
-  if (conflicted.length > 0) {
-    roots.unshift(
-      withoutCheck(
-        group(
-          CONFLICTS_ID,
-          "conflicts",
-          CONFLICTS_TITLE,
-          fileNodes(CONFLICTS_ID, new Set(), conflicted, groupByDirectory),
-        ),
-      ),
-    );
-  }
-  if (unversioned.length > 0) {
-    roots.push(
-      group(
-        UNVERSIONED_ID,
-        "unversioned",
-        UNVERSIONED_TITLE,
-        fileNodes(UNVERSIONED_ID, new Set(), unversioned, groupByDirectory),
-      ),
-    );
-  }
-  return roots;
+  return [
+    ...conflictsNode(conflicted, groupByDirectory),
+    ...roots,
+    ...unversionedNode(unversioned, groupByDirectory),
+  ];
+}
+
+// `MultipleLocalChangeListsBrowser`: the files of one list straight under the root, without the
+// list's node, and then `Unversioned Files` if the dialog shows them. The conflicts stay apart, as
+// in Local Changes.
+export function listTree(
+  changes: FileChange[],
+  lists: Changelists,
+  list: string,
+  groupByDirectory: boolean,
+  withUnversioned: boolean,
+): TreeNode[] {
+  const { versioned, parts, unversioned, conflicted } = classify(changes, lists);
+  const files = versioned.get(list) ?? [];
+  return [
+    ...conflictsNode(conflicted, groupByDirectory),
+    ...fileNodes(list, parts.get(list) ?? new Set(), files, groupByDirectory),
+    ...(withUnversioned ? unversionedNode(unversioned, groupByDirectory) : []),
+  ];
+}
+
+// The paths each list shows, its own files and those with hunks in it, without the unversioned ones.
+export function listFiles(changes: FileChange[], lists: Changelists): Map<string, string[]> {
+  const { versioned } = classify(changes, lists);
+  return new Map(
+    lists.lists.map((list) => [
+      list.id,
+      (versioned.get(list.id) ?? []).map((change) => change.path),
+    ]),
+  );
+}
+
+// The checkbox key of a path in a list's tree: the part key if only some of its hunks are there.
+export function listKey(lists: Changelists, list: string, path: string): string {
+  return partLists(lists, path).includes(list) ? partKey(path, list) : path;
 }
 
 // `partial`: the files of which only a part goes in, chosen in the diff window.

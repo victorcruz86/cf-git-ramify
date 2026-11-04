@@ -41,6 +41,11 @@ pub struct Settings {
     pub staging_area: bool,
     pub warn_crlf: bool,
     pub warn_detached: bool,
+    // `WARN_ABOUT_LARGE_FILES` and `WARN_ABOUT_LARGE_FILES_LIMIT_MB`.
+    pub warn_large_files: bool,
+    pub large_files_limit_mb: u32,
+    // `WARN_ABOUT_BAD_FILE_NAMES`.
+    pub warn_bad_file_names: bool,
     pub sign_commits: bool,
     pub signing_key: Option<String>,
     // IntelliJ turns it off by default because it stores in Password Safe. Here the credentials
@@ -64,6 +69,18 @@ pub struct Settings {
     pub merge_whitespace: Whitespace,
     // `Add the 'cherry-picked from <hash>' suffix when picking commits pushed to protected branches`.
     pub cherry_pick_suffix: bool,
+    // `Use non-modal commit interface` (`COMMIT_FROM_LOCAL_CHANGES`). Off: the commit is a dialog.
+    pub non_modal_commit: bool,
+    // `Clear initial commit message` (`CLEAR_INITIAL_COMMIT_MESSAGE`).
+    pub clear_initial_commit_message: bool,
+}
+
+impl Settings {
+    // `Enable staging area` only counts in the non-modal interface (`canEnableStagingArea`): while modal it
+    // stays saved but is not in effect. The TS side has the same rule in `effectiveStaging`.
+    pub fn effective_staging(&self) -> bool {
+        self.non_modal_commit && self.staging_area
+    }
 }
 
 impl Default for Settings {
@@ -73,6 +90,9 @@ impl Default for Settings {
             staging_area: false,
             warn_crlf: true,
             warn_detached: true,
+            warn_large_files: true,
+            large_files_limit_mb: 50,
+            warn_bad_file_names: true,
             sign_commits: false,
             signing_key: None,
             use_credential_helper: true,
@@ -86,6 +106,8 @@ impl Default for Settings {
             merge_auto_apply: false,
             merge_whitespace: Whitespace::Default,
             cherry_pick_suffix: true,
+            non_modal_commit: false,
+            clear_initial_commit_message: false,
         }
     }
 }
@@ -266,6 +288,10 @@ mod tests {
         assert!(!settings.staging_area);
         assert!(settings.warn_crlf);
         assert!(settings.warn_detached);
+        // `GitVcsOptions`: `WARN_ABOUT_LARGE_FILES = true`, the limit at 50 MB and `WARN_ABOUT_BAD_FILE_NAMES = true`.
+        assert!(settings.warn_large_files);
+        assert_eq!(settings.large_files_limit_mb, 50);
+        assert!(settings.warn_bad_file_names);
         assert!(!settings.sign_commits);
         assert!(settings.use_credential_helper);
         assert_eq!(settings.incoming_check, IncomingCheck::Auto);
@@ -286,6 +312,47 @@ mod tests {
     }
 
     #[test]
+    fn non_modal_commit_and_clear_message_default_to_false() {
+        let settings = Settings::default();
+
+        // `COMMIT_FROM_LOCAL_CHANGES` and `CLEAR_INITIAL_COMMIT_MESSAGE`: the commit is modal by default.
+        assert!(!settings.non_modal_commit);
+        assert!(!settings.clear_initial_commit_message);
+    }
+
+    #[test]
+    fn a_settings_file_without_the_new_fields_reads_modal() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(FILE_NAME),
+            r#"{"stagingArea": true, "warnCrlf": false}"#,
+        )
+        .unwrap();
+
+        let settings = load(dir.path());
+
+        assert!(!settings.non_modal_commit);
+        assert!(!settings.clear_initial_commit_message);
+        // What the file did say is kept, including the staging area: it stays saved while modal.
+        assert!(settings.staging_area);
+        assert!(!settings.warn_crlf);
+    }
+
+    #[test]
+    fn staging_is_effective_only_in_non_modal_mode() {
+        let with = |non_modal_commit, staging_area| Settings {
+            non_modal_commit,
+            staging_area,
+            ..Default::default()
+        };
+
+        assert!(!with(false, true).effective_staging());
+        assert!(!with(false, false).effective_staging());
+        assert!(!with(true, false).effective_staging());
+        assert!(with(true, true).effective_staging());
+    }
+
+    #[test]
     fn without_a_file_gives_the_default_values_and_creates_nothing() {
         let dir = TempDir::new().unwrap();
 
@@ -301,6 +368,9 @@ mod tests {
             staging_area: true,
             warn_crlf: false,
             warn_detached: false,
+            warn_large_files: false,
+            large_files_limit_mb: 7,
+            warn_bad_file_names: false,
             sign_commits: true,
             signing_key: Some("ABC123".to_string()),
             use_credential_helper: false,
@@ -314,6 +384,8 @@ mod tests {
             merge_auto_apply: true,
             merge_whitespace: Whitespace::Ignore,
             cherry_pick_suffix: false,
+            non_modal_commit: true,
+            clear_initial_commit_message: true,
         };
 
         save(dir.path(), &settings).unwrap();
@@ -345,6 +417,9 @@ mod tests {
         assert!(settings.staging_area);
         assert!(settings.warn_crlf);
         assert!(settings.warn_detached);
+        assert!(settings.warn_large_files);
+        assert_eq!(settings.large_files_limit_mb, 50);
+        assert!(settings.warn_bad_file_names);
         assert!(settings.use_credential_helper);
     }
 

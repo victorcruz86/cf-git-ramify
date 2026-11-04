@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { taskCancel } from "./api";
   import Icon from "./Icon.svelte";
-  import { tasks, trackTasks } from "./tasks";
+  import { isLocal, tasks, trackTasks } from "./tasks";
 
   onMount(() => {
     const stop = trackTasks();
@@ -32,15 +32,17 @@
             <div class="bar" style:width="{task.fraction * 100}%"></div>
           </div>
         {/if}
-        <button
-          type="button"
-          class="cancel"
-          aria-label="Cancel"
-          title="Cancel"
-          onclick={() => taskCancel(task.id)}
-        >
-          <Icon name="close" />
-        </button>
+        {#if !isLocal(task)}
+          <button
+            type="button"
+            class="cancel"
+            aria-label="Cancel"
+            title="Cancel"
+            onclick={() => taskCancel(task.id)}
+          >
+            <Icon name="close" />
+          </button>
+        {/if}
       </div>
     {/each}
   </footer>

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { get } from "svelte/store";
 import { protectedBranches } from "../branches/state";
-import type { Settings } from "../lib/api";
+import { commitMode, effectiveStaging, type Settings } from "../lib/api";
 import { dismiss, notifications } from "../lib/notifications";
 import SettingsView from "./SettingsView.svelte";
 
@@ -14,6 +14,9 @@ const SETTINGS: Settings = {
   stagingArea: false,
   warnCrlf: true,
   warnDetached: true,
+  warnLargeFiles: true,
+  largeFilesLimitMb: 50,
+  warnBadFileNames: true,
   signCommits: false,
   signingKey: null,
   useCredentialHelper: true,
@@ -27,6 +30,8 @@ const SETTINGS: Settings = {
   mergeAutoApply: false,
   mergeWhitespace: "default",
   cherryPickSuffix: true,
+  nonModalCommit: false,
+  clearInitialCommitMessage: false,
 };
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
@@ -94,10 +99,12 @@ const checkbox = (name: string) => screen.getByRole("checkbox", { name }) as HTM
 const pathField = () =>
   screen.getByRole("textbox", { name: "Path to Git executable:" }) as HTMLInputElement;
 const ok = () => screen.getByRole("button", { name: "OK" });
+const limitField = () =>
+  screen.getByRole("spinbutton", { name: "Large file limit in MB" }) as HTMLInputElement;
 
 test("shows the values and the IntelliJ texts", async () => {
   mockCommands();
-  open({ warnCrlf: false, stagingArea: true });
+  open({ warnCrlf: false, stagingArea: true, nonModalCommit: true });
 
   expect(checkbox("Warn if CRLF line separators are about to be committed").checked).toBe(false);
   expect(checkbox("Warn when committing in detached HEAD or during rebase").checked).toBe(true);
@@ -107,6 +114,61 @@ test("shows the values and the IntelliJ texts", async () => {
   ).toBeTruthy();
   expect(screen.getByText("Commits signing with GPG key is not configured")).toBeTruthy();
   expect(await screen.findByText("Git version is 2.38.0")).toBeTruthy();
+});
+
+test("the Commit section shows Use non-modal commit interface with its comment and saves it", async () => {
+  mockCommands();
+  open();
+  // The `Commit` page comes before `Git`, whose own `Commit` group keeps its place.
+  const headings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent);
+  expect(headings.slice(0, 3)).toEqual(["Commit", "Git", "Commit"]);
+  const nonModal = checkbox("Use non-modal commit interface");
+  // Modal by default: the commit is a dialog.
+  expect(nonModal.checked).toBe(false);
+  expect(screen.getByText("Applies to projects under Git and Mercurial")).toBeTruthy();
+  const clear = checkbox("Clear initial commit message");
+  expect(clear.checked).toBe(false);
+
+  await fireEvent.click(nonModal);
+  await fireEvent.click(clear);
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
+  expect(saved.nonModalCommit).toBe(true);
+  expect(saved.clearInitialCommitMessage).toBe(true);
+});
+
+test("Enable staging area is greyed out while the commit interface is modal", async () => {
+  mockCommands();
+  open({ stagingArea: true });
+  const staging = checkbox("Enable staging area");
+  // Greyed out, and what was saved is kept as it is.
+  expect(staging.disabled).toBe(true);
+  expect(staging.checked).toBe(true);
+
+  // Enabled again as soon as the checkbox above is ticked, without saving.
+  await fireEvent.click(checkbox("Use non-modal commit interface"));
+  expect(staging.disabled).toBe(false);
+  expect(staging.checked).toBe(true);
+  expect(calls("settings_save")).toHaveLength(0);
+
+  await fireEvent.click(checkbox("Use non-modal commit interface"));
+  expect(staging.disabled).toBe(true);
+  expect(staging.checked).toBe(true);
+});
+
+test("staging is effective only in non-modal mode", () => {
+  const modal = { ...SETTINGS, nonModalCommit: false, stagingArea: true };
+  expect(effectiveStaging(modal)).toBe(false);
+  expect(commitMode(modal)).toBe("modal");
+
+  const nonModal = { ...SETTINGS, nonModalCommit: true, stagingArea: true };
+  expect(effectiveStaging(nonModal)).toBe(true);
+  expect(commitMode(nonModal)).toBe("non-modal");
+
+  expect(effectiveStaging({ ...SETTINGS, nonModalCommit: true, stagingArea: false })).toBe(false);
+  expect(effectiveStaging({ ...SETTINGS, nonModalCommit: false, stagingArea: false })).toBe(false);
 });
 
 test("cherry_pick_suffix_setting_on_the_git_screen", async () => {
@@ -126,9 +188,65 @@ test("cherry_pick_suffix_setting_on_the_git_screen", async () => {
   expect(saved.cherryPickSuffix).toBe(false);
 });
 
+test("the two new rows are on the Git settings page and are saved", async () => {
+  mockCommands();
+  open();
+  const large = checkbox("Warn when committing files larger than");
+  const limit = limitField();
+  const names = checkbox("Warn when committing files with names that might cause issues on other systems");
+  // `GitVcsOptions`: both on, with 50 MB.
+  expect(large.checked).toBe(true);
+  expect(limit.value).toBe("50");
+  expect(names.checked).toBe(true);
+  expect(screen.getByText("MB")).toBeTruthy();
+
+  await fireEvent.input(limit, { target: { value: "75" } });
+  await fireEvent.click(names);
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
+  expect(saved.largeFilesLimitMb).toBe(75);
+  expect(saved.warnBadFileNames).toBe(false);
+  expect(saved.warnLargeFiles).toBe(true);
+});
+
+test("the limit is greyed out while the large file warning is off and stays in 1 to 100000", async () => {
+  mockCommands();
+  open({ warnLargeFiles: false, largeFilesLimitMb: 20 });
+  const limit = limitField();
+
+  expect(limit.disabled).toBe(true);
+  expect(limit.value).toBe("20");
+  expect(limit.min).toBe("1");
+  expect(limit.max).toBe("100000");
+
+  await fireEvent.click(checkbox("Warn when committing files larger than"));
+
+  expect(limit.disabled).toBe(false);
+});
+
+test("an empty limit goes back to the saved one and one outside 1 to 100000 is not saved", async () => {
+  mockCommands();
+  open({ largeFilesLimitMb: 20 });
+
+  // The field refuses the value (`min` and `max`), as the spinner of IntelliJ keeps to its range.
+  await fireEvent.input(limitField(), { target: { value: "999999" } });
+  await fireEvent.click(ok());
+  expect(limitField().validity.valid).toBe(false);
+  expect(calls("settings_save")).toHaveLength(0);
+
+  await fireEvent.input(limitField(), { target: { value: "" } });
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
+  expect(saved.largeFilesLimitMb).toBe(20);
+});
+
 test("OK saves what changed and closes", async () => {
   mockCommands();
-  const onclose = open();
+  const onclose = open({ nonModalCommit: true });
 
   await fireEvent.click(checkbox("Enable staging area"));
   await fireEvent.click(checkbox("Warn if CRLF line separators are about to be committed"));
@@ -137,13 +255,19 @@ test("OK saves what changed and closes", async () => {
 
   await waitFor(() => expect(onclose).toHaveBeenCalled());
   expect(calls("settings_save")[0][1]).toEqual({
-    settings: { ...SETTINGS, stagingArea: true, warnCrlf: false, gitPath: "/opt/git" },
+    settings: {
+      ...SETTINGS,
+      nonModalCommit: true,
+      stagingArea: true,
+      warnCrlf: false,
+      gitPath: "/opt/git",
+    },
   });
 });
 
 test("Cancel does not save", async () => {
   mockCommands();
-  const onclose = open();
+  const onclose = open({ nonModalCommit: true });
 
   await fireEvent.click(checkbox("Enable staging area"));
   await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));

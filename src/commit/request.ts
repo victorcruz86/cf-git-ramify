@@ -88,6 +88,57 @@ export function listSelections(
   return { included: paths, selections, unreadable };
 }
 
+// What a commit of the checkboxes sends, as the Commit view and the Commit Changes dialog build it.
+// `files` are the paths that go in; without the hunks of a file split across lists nothing is sent.
+export function chooseCommit(input: {
+  changes: FileChange[];
+  included: Set<string>;
+  lists: Changelists | null;
+  hunks: Map<string, Hunk[]>;
+  lineSelections: Selections;
+  message: string;
+  options: CommitOptions;
+}):
+  | { request: CommitRequest; selections: FileSelection[]; files: Set<string> }
+  | { unreadable: string[] } {
+  const { changes, included, lists, hunks, lineSelections, message, options } = input;
+  const chosen = lists
+    ? listSelections(included, lists, hunks, lineSelections)
+    : { included, selections: lineSelections, unreadable: [] };
+  if (chosen.unreadable.length > 0) return { unreadable: chosen.unreadable };
+  const built = buildCommit(changes, chosen.included, chosen.selections, message, options);
+  return { ...built, files: new Set([...chosen.included].map(pathOfKey)) };
+}
+
+export function unreadableText(paths: string[]): string {
+  const files = paths.map((path) => `"${path}"`).join(", ");
+  return `Could not read the changes of ${files}, split across lists: the commit was not made`;
+}
+
+export function committedText(count: number, text: string): string {
+  const subject = text.split("\n")[0];
+  if (count === 0) return `Committed: ${subject}`;
+  return `${count === 1 ? "1 file" : `${count} files`} committed: ${subject}`;
+}
+
+// The chosen hunks that no longer exist, per file. A file that is gone loses all of them; one whose
+// hunks were not read this time is left alone.
+export function findLost(
+  selections: Selections,
+  paths: Set<string>,
+  hunks: Map<string, Hunk[]>,
+): SelectionLost[] {
+  const lost: SelectionLost[] = [];
+  for (const [path, selection] of selections) {
+    const current = paths.has(path) ? hunks.get(path) : [];
+    if (!current) continue;
+    const known = new Set(current.map((hunk) => hunk.id));
+    const gone = selection.map((entry) => entry.hunk).filter((id) => !known.has(id));
+    if (gone.length > 0) lost.push({ path, hunks: [...new Set(gone)] });
+  }
+  return lost;
+}
+
 export function dropLostHunks(selections: Selections, lost: SelectionLost): Selections {
   const next = new Map(selections);
   const left = (next.get(lost.path) ?? []).filter((item) => !lost.hunks.includes(item.hunk));
@@ -122,6 +173,9 @@ export function rollbackTargets(
 
 export type LegendKey = "added" | "modified" | "deleted";
 
+// `CommitLegendPanel.formatInt`, which is `%,d`.
+const counted = new Intl.NumberFormat("en-US");
+
 export function legend(
   changes: FileChange[],
   included: Set<string>,
@@ -139,10 +193,13 @@ export function legend(
   }
   const items: { key: LegendKey; text: string }[] = [];
   if (added > 0 || unversioned > 0) {
-    const value = added > 0 && unversioned > 0 ? `${added}+${unversioned}` : added + unversioned;
+    const value =
+      added > 0 && unversioned > 0
+        ? `${counted.format(added)}+${counted.format(unversioned)}`
+        : counted.format(added + unversioned);
     items.push({ key: "added", text: `${value} added` });
   }
-  if (modified > 0) items.push({ key: "modified", text: `${modified} modified` });
-  if (deleted > 0) items.push({ key: "deleted", text: `${deleted} deleted` });
+  if (modified > 0) items.push({ key: "modified", text: `${counted.format(modified)} modified` });
+  if (deleted > 0) items.push({ key: "deleted", text: `${counted.format(deleted)} deleted` });
   return items;
 }

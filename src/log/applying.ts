@@ -10,6 +10,7 @@ import {
   changelistsMove,
   changelistsSetActive,
   commitDetails,
+  effectiveStaging,
   notifyRepoChanged,
   repoState,
   repoStatus,
@@ -128,9 +129,9 @@ export async function moveToChangelist(paths: string[], name: string, setActive:
   await notifyRepoChanged();
 }
 
-const backend: ApplyingApi = {
+export const backend: ApplyingApi = {
   state: repoState,
-  stagingArea: async () => (await settingsGet()).stagingArea,
+  stagingArea: async () => effectiveStaging(await settingsGet()),
   apply: (kind, hashes, head) => result(applyCommits(kind, hashes, head)),
   commitAfterConflicts: (kind, hash) => result(applyCommitAfterConflicts(kind, hash)),
   applyPaths: (selection, reverse, head) => result(applyPaths(selection, reverse, head)),

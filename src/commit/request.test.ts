@@ -9,7 +9,10 @@ import type {
 } from "../lib/api";
 import {
   buildCommit,
+  chooseCommit,
+  committedText,
   dropLostHunks,
+  findLost,
   legend,
   listSelections,
   liveLists,
@@ -152,6 +155,90 @@ test("legend_like_the_commit_one", () => {
   ]);
   expect(legend(changes, new Set(["f"]))).toEqual([{ key: "added", text: "1 added" }]);
   expect(legend(changes, new Set())).toEqual([]);
+});
+
+test("the legend counts with a thousands separator", () => {
+  const many = Array.from({ length: 1234 }, (_, index) => change(`m${index}`));
+  const added = Array.from({ length: 1000 }, (_, index) => change(`a${index}`, "added"));
+  const all = [...many, ...added, change("u", "untracked")];
+
+  expect(legend(all, new Set(all.map((file) => file.path)))).toEqual([
+    { key: "added", text: "1,000+1 added" },
+    { key: "modified", text: "1,234 modified" },
+  ]);
+});
+
+test("the committed notice counts the files and shows the subject", () => {
+  expect(committedText(1, "Fix\n\nbody")).toBe("1 file committed: Fix");
+  expect(committedText(3, "Fix")).toBe("3 files committed: Fix");
+  expect(committedText(0, "Amend")).toBe("Committed: Amend");
+});
+
+describe("what a commit of the checkboxes sends", () => {
+  const h1: Hunk = { id: "h1", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 };
+  const h2: Hunk = { id: "h2", oldStart: 9, oldLines: 1, newStart: 9, newLines: 1 };
+  const lists: Changelists = {
+    lists: [
+      { id: "default", name: "Changes", comment: "" },
+      { id: "other", name: "Other", comment: "" },
+    ],
+    active: "default",
+    assignments: { "a.txt": "default", "b.txt": "default" },
+    hunkAssignments: { "a.txt": { h1: "default", h2: "other" } },
+  };
+  const changes = [change("a.txt"), change("b.txt", "deleted")];
+
+  test("the hunks of the list and the whole files", () => {
+    const chosen = chooseCommit({
+      changes,
+      included: new Set(["a.txt", "b.txt"]),
+      lists,
+      hunks: new Map([["a.txt", [h1, h2]]]),
+      lineSelections: none,
+      message: "m",
+      options,
+    });
+
+    expect(chosen).toEqual({
+      request: { added: [], removed: ["b.txt"], partial: [], message: "m", options },
+      selections: [{ path: "a.txt", selection: [{ hunk: "h1", lines: null }] }],
+      files: new Set(["a.txt", "b.txt"]),
+    });
+  });
+
+  test("a file split across lists whose hunks were not read is not committed", () => {
+    const chosen = chooseCommit({
+      changes,
+      included: new Set(["a.txt"]),
+      lists,
+      hunks: new Map(),
+      lineSelections: none,
+      message: "m",
+      options,
+    });
+
+    expect(chosen).toEqual({ unreadable: ["a.txt"] });
+  });
+});
+
+test("a chosen hunk that no longer exists is lost, and so is a file that is gone", () => {
+  const h1: Hunk = { id: "h1", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 };
+  const selections = new Map<string, LineSelection[]>([
+    ["a.txt", [{ hunk: "h1", lines: null }, { hunk: "old", lines: [0] }, { hunk: "old", lines: [1] }]],
+    ["gone.txt", [{ hunk: "h9", lines: null }]],
+    ["unread.txt", [{ hunk: "h7", lines: null }]],
+  ]);
+
+  const lost = findLost(
+    selections,
+    new Set(["a.txt", "unread.txt"]),
+    new Map([["a.txt", [h1]]]),
+  );
+
+  expect(lost).toEqual([
+    { path: "a.txt", hunks: ["old"] },
+    { path: "gone.txt", hunks: ["h9"] },
+  ]);
 });
 
 test("a_lost_selection_leaves_the_others", () => {

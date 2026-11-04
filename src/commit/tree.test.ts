@@ -7,6 +7,9 @@ import {
   CONFLICTS_ID,
   countText,
   flattenTree,
+  listFiles,
+  listKey,
+  listTree,
   partKey,
   statusColor,
   UNVERSIONED_ID,
@@ -260,4 +263,47 @@ test("the_conflicts_node_groups_by_directory_and_without_conflicts_it_does_not_s
   expect(conflicts.kind).toBe("conflicts");
   expect(names(conflicts.children)).toEqual(["d"]);
   expect(names(buildTree([change("a.txt")], lists(), false))).toEqual(["Changes", "Other"]);
+});
+
+test("the tree of one list has its files straight under the root, then Unversioned Files", () => {
+  const data = lists({ "a.txt": "default", "b.txt": "other", "src/c.txt": "other" });
+  const status = [change("a.txt"), change("b.txt"), change("src/c.txt"), change("new.txt", "untracked")];
+
+  const roots = listTree(status, data, "other", false, true);
+
+  expect(roots.map((node) => node.kind)).toEqual(["file", "file", "unversioned"]);
+  expect(names(roots)).toEqual(["b.txt", "c.txt", "Unversioned Files"]);
+  expect(roots.some((node) => node.kind === "changelist")).toBe(false);
+  expect(roots[2].paths).toEqual(["new.txt"]);
+  expect(names(listTree(status, data, "other", true, true))).toEqual([
+    "src",
+    "b.txt",
+    "Unversioned Files",
+  ]);
+  expect(names(listTree(status, data, "default", false, false))).toEqual(["a.txt"]);
+});
+
+test("the tree of one list keeps the conflicts apart and the parts of other lists by their key", () => {
+  const data: Changelists = {
+    ...lists({ "a.txt": "default", "b.txt": "default" }),
+    hunkAssignments: { "a.txt": { h1: "default", h2: "other" } },
+  };
+  const status = [change("a.txt"), change("b.txt"), change("x.txt", "unmerged")];
+
+  const other = listTree(status, data, "other", false, true);
+  const own = listTree(status, data, "default", false, true);
+
+  expect(other[0].id).toBe(CONFLICTS_ID);
+  expect(other[0].checkable).toBe(false);
+  expect(other[1].paths).toEqual([partKey("a.txt", "other")]);
+  expect(own.slice(1).flatMap((node) => node.paths)).toEqual(["a.txt", "b.txt"]);
+  expect(listFiles(status, data)).toEqual(
+    new Map([
+      ["default", ["a.txt", "b.txt"]],
+      ["other", ["a.txt"]],
+    ]),
+  );
+  expect(listKey(data, "other", "a.txt")).toBe(partKey("a.txt", "other"));
+  expect(listKey(data, "default", "a.txt")).toBe("a.txt");
+  expect(listKey(data, "other", "unknown.txt")).toBe("unknown.txt");
 });

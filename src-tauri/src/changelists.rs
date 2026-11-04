@@ -172,6 +172,17 @@ impl Changelists {
         Ok(())
     }
 
+    // The comment is the draft of the commit message that the Commit Changes dialog keeps for the list.
+    pub fn set_comment(&mut self, id: &str, comment: &str) -> Result<(), ChangelistError> {
+        let list = self
+            .lists
+            .iter_mut()
+            .find(|list| list.id == id)
+            .ok_or(ChangelistError::NotFound)?;
+        list.comment = comment.to_string();
+        Ok(())
+    }
+
     // Its files move to the active list; if the active one is removed, to the first one left.
     pub fn remove(&mut self, id: &str) -> Result<(), ChangelistError> {
         if !self.has(id) {
@@ -510,6 +521,23 @@ mod tests {
         lists.rename(&id, "New").unwrap();
 
         assert_eq!(id_of(&lists, "New"), id);
+    }
+
+    #[test]
+    fn set_comment_keeps_name_and_id() {
+        let mut lists = Changelists::default();
+        let id = lists.create("Other").unwrap();
+
+        lists.set_comment(&id, "work in progress").unwrap();
+
+        let list = lists.lists.iter().find(|list| list.id == id).unwrap();
+        assert_eq!(list.name, "Other");
+        assert_eq!(list.comment, "work in progress");
+        assert_eq!(lists.lists[0].comment, "");
+        assert_eq!(
+            lists.set_comment("missing", "x"),
+            Err(ChangelistError::NotFound)
+        );
     }
 
     #[test]

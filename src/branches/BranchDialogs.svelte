@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { requestCommit } from "../commit/dialogStore";
   import ListChooserDialog from "../commit/ListChooserDialog.svelte";
   import ConflictsDialog from "../conflicts/ConflictsDialog.svelte";
   import { conflictsFlow, type ConflictsRequest } from "../conflicts/flow";
@@ -19,7 +20,6 @@
     editingFlow,
     isEditing,
     type CommitMessageRequest,
-    type CommitProposal,
     type InteractiveRebaseRequest,
   } from "../log/editing";
   import InteractiveRebaseDialog from "../rebase/InteractiveRebaseDialog.svelte";
@@ -65,11 +65,9 @@
     ondefineremote?: () => Promise<boolean>;
     // The Commit view, for the cherry-pick or revert that was resolved with the staging area on.
     onshowcommit?: () => void;
-    // The Commit view with the message of Fixup… or Squash Into… and, if offered, `Commit and Rebase…`.
-    oncommitproposal?: (proposal: CommitProposal) => void;
   }
 
-  let { onviewcommits, ondefineremote, onshowcommit, oncommitproposal }: Props = $props();
+  let { onviewcommits, ondefineremote, onshowcommit }: Props = $props();
 
   // The dialogs of the branch operations, for the log and the branches popup. It does not live inside
   // the log: an operation reloads it, and the dialog that follows must not go away with it.
@@ -152,7 +150,8 @@
     interactiveRebase: (commits) => ask<RebasePlan>({ kind: "interactiveRebase", commits }),
     chooseChangelist: (lists, initial) =>
       ask<ChosenChangelist>({ kind: "changelist", lists, initial }),
-    showCommit: (proposal) => oncommitproposal?.(proposal),
+    // The dialog or the Commit view with the message of Fixup… or Squash Into… and, if offered, `Commit and Rebase…`.
+    showCommit: (input) => void requestCommit(input),
     rebaseStopped: (outcome, saved) => operation.notifyRebaseStopped(outcome, false, saved),
     rebaseConflicts: (saved) => operation.resolveStoppedRebase(saved),
     restored,

@@ -18,6 +18,9 @@
     onclose: () => void;
   }
 
+  // `spinner(1..100000, 1)` of the large files row.
+  const LIMIT_RANGE = { min: 1, max: 100000 };
+
   let { settings, onclose }: Props = $props();
 
   let draft = $state({ ...untrack(() => settings) });
@@ -87,6 +90,13 @@
     }
   }
 
+  // The spinner of IntelliJ keeps the value inside its range; an empty field goes back to what was saved.
+  function validLimit(value: number | null): number {
+    const whole = Math.trunc(Number(value));
+    if (!value || Number.isNaN(whole)) return settings.largeFilesLimitMb;
+    return Math.min(LIMIT_RANGE.max, Math.max(LIMIT_RANGE.min, whole));
+  }
+
   async function save() {
     if (saving) return;
     saving = true;
@@ -97,7 +107,11 @@
         .split("\n")
         .map((path) => path.trim())
         .filter((path, index, all) => path && all.indexOf(path) === index);
-      await settingsSave({ ...$state.snapshot(draft), updatePaths: paths });
+      await settingsSave({
+        ...$state.snapshot(draft),
+        largeFilesLimitMb: validLimit(draft.largeFilesLimitMb),
+        updatePaths: paths,
+      });
       onclose();
     } catch (failure) {
       problem = errorText(failure);
@@ -113,6 +127,21 @@
 </script>
 
 <Dialog title="Settings" width={600} {onclose} onsubmit={save}>
+  <h3>Commit</h3>
+  <div class="options">
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.nonModalCommit} />
+      <span class="check" data-state={draft.nonModalCommit ? "on" : "off"}></span>
+      Use non-modal commit interface
+    </label>
+    <p class="comment nested">Applies to projects under Git and Mercurial</p>
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.clearInitialCommitMessage} />
+      <span class="check" data-state={draft.clearInitialCommitMessage ? "on" : "off"}></span>
+      Clear initial commit message
+    </label>
+  </div>
+
   <h3>Git</h3>
   <div class="path">
     <label for="settings-git-path">Path to Git executable:</label>
@@ -160,13 +189,37 @@
       <span class="check" data-state={draft.warnDetached ? "on" : "off"}></span>
       Warn when committing in detached HEAD or during rebase
     </label>
+    <div class="large-files">
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={draft.warnLargeFiles} />
+        <span class="check" data-state={draft.warnLargeFiles ? "on" : "off"}></span>
+        Warn when committing files larger than
+      </label>
+      <input
+        type="number"
+        class="input limit"
+        aria-label="Large file limit in MB"
+        min={LIMIT_RANGE.min}
+        max={LIMIT_RANGE.max}
+        step="1"
+        disabled={!draft.warnLargeFiles}
+        bind:value={draft.largeFilesLimitMb}
+      />
+      <span class="unit" class:disabled={!draft.warnLargeFiles}>MB</span>
+    </div>
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.warnBadFileNames} />
+      <span class="check" data-state={draft.warnBadFileNames ? "on" : "off"}></span>
+      Warn when committing files with names that might cause issues on other systems
+    </label>
     <label class="checkbox-label">
       <input type="checkbox" bind:checked={draft.cherryPickSuffix} />
       <span class="check" data-state={draft.cherryPickSuffix ? "on" : "off"}></span>
       Add the 'cherry-picked from &lt;hash&gt;' suffix when picking commits pushed to protected branches
     </label>
-    <label class="checkbox-label">
-      <input type="checkbox" bind:checked={draft.stagingArea} />
+    <!-- Greyed out while the commit interface is modal; the saved value is left as it is. -->
+    <label class="checkbox-label" class:disabled={!draft.nonModalCommit}>
+      <input type="checkbox" disabled={!draft.nonModalCommit} bind:checked={draft.stagingArea} />
       <span class="check" data-state={draft.stagingArea ? "on" : "off"}></span>
       Enable staging area
     </label>
@@ -369,6 +422,24 @@
 
   .signature {
     margin: 6px 0 0;
+  }
+
+  .large-files {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .limit {
+    width: 80px;
+  }
+
+  .limit:disabled {
+    color: var(--disabled);
+  }
+
+  .unit.disabled {
+    color: var(--disabled);
   }
 
   .key {

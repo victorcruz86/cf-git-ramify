@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Changelists, Conflict, ConflictSession, FileChange, FileState, RepoInfo } from "../lib/api";
 import { trackTasks } from "../lib/tasks";
 import CommitView from "./CommitView.svelte";
+import { signOffKey } from "./options";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -748,6 +749,28 @@ test("cancelling_the_commit_warning_does_not_push", async () => {
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(calls("commit_changes")).toHaveLength(0);
   expect(onpush).not.toHaveBeenCalled();
+});
+
+test("the large file and file name warnings come one after the other in the non_modal_view", async () => {
+  mockCommands({
+    commit_warnings: () => [
+      { kind: "largeFiles", paths: [["big.bin", 70 * 1024 * 1024]] },
+      { kind: "badFileNames", paths: [{ name: "aux.txt", problem: "reserved" }] },
+    ],
+    commit_changes: () => "hash",
+  });
+  await open();
+
+  await fireEvent.input(messageField(), { target: { value: "message" } });
+  await fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+  const large = await screen.findByRole("dialog", { name: "Commit Check Failed" });
+  expect(calls("commit_changes")).toHaveLength(0);
+  await fireEvent.click(within(large).getByRole("button", { name: "Commit" }));
+  const names = await screen.findByRole("dialog", { name: "File Name Is Not Allowed on Windows" });
+  await fireEvent.click(within(names).getByRole("button", { name: "Cancel" }));
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(calls("commit_changes")).toHaveLength(0);
 });
 
 test("amend_and_push_pushes_after_the_amend_without_forcing_anything", async () => {
@@ -1966,6 +1989,31 @@ test("with_an_operation_in_progress_and_the_same_head_amend_comes_back", async (
   expect((screen.getByRole("checkbox", { name: "Amend" }) as HTMLInputElement).checked).toBe(true);
 });
 
+test("head_moving_while_a_warning_is_open_stops_the_commit_and_the_rebase", async () => {
+  let reads = 0;
+  mockCommands({
+    commit_warnings: () => [{ kind: "detachedHead" }],
+    commit_changes: () => "hash",
+    // Fine when the button is pressed, moved by the time the warning is confirmed.
+    repo_state: () => (++reads === 1 ? REPO.state : { ...REPO.state, head: "otrohead" }),
+  });
+  const onrebase = vi.fn(async () => {});
+  const view = await open({ onrebase });
+  await typed("my draft");
+  view.component.propose(proposal());
+  await waitFor(() => expect(rebaseButton()).not.toBeNull());
+
+  await fireEvent.click(rebaseButton()!);
+  const warning = await screen.findByRole("dialog", { name: "Commit in Detached HEAD" });
+  await fireEvent.click(within(warning).getByRole("button", { name: "Commit and Rebase" }));
+
+  await waitFor(() => expect(rebaseButton()).toBeNull());
+  expect(reads).toBe(2);
+  expect(calls("commit_changes")).toHaveLength(0);
+  expect(onrebase).not.toHaveBeenCalled();
+  expect(text()).toBe("my draft");
+});
+
 test("a_repo_changed_that_leaves_the_repository_in_another_state_removes_the_executor", async () => {
   mockCommands();
   const view = await open({ onrebase: vi.fn(async () => {}) });
@@ -1992,4 +2040,68 @@ test("the_proposal_coexists_with_the_merge_message_and_it_does_not_come_back", a
 
   // It is an explicit action: it wins over the proposed one, and what was proposed is not offered again.
   expect(text()).toBe("fixup! one");
+});
+
+test("sign-off is seeded and saved under the key the Commit Changes dialog uses", async () => {
+  localStorage.setItem(signOffKey("/repo"), "true");
+  mockCommands({ commit_changes: () => "hash" });
+  await open();
+
+  await fireEvent.click(screen.getByRole("button", { name: "Show Commit Options" }));
+  const signOff = screen.getByRole("checkbox", { name: "Sign-off commit" }) as HTMLInputElement;
+  expect(signOff.checked).toBe(true);
+  await fireEvent.click(signOff);
+  await fireEvent.keyDown(signOff, { key: "Escape" });
+  await fireEvent.input(messageField(), { target: { value: "m" } });
+  await fireEvent.click(commitButton());
+
+  await waitFor(() => expect(calls("commit_changes")).toHaveLength(1));
+  expect(calls("commit_changes")[0][1]).toMatchObject({ request: { options: { signOff: false } } });
+  expect(localStorage.getItem(signOffKey("/repo"))).toBe("false");
+});
+
+test("a file deleted while a warning is open is not sent as it was", async () => {
+  mockCommands({ commit_warnings: () => [{ kind: "detachedHead" }], commit_changes: () => "hash" });
+  await open();
+  await fireEvent.input(messageField(), { target: { value: "m" } });
+  await fireEvent.click(commitButton());
+  const warning = await screen.findByRole("dialog", { name: "Commit in Detached HEAD" });
+
+  mockCommands({
+    commit_warnings: () => [{ kind: "detachedHead" }],
+    commit_changes: () => "hash",
+    repo_status: () => [change("a.txt"), change("b.txt", "deleted"), change("c.txt")],
+  });
+  repoChanged();
+  await waitFor(() => expect(calls("repo_status").length).toBeGreaterThan(1));
+  await waitFor(() => expect(screen.getByText("1 deleted")).toBeTruthy());
+  await fireEvent.click(within(warning).getByRole("button", { name: "Commit" }));
+
+  await waitFor(() => expect(calls("commit_changes")).toHaveLength(1));
+  expect(calls("commit_changes")[0][1]).toMatchObject({
+    request: { added: ["a.txt"], removed: ["b.txt"] },
+  });
+});
+
+test("with every file gone while a warning is open nothing is committed", async () => {
+  mockCommands({ commit_warnings: () => [{ kind: "detachedHead" }], commit_changes: () => "hash" });
+  await open();
+  await fireEvent.input(messageField(), { target: { value: "m" } });
+  await fireEvent.click(commitButton());
+  const warning = await screen.findByRole("dialog", { name: "Commit in Detached HEAD" });
+
+  mockCommands({
+    commit_warnings: () => [{ kind: "detachedHead" }],
+    commit_changes: () => "hash",
+    repo_status: () => [],
+  });
+  repoChanged();
+  await waitFor(() => expect(calls("repo_status").length).toBeGreaterThan(1));
+  await waitFor(() => expect(screen.queryByRole("treeitem", { name: /a\.txt/ })).toBeNull());
+  await fireEvent.click(within(warning).getByRole("button", { name: "Commit" }));
+
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Commit in Detached HEAD" })).toBeNull());
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(calls("commit_changes")).toHaveLength(0);
+  expect(calls("commit_changes_selected")).toHaveLength(0);
 });

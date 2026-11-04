@@ -60,6 +60,10 @@
     // With the staging area: what is compared, and the margin moves to the stage or takes out of it.
     comparison?: Comparison | null;
     embedded?: boolean;
+    // The `Preview Diff` of Local Changes: the text cannot be edited and there are no line checkboxes.
+    readonly?: boolean;
+    // Nobody keeps the line checkboxes (the diff of Local Changes in modal mode): the text is still editable.
+    checkboxes?: boolean;
     onselection: (change: SelectionChange) => void;
     onnotice: (kind: NoticeKind, text: string, action?: { label: string; run: () => void }) => void;
     onactive?: () => void;
@@ -76,6 +80,8 @@
     lists,
     comparison = null,
     embedded = false,
+    readonly = false,
+    checkboxes = true,
     onselection,
     onnotice,
     onactive,
@@ -124,7 +130,9 @@
     return shownComparison === "local" ? "Stage" : "Include into commit";
   });
   const fileList = $derived(lists ? (lists.assignments[path] ?? lists.active) : null);
-  const ownHunks = $derived(sides?.conflicted ? [] : (sides?.hunks ?? []).filter(isOwn));
+  const ownHunks = $derived(
+    sides?.conflicted || readonly || !checkboxes ? [] : (sides?.hunks ?? []).filter(isOwn),
+  );
   // What was chosen from hunks that no longer exist is handled by the Commit view, which reports it.
   const ownIds = $derived(new Set(ownHunks.map((hunk) => hunk.id)));
   const chosen = $derived(selection.filter((entry) => ownIds.has(entry.hunk)));
@@ -151,7 +159,7 @@
       oldText,
       newText,
       hunks: whole ? [whole] : hunks,
-      selectable: current.conflicted ? [] : hunks.filter(isOwn),
+      selectable: current.conflicted || readonly || !checkboxes ? [] : hunks.filter(isOwn),
       selection: effective,
     };
   }
@@ -176,7 +184,8 @@
       return;
     }
     const data = dataFor(current);
-    const fits = editors?.fits(data, current.editable) ?? false;
+    const editable = current.editable && !readonly;
+    const fits = editors?.fits(data, editable) ?? false;
     // `load` does not change `sides` with unsaved text: what was typed always fits in its editors.
     if (editors?.dirty && !fits) return;
     if (!editors || !fits || editorsUnified !== options.unified) {
@@ -188,7 +197,7 @@
         path,
         data,
         draft,
-        editable: current.editable,
+        editable,
         unified: options.unified,
         embedded,
         options,
@@ -520,7 +529,7 @@
   });
 
   $effect(() => {
-    void [sides, options, selection, included, lists, host];
+    void [sides, options, selection, included, lists, host, checkboxes];
     const current = sides;
     untrack(() => draw(current));
   });

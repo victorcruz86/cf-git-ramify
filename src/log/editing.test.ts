@@ -12,6 +12,8 @@ import type {
   Rewritten,
   RewriteMenu,
 } from "../lib/api";
+import type { CheckinRequest } from "../commit/checkin";
+import { closeCommitDialog, commitDialog, requestCommit, routeCommitRequests } from "../commit/dialogStore";
 import { matchLogShortcut, matchShortcut } from "../lib/keymap";
 import { dismiss, notifications, type Shown } from "../lib/notifications";
 import { contextMenu, type ContextHandlers, type LogSelection } from "./contextMenu";
@@ -30,6 +32,8 @@ const H1 = "11111111".repeat(5);
 const H2 = "22222222".repeat(5);
 const HEAD = "abcdef01".repeat(5);
 const NEW = "fedcba98".repeat(5);
+// The changes of the active list, as the dialog is asked for them.
+const ACTIVE: CheckinRequest = { kind: "project", paths: ["a.txt"], lists: ["default"] };
 const STATE: RepoState = { operation: null, branch: "main", label: "main", head: HEAD };
 const ALLOWED: RewriteMenu = {
   rebase: null,
@@ -108,7 +112,7 @@ function api(overrides: Partial<EditingApi> = {}): EditingApi {
     stagingArea: vi.fn(async () => false),
     changelists: vi.fn(async () => LISTS),
     moveToChangelist: vi.fn(async () => {}),
-    hasDefaultChanges: vi.fn(async () => true),
+    activeChanges: vi.fn(async (): Promise<CheckinRequest | null> => ACTIVE),
     interactiveStart: vi.fn(async () => ({ base: BASE, commits: COMMITS })),
     interactive: vi.fn(async (): Promise<RebaseRun> => ({ outcome: { kind: "done" }, title: null, saved: [] })),
     ...overrides,
@@ -443,7 +447,7 @@ describe("Fixup… and Squash Into…", () => {
   const fixup = { kind: "fixup", commit: commit(H1, "one") } as const;
   const squashInto = { kind: "squashInto", commit: commit(H1, "one") } as const;
 
-  test("fixup_opens_the_commit_view_with_fixup_and_the_subject", async () => {
+  test("Fixup opens the commit dialog with fixup! subject and Commit and Rebase…", async () => {
     const backend = api();
     const dialogs = ui();
     const flow = editingFlow(dialogs, backend);
@@ -452,18 +456,40 @@ describe("Fixup… and Squash Into…", () => {
 
     expect(backend.checkSingle).toHaveBeenCalledWith(H1, "autosquash");
     expect(dialogs.showCommit).toHaveBeenCalledWith({
-      message: "fixup! one",
+      request: ACTIVE,
+      prefilled: "fixup! one",
       rebaseFrom: `${H1}~`,
       head: HEAD,
     });
     await flow.run(squashInto);
     expect(dialogs.showCommit).toHaveBeenLastCalledWith({
-      message: "squash! one",
+      request: ACTIVE,
+      prefilled: "squash! one",
       rebaseFrom: `${H1}~`,
       head: HEAD,
     });
-    // It does not touch the repository: the commit and the rebase are launched by the Commit view.
+    // It does not touch the repository: the commit and the rebase are launched by the dialog.
     expect(backend.autosquash).not.toHaveBeenCalled();
+  });
+
+  test("through the routing in modal mode Fixup puts the active list in the Commit Changes dialog", async () => {
+    routeCommitRequests({ mode: () => "modal", nonModal: vi.fn() });
+    try {
+      const dialogs = { ...ui(), showCommit: vi.fn(requestCommit) };
+
+      await editingFlow(dialogs, api()).run(fixup);
+
+      expect(get(commitDialog)).toEqual({
+        request: ACTIVE,
+        executor: "commit",
+        prefilled: "fixup! one",
+        rebaseFrom: `${H1}~`,
+        head: HEAD,
+      });
+    } finally {
+      closeCommitDialog();
+      routeCommitRequests(null);
+    }
   });
 
   test("with_an_operation_in_progress_commit_and_rebase_is_not_offered", async () => {
@@ -472,19 +498,21 @@ describe("Fixup… and Squash Into…", () => {
 
     await editingFlow(dialogs, backend).run(fixup);
 
-    expect(dialogs.showCommit).toHaveBeenCalledWith({ message: "fixup! one", rebaseFrom: null, head: HEAD });
+    // The HEAD travels with the base only: without an executor there is nothing to check it against.
+    expect(dialogs.showCommit).toHaveBeenCalledWith({ request: ACTIVE, prefilled: "fixup! one" });
     // With a detached HEAD there is no operation: it is offered.
     const detached = api({ state: vi.fn(async () => ({ ...STATE, branch: null })) });
     await editingFlow(dialogs, detached).run(fixup);
     expect(dialogs.showCommit).toHaveBeenLastCalledWith({
-      message: "fixup! one",
+      request: ACTIVE,
+      prefilled: "fixup! one",
       rebaseFrom: `${H1}~`,
       head: HEAD,
     });
   });
 
-  test("without_changes_in_the_default_list_says_nothing_to_commit", async () => {
-    const backend = api({ hasDefaultChanges: vi.fn(async () => false) });
+  test("without changes in the active list Fixup says Nothing to Commit", async () => {
+    const backend = api({ activeChanges: vi.fn(async () => null) });
     const dialogs = ui();
 
     await editingFlow(dialogs, backend).run(fixup);
@@ -508,7 +536,7 @@ describe("Fixup… and Squash Into…", () => {
     await flow.run(squashInto);
     expect(last()).toMatchObject({ kind: "error", title: "Cannot Create Squash Commit", body: reason });
     expect(dialogs.showCommit).not.toHaveBeenCalled();
-    expect(backend.hasDefaultChanges).not.toHaveBeenCalled();
+    expect(backend.activeChanges).not.toHaveBeenCalled();
   });
 
   test("the_rebase_after_the_commit_warns_rebase_successful", async () => {

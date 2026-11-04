@@ -381,7 +381,9 @@ fn message_file(message: &str) -> io::Result<NamedTempFile> {
     Ok(file)
 }
 
-fn hook_present(repo: &Path) -> bool {
+// `GitRepositoryReader.readHooksInfo`: an executable `pre-commit` or `commit-msg` where git looks for
+// them (`core.hooksPath`, worktrees). It is also what offers `Run Git hooks`.
+pub fn has_commit_hooks(repo: &Path) -> bool {
     COMMIT_HOOKS
         .iter()
         .any(|hook| git::git_path(repo, hook).is_ok_and(|path| is_executable(&path)))
@@ -405,7 +407,7 @@ fn classify(repo: &Path, options: &CommitOptions, error: GitError) -> CommitErro
     if reports_nothing(stdout) {
         return CommitError::NothingToCommit;
     }
-    if !options.skip_hooks && hook_present(repo) {
+    if !options.skip_hooks && has_commit_hooks(repo) {
         return CommitError::Hook(
             format!("{}\n{}", stdout.trim(), stderr.trim())
                 .trim()
@@ -993,8 +995,25 @@ pub fn ensure_idle(repo: &Path, dir: &Path) -> Result<(), CommitError> {
 #[serde(tag = "kind", content = "paths", rename_all = "camelCase")]
 pub enum CommitWarning {
     Crlf(Vec<String>),
+    // The files over the limit, with their size in bytes.
+    LargeFiles(Vec<(String, u64)>),
     DetachedHead,
     Rebasing,
+    BadFileNames(Vec<BadFileName>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BadNameProblem {
+    Reserved,
+    InvalidChar,
+}
+
+// The first part of a path that Windows would not accept, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BadFileName {
+    pub name: String,
+    pub problem: BadNameProblem,
 }
 
 fn has_crlf(bytes: &[u8]) -> bool {
@@ -1147,18 +1166,228 @@ pub fn merge_message(repo: &Path) -> Result<Option<String>, GitError> {
     Ok(None)
 }
 
+const BYTES_PER_MB: u64 = 1024 * 1024;
+// `lfs.repositoryformatversion` is what `git lfs install` leaves in the repository's configuration.
+const LFS_KEY: &str = "lfs.repositoryformatversion";
+const NULL_HASH_DIGIT: u8 = b'0';
+const GITLINK_MODE: &str = "160000";
+
+// What `git add` would take of a file on disk. A folder has no size, and a link is stored as the short text
+// of its target, so it is not followed.
+fn disk_size(repo: &Path, path: &str) -> Option<u64> {
+    let meta = fs::symlink_metadata(repo.join(path)).ok()?;
+    (!meta.is_dir()).then_some(meta.len())
+}
+
+// The whole files by their size on disk, and the ones chosen by lines by the content that goes into the index.
+fn request_sizes(repo: &Path, request: &CommitRequest) -> Vec<(String, u64)> {
+    let chosen: BTreeSet<&String> = request.partial.iter().map(|file| &file.path).collect();
+    let whole = request
+        .added
+        .iter()
+        .filter(|path| !chosen.contains(path))
+        .filter_map(|path| Some((path.clone(), disk_size(repo, path)?)));
+    let partial = request
+        .partial
+        .iter()
+        .map(|file| (file.path.clone(), file.content.len() as u64));
+    whole.chain(partial).collect()
+}
+
+// One entry of `git diff --cached --raw -z --no-renames`: `:old-mode new-mode old-hash new-hash status`, and the path.
+struct StagedChange {
+    status: u8,
+    mode: String,
+    hash: String,
+    path: String,
+}
+
+fn staged_changes(repo: &Path) -> Result<Vec<StagedChange>, GitError> {
+    let args = ["diff", "--cached", "--raw", "-z", "--no-renames"];
+    let output = git::run(repo, &args)?;
+    let fields: Vec<&[u8]> = records(&output).collect();
+    fields
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let meta = String::from_utf8_lossy(pair[0]);
+            let parts: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+            let [_, mode, _, hash, status] = parts[..] else {
+                return Err(GitError::Io(
+                    "Invalid output from git diff --cached".to_string(),
+                ));
+            };
+            Ok(StagedChange {
+                status: status.bytes().next().unwrap_or(b' '),
+                mode: mode.to_string(),
+                hash: hash.to_string(),
+                path: path_from(pair[1])?,
+            })
+        })
+        .collect()
+}
+
+// The commit takes the blobs of the index, whatever the disk has now.
+fn staged_sizes(repo: &Path) -> Vec<(String, u64)> {
+    let Ok(changes) = staged_changes(repo) else {
+        return Vec::new();
+    };
+    let kept: Vec<&StagedChange> = changes
+        .iter()
+        .filter(|change| change.status != b'D' && change.mode != GITLINK_MODE)
+        .filter(|change| change.hash.bytes().any(|digit| digit != NULL_HASH_DIGIT))
+        .collect();
+    let input: String = kept
+        .iter()
+        .map(|change| format!("{}\n", change.hash))
+        .collect();
+    let args = ["cat-file", "--batch-check=%(objectsize)"];
+    let Ok(sizes) = git::run_with_input(repo, &args, input.as_bytes()) else {
+        return Vec::new();
+    };
+    let sizes = String::from_utf8_lossy(&sizes);
+    kept.iter()
+        .zip(sizes.lines())
+        .filter_map(|(change, size)| Some((change.path.clone(), size.parse().ok()?)))
+        .collect()
+}
+
+// Like `GitLargeFileCheckinHandler`: the files over the limit, unless the repository uses LFS, whose
+// filter keeps the real content out of the commit. `sizes` gives every included file with its size.
+fn large_files_warning(
+    repo: &Path,
+    settings: &Settings,
+    sizes: impl FnOnce() -> Vec<(String, u64)>,
+) -> Option<CommitWarning> {
+    let limit = u64::from(settings.large_files_limit_mb) * BYTES_PER_MB;
+    if !settings.warn_large_files || limit == 0 {
+        return None;
+    }
+    let large: Vec<(String, u64)> = sizes()
+        .into_iter()
+        .filter(|(_, size)| *size > limit)
+        .collect();
+    if large.is_empty() || git::run(repo, &["config", "--get", LFS_KEY]).is_ok() {
+        return None;
+    }
+    Some(CommitWarning::LargeFiles(large))
+}
+
+const WINDOWS_INVALID_CHARS: &str = "<>:\"\\|?*";
+const WINDOWS_RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+// `FileUtil.getNameWithoutExtension`: up to the last dot.
+fn without_extension(name: &str) -> &str {
+    name.rfind('.').map_or(name, |dot| &name[..dot])
+}
+
+// `GitFileNameCheckinHandler.checkFileName`: from the file up to the root, the first name that is reserved or
+// has a character Windows does not accept.
+fn bad_file_name(path: &str) -> Option<BadFileName> {
+    path.rsplit('/').find_map(|name| {
+        let base = without_extension(name);
+        if (3..=4).contains(&base.chars().count())
+            && WINDOWS_RESERVED_NAMES
+                .iter()
+                .any(|reserved| reserved.eq_ignore_ascii_case(base))
+        {
+            return Some(BadFileName {
+                name: name.to_string(),
+                problem: BadNameProblem::Reserved,
+            });
+        }
+        let invalid = |char: char| u32::from(char) <= 31 || WINDOWS_INVALID_CHARS.contains(char);
+        name.chars().any(invalid).then(|| BadFileName {
+            name: name.to_string(),
+            problem: BadNameProblem::InvalidChar,
+        })
+    })
+}
+
+// The paths already in HEAD. Without commits there are none.
+fn in_head(repo: &Path, paths: &[String]) -> Result<BTreeSet<String>, GitError> {
+    if !git::head_exists(repo)? {
+        return Ok(BTreeSet::new());
+    }
+    let head = git::exact(&["ls-tree", "-r", "-z", "--name-only", "HEAD"]);
+    let listed = git::git_with_paths(repo, false, &head, paths)?;
+    records(&listed).map(path_from).collect()
+}
+
+// `afterPath != null && beforePath != afterPath`: what is not in HEAD is an addition or the target of a rename. The
+// ones with a bad name are looked at first, so that git is only asked about those.
+fn request_bad_names(repo: &Path, request: &CommitRequest) -> Vec<BadFileName> {
+    let partial = request.partial.iter().map(|file| &file.path);
+    let candidates: Vec<(String, BadFileName)> = request
+        .added
+        .iter()
+        .chain(partial)
+        .filter_map(|path| Some((path.clone(), bad_file_name(path)?)))
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let paths: Vec<String> = candidates.iter().map(|(path, _)| path.clone()).collect();
+    let Ok(existing) = in_head(repo, &paths) else {
+        return Vec::new();
+    };
+    let new = candidates
+        .into_iter()
+        .filter(|(path, _)| !existing.contains(path));
+    new.map(|(_, name)| name).collect()
+}
+
+// With `--no-renames` the target of a rename is an addition.
+fn staged_bad_names(repo: &Path) -> Vec<BadFileName> {
+    let changes = staged_changes(repo).unwrap_or_default();
+    let added = changes.iter().filter(|change| change.status == b'A');
+    added
+        .filter_map(|change| bad_file_name(&change.path))
+        .collect()
+}
+
+fn file_names_warning(
+    settings: &Settings,
+    names: impl FnOnce() -> Vec<BadFileName>,
+) -> Option<CommitWarning> {
+    if cfg!(windows) || !settings.warn_bad_file_names {
+        return None;
+    }
+    let mut unique: Vec<BadFileName> = Vec::new();
+    for name in names() {
+        if !unique.contains(&name) {
+            unique.push(name);
+        }
+    }
+    (!unique.is_empty()).then_some(CommitWarning::BadFileNames(unique))
+}
+
+// In the order of the handlers of `GitCheckinHandlerFactory`: CRLF, large files, detached HEAD or rebase, file names.
+// The one for the user name does not exist here: git asks for it by itself.
 pub fn warnings(repo: &Path, request: &CommitRequest, settings: &Settings) -> Vec<CommitWarning> {
     let crlf = crlf_warning(repo, settings, || request_crlf(repo, request));
+    let large = large_files_warning(repo, settings, || request_sizes(repo, request));
+    let names = file_names_warning(settings, || request_bad_names(repo, request));
     crlf.into_iter()
+        .chain(large)
         .chain(head_warning(repo, settings))
+        .chain(names)
         .collect()
 }
 
 // Like `warnings`, for the commit of the index as it is.
 pub fn staged_warnings(repo: &Path, settings: &Settings) -> Vec<CommitWarning> {
     let crlf = crlf_warning(repo, settings, || staged_crlf(repo));
+    let large = large_files_warning(repo, settings, || staged_sizes(repo));
+    let names = file_names_warning(settings, || staged_bad_names(repo));
     crlf.into_iter()
+        .chain(large)
         .chain(head_warning(repo, settings))
+        .chain(names)
         .collect()
 }
 
@@ -3849,6 +4078,364 @@ mod tests {
             serde_json::to_value(CommitWarning::Rebasing).unwrap(),
             serde_json::json!({ "kind": "rebasing" })
         );
+        assert_eq!(
+            serde_json::to_value(CommitWarning::LargeFiles(vec![("a.bin".to_string(), 7)]))
+                .unwrap(),
+            serde_json::json!({ "kind": "largeFiles", "paths": [["a.bin", 7]] })
+        );
+        assert_eq!(
+            serde_json::to_value(CommitWarning::BadFileNames(vec![BadFileName {
+                name: "a:b".to_string(),
+                problem: BadNameProblem::InvalidChar,
+            }]))
+            .unwrap(),
+            serde_json::json!({
+                "kind": "badFileNames",
+                "paths": [{ "name": "a:b", "problem": "invalidChar" }]
+            })
+        );
+    }
+
+    const MB: usize = 1024 * 1024;
+
+    // A repository with one commit and 1 MB as the limit, so the files of the tests stay small.
+    fn small_limit() -> (TempRepo, Settings) {
+        let repo = crlf_repo("false");
+        let settings = Settings {
+            large_files_limit_mb: 1,
+            ..Default::default()
+        };
+        (repo, settings)
+    }
+
+    fn large(path: &str, size: usize) -> CommitWarning {
+        CommitWarning::LargeFiles(vec![(path.to_string(), size as u64)])
+    }
+
+    fn bad(name: &str, problem: BadNameProblem) -> CommitWarning {
+        CommitWarning::BadFileNames(vec![BadFileName {
+            name: name.to_string(),
+            problem,
+        }])
+    }
+
+    #[test]
+    fn a_file_over_the_limit_warns_with_its_size() {
+        let (repo, settings) = small_limit();
+        write(&repo, "big.bin", &vec![b'x'; MB + 1]);
+        // The limit itself is not over it.
+        write(&repo, "exact.bin", &vec![b'x'; MB]);
+        write(&repo, "small.txt", b"small\n");
+
+        let sent = request(&["big.bin", "exact.bin", "small.txt", "gone.bin"]);
+        let found = warnings(repo.path(), &sent, &settings);
+
+        assert_eq!(found, vec![large("big.bin", MB + 1)]);
+    }
+
+    #[test]
+    fn every_file_over_the_limit_is_listed() {
+        let (repo, settings) = small_limit();
+        write(&repo, "a.bin", &vec![b'x'; MB + 1]);
+        write(&repo, "dir/b.bin", &vec![b'x'; 2 * MB]);
+
+        let found = warnings(repo.path(), &request(&["a.bin", "dir/b.bin"]), &settings);
+
+        assert_eq!(
+            found,
+            vec![CommitWarning::LargeFiles(vec![
+                ("a.bin".to_string(), (MB + 1) as u64),
+                ("dir/b.bin".to_string(), (2 * MB) as u64),
+            ])]
+        );
+    }
+
+    #[test]
+    fn the_default_limit_is_50_mb() {
+        let repo = crlf_repo("false");
+        write(&repo, "a.bin", &vec![b'x'; 2 * MB]);
+
+        let found = warnings(repo.path(), &request(&["a.bin"]), &all_warnings());
+
+        assert_eq!(found, vec![]);
+    }
+
+    #[test]
+    fn lfs_turns_off_the_size_check() {
+        let (repo, settings) = small_limit();
+        write(&repo, "big.bin", &vec![b'x'; 2 * MB]);
+        assert_eq!(
+            warnings(repo.path(), &request(&["big.bin"]), &settings),
+            vec![large("big.bin", 2 * MB)]
+        );
+
+        repo.git(&["config", "lfs.repositoryformatversion", "0"]);
+
+        assert_eq!(
+            warnings(repo.path(), &request(&["big.bin"]), &settings),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn the_size_check_can_be_turned_off_or_given_no_limit() {
+        let (repo, settings) = small_limit();
+        write(&repo, "big.bin", &vec![b'x'; 2 * MB]);
+        let sent = request(&["big.bin"]);
+
+        let off = Settings {
+            warn_large_files: false,
+            ..settings.clone()
+        };
+        let none = Settings {
+            large_files_limit_mb: 0,
+            ..settings
+        };
+
+        assert_eq!(warnings(repo.path(), &sent, &off), vec![]);
+        assert_eq!(warnings(repo.path(), &sent, &none), vec![]);
+    }
+
+    #[test]
+    fn a_partial_file_is_measured_by_what_goes_into_the_index() {
+        let (repo, settings) = small_limit();
+        // Big on disk, but only a few lines of it are chosen.
+        write(&repo, "a.txt", &vec![b'x'; 2 * MB]);
+        let small = partial_request(partial("a.txt", b"few lines\n"));
+        assert_eq!(warnings(repo.path(), &small, &settings), vec![]);
+
+        // Small on disk, with a big content chosen for the index.
+        write(&repo, "b.txt", b"small\n");
+        let big = partial_request(partial("b.txt", &vec![b'x'; MB + 5]));
+        assert_eq!(
+            warnings(repo.path(), &big, &settings),
+            vec![large("b.txt", MB + 5)]
+        );
+    }
+
+    #[test]
+    fn a_deleted_file_is_not_measured() {
+        let (repo, settings) = small_limit();
+        repo.commit("big.bin", &vec![b'x'; 2 * MB], "big");
+        fs::remove_file(repo.path().join("big.bin")).unwrap();
+        let sent = CommitRequest {
+            removed: strings(&["big.bin"]),
+            ..Default::default()
+        };
+
+        assert_eq!(warnings(repo.path(), &sent, &settings), vec![]);
+    }
+
+    #[test]
+    fn in_stage_mode_the_size_of_the_staged_blob_is_checked() {
+        let (repo, settings) = small_limit();
+        stage(&repo, "staged.bin", &vec![b'x'; 2 * MB]);
+        // Big on disk, small in the index: that is what the commit takes.
+        stage(&repo, "shrunk.bin", b"small\n");
+        write(&repo, "shrunk.bin", &vec![b'x'; 3 * MB]);
+        write(&repo, "unstaged.bin", &vec![b'x'; 3 * MB]);
+
+        let found = staged_warnings(repo.path(), &settings);
+
+        assert_eq!(found, vec![large("staged.bin", 2 * MB)]);
+    }
+
+    #[test]
+    fn an_added_file_named_aux_warns() {
+        let repo = crlf_repo("false");
+        write(&repo, "aux.txt", b"x\n");
+
+        let found = warnings(repo.path(), &request(&["aux.txt"]), &all_warnings());
+
+        assert_eq!(found, vec![bad("aux.txt", BadNameProblem::Reserved)]);
+    }
+
+    #[test]
+    fn reserved_names_ignore_the_case_and_the_extension_and_look_at_every_folder() {
+        let repo = crlf_repo("false");
+        for (path, name) in [
+            ("Com1.log", "Com1.log"),
+            ("NUL", "NUL"),
+            ("src/lpt9.tar", "lpt9.tar"),
+            ("src/prn/ok.txt", "prn"),
+            ("con/inner/ok.txt", "con"),
+        ] {
+            write(&repo, path, b"x\n");
+
+            let found = warnings(repo.path(), &request(&[path]), &all_warnings());
+
+            assert_eq!(found, vec![bad(name, BadNameProblem::Reserved)], "{path}");
+        }
+    }
+
+    #[test]
+    fn names_that_only_look_like_reserved_ones_do_not_warn() {
+        let repo = crlf_repo("false");
+        // Longer or shorter than the reserved ones, or the reserved word only inside a longer base name.
+        for path in [
+            "auxiliary.txt",
+            "au.txt",
+            "com0.txt",
+            "com10.txt",
+            "aux.tar.gz",
+            ".aux",
+            "xaux",
+        ] {
+            write(&repo, path, b"x\n");
+
+            let found = warnings(repo.path(), &request(&[path]), &all_warnings());
+
+            assert_eq!(found, vec![], "{path}");
+        }
+    }
+
+    #[test]
+    fn characters_that_windows_does_not_accept_warn() {
+        let repo = crlf_repo("false");
+        for name in [
+            "a<b", "a>b", "a:b", "a\"b", "a\\b", "a|b", "a?b", "a*b", "a\tb",
+        ] {
+            write(&repo, name, b"x\n");
+
+            let found = warnings(repo.path(), &request(&[name]), &all_warnings());
+
+            assert_eq!(
+                found,
+                vec![bad(name, BadNameProblem::InvalidChar)],
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_renamed_file_with_a_colon_warns() {
+        let repo = crlf_repo("false");
+        repo.commit("a.txt", b"one\n", "a");
+        fs::rename(repo.path().join("a.txt"), repo.path().join("a:b.txt")).unwrap();
+        let mut sent = request(&["a:b.txt"]);
+        sent.removed = strings(&["a.txt"]);
+
+        let found = warnings(repo.path(), &sent, &all_warnings());
+
+        assert_eq!(found, vec![bad("a:b.txt", BadNameProblem::InvalidChar)]);
+    }
+
+    #[test]
+    fn a_file_that_was_already_in_head_is_not_checked() {
+        let repo = crlf_repo("false");
+        repo.commit("aux.txt", b"one\n", "aux");
+        repo.commit("co:lon.txt", b"one\n", "colon");
+        write(&repo, "aux.txt", b"two\n");
+        write(&repo, "co:lon.txt", b"two\n");
+
+        let found = warnings(
+            repo.path(),
+            &request(&["aux.txt", "co:lon.txt"]),
+            &all_warnings(),
+        );
+
+        assert_eq!(found, vec![]);
+    }
+
+    #[test]
+    fn a_name_that_looks_like_a_pattern_is_looked_up_as_a_literal() {
+        let repo = crlf_repo("false");
+        repo.commit("a*.txt", b"one\n", "star");
+        write(&repo, "a*.txt", b"two\n");
+
+        assert_eq!(
+            warnings(repo.path(), &request(&["a*.txt"]), &all_warnings()),
+            vec![]
+        );
+
+        // `a?.txt` is matched by the pattern `a*.txt`, but it is not in HEAD.
+        write(&repo, "a?.txt", b"new\n");
+        assert_eq!(
+            warnings(repo.path(), &request(&["a?.txt"]), &all_warnings()),
+            vec![bad("a?.txt", BadNameProblem::InvalidChar)]
+        );
+    }
+
+    #[test]
+    fn without_commits_every_included_file_is_new() {
+        let repo = TempRepo::new();
+        write(&repo, "aux.txt", b"x\n");
+
+        let found = warnings(repo.path(), &request(&["aux.txt"]), &all_warnings());
+
+        assert_eq!(found, vec![bad("aux.txt", BadNameProblem::Reserved)]);
+    }
+
+    #[test]
+    fn the_file_name_check_can_be_turned_off() {
+        let repo = crlf_repo("false");
+        write(&repo, "aux.txt", b"x\n");
+        let settings = Settings {
+            warn_bad_file_names: false,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            warnings(repo.path(), &request(&["aux.txt"]), &settings),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn in_stage_mode_only_the_added_files_are_checked() {
+        let repo = crlf_repo("false");
+        repo.commit("co:lon.txt", b"one\n", "colon");
+        stage(&repo, "co:lon.txt", b"two\n");
+        stage(&repo, "aux.txt", b"x\n");
+        write(&repo, "unstaged:.txt", b"x\n");
+
+        let found = staged_warnings(repo.path(), &all_warnings());
+
+        assert_eq!(found, vec![bad("aux.txt", BadNameProblem::Reserved)]);
+    }
+
+    #[test]
+    fn warnings_come_in_intellijs_order() {
+        let (repo, settings) = small_limit();
+        repo.commit("a.txt", b"x\n", "second");
+        repo.git(&["checkout", "-q", "--detach"]);
+        // One file that triggers the CRLF, the size and the name checks.
+        let mut content = b"one\r\n".to_vec();
+        content.resize(MB + 1, b'x');
+        write(&repo, "aux.txt", &content);
+
+        let found = warnings(repo.path(), &request(&["aux.txt"]), &settings);
+
+        assert_eq!(
+            found,
+            vec![
+                CommitWarning::Crlf(strings(&["aux.txt"])),
+                large("aux.txt", MB + 1),
+                CommitWarning::DetachedHead,
+                bad("aux.txt", BadNameProblem::Reserved),
+            ]
+        );
+    }
+
+    #[test]
+    fn staged_warnings_come_in_the_same_order() {
+        let (repo, settings) = small_limit();
+        repo.git(&["checkout", "-q", "--detach"]);
+        let mut content = b"one\r\n".to_vec();
+        content.resize(MB + 1, b'x');
+        stage(&repo, "aux.txt", &content);
+
+        let found = staged_warnings(repo.path(), &settings);
+
+        assert_eq!(
+            found,
+            vec![
+                CommitWarning::Crlf(strings(&["aux.txt"])),
+                large("aux.txt", MB + 1),
+                CommitWarning::DetachedHead,
+                bad("aux.txt", BadNameProblem::Reserved),
+            ]
+        );
     }
 
     // A merge of `other` into `main` with the conflict already resolved and marked.
@@ -3954,6 +4541,36 @@ mod tests {
 
         assert_eq!(failure, GitError::Io("No merge in progress".to_string()));
         assert_eq!(harness.git(&["log", "-1", "--format=%s"]).trim(), "one");
+    }
+
+    #[test]
+    fn commit_hooks_are_an_executable_pre_commit_or_commit_msg() {
+        let repo = TempRepo::new();
+        assert!(!has_commit_hooks(repo.path()));
+
+        hook(&repo, "pre-push", "exit 0");
+        assert!(!has_commit_hooks(repo.path()));
+
+        for name in ["pre-commit", "commit-msg"] {
+            hook(&repo, name, "exit 0");
+            assert!(has_commit_hooks(repo.path()), "{name}");
+            let script = repo.path().join(".git/hooks").join(name);
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(!has_commit_hooks(repo.path()), "{name}");
+        }
+    }
+
+    #[test]
+    fn commit_hooks_are_looked_for_where_git_says() {
+        let repo = TempRepo::new();
+        let hooks = TempDir::new().unwrap();
+        let script = hooks.path().join("commit-msg");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        repo.git(&["config", "core.hooksPath", hooks.path().to_str().unwrap()]);
+
+        assert!(has_commit_hooks(repo.path()));
     }
 
     #[test]

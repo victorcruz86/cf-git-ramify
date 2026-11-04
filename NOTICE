@@ -268,6 +268,8 @@ Ported code: rewriting from the log
                                           (texts)
   src/rebase/GitCommandsDialog.svelte     git4idea: GitRebaseCommandsDialog; GitBundle (texts)
   src/lib/icons/pause.svg                 platform/icons/src/expui/run/pause_dark.svg
+  src/lib/icons/previewDetails.svg        platform/icons/src/expui/general/previewVertically_dark.svg
+                                          (tag idea/241.14494.240)
   src/commit/CommitView.svelte (Commit and Rebase…)
   src/commit/CommitMessage.svelte (Commit and Rebase…)
                                           git4idea: GitAutoSquashCommitAction
@@ -299,11 +301,12 @@ Ported code: conflicts
                                           (StatusColumn); VcsBundle (texts)
   src/commit/ChangesTree.svelte (node)    platform/vcs-impl: ChangesBrowserConflictsNode;
                                           git4idea: GitStageTree (MyKindNode); VcsBundle (texts)
-  src/commit/CommitView.svelte (conflicts)
+  src/commit/ChangesPanel.svelte (conflicts)
                                           git4idea: GitConflictActions (GitConflictAction,
                                           GitAcceptConflictSideAction, GitMergeConflictAction),
-                                          GitStageConflictActions, GitResolveConflictsAction,
-                                          GitCheckinEnvironment (getDefaultMessageFor)
+                                          GitStageConflictActions, GitResolveConflictsAction
+  src/commit/CommitView.svelte (merge message)
+                                          git4idea: GitCheckinEnvironment (getDefaultMessageFor)
 
 Ported code: three-way merge
 ----------------------------
@@ -403,6 +406,74 @@ Ported code: HEAD, staged and local in three panes
                                           editors, dividers and scrolling)
   src-tauri/src/worktree_diff.rs          git4idea: GitIndexUtil (write, hashObject,
   (three_sides, write_index)              updateIndex), GitFileStatus (has, path)
+
+Ported code: commit checks
+--------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/commit.rs (large files, file names)
+                                          git4idea: GitCheckinHandlerFactory
+                                          (GitLargeFileCheckinHandler,
+                                          GitFileNameCheckinHandler, handler order),
+                                          GitVcsOptions (WARN_ABOUT_LARGE_FILES,
+                                          WARN_ABOUT_LARGE_FILES_LIMIT_MB,
+                                          WARN_ABOUT_BAD_FILE_NAMES)
+  src-tauri/src/settings.rs (large files, file names)
+                                          git4idea: GitVcsOptions
+  src/commit/WarningsGate.svelte (large files, file names)
+                                          git4idea: GitCheckinHandlerFactory
+                                          (GitLargeFileCheckinHandler,
+                                          GitFileNameCheckinHandler); platform/vcs-api:
+                                          CommitCheck (CommitProblem.showModalSolution);
+                                          GitBundle and VcsBundle (texts)
+  src/settings/SettingsView.svelte (large files, file names)
+                                          git4idea: GitVcsPanel (cdWarnAboutLargeFiles,
+                                          cdWarnAboutBadFileNames); GitBundle (texts)
+
+Ported code: modal commit
+-------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src/commit/dialog.ts                    platform/vcs-impl: CheckinActionUtil
+                                          (getInitiallySelectedChangeList,
+                                          getIncludedChanges), SingleChangeListCommitMessagePolicy
+                                          (init, onChangelistChanged, onDialogClosed),
+                                          AbstractCommitMessagePolicy (getCommitMessageForList),
+                                          VcsImplUtil (filterChangesUnder), CommitChangeListDialog
+                                          (DIMENSION_SERVICE_KEY and splitter keys);
+                                          platform/vcs-api: LocalChangeList
+                                          (getAllDefaultNames)
+  src/commit/CommitDialog.svelte          platform/vcs-impl: CommitChangeListDialog (layout,
+                                          splitters, details panel),
+                                          SingleChangeListCommitWorkflowHandler (checks with the
+                                          dialog open, commit after it closes),
+                                          AmendCommitHandlerImpl (amend message),
+                                          MultipleLocalChangeListsBrowser (setAvailableLists);
+                                          git4idea: GitCommitOptions (saveState),
+                                          GitSkipHooksCommitHandlerFactory (saveState),
+                                          GitRebaseCheckinHandlerFactory (checkinSuccessful);
+                                          VcsBundle and GitBundle (texts)
+  src/commit/ChangelistChooser.svelte     platform/vcs-impl: MultipleLocalChangeListsBrowser
+                                          (ChangeListChooser); StringUtil
+                                          (shortenTextWithEllipsis)
+  src/commit/CommitOptionsPanel.svelte    platform/vcs-impl: CommitOptionsPanel; git4idea:
+                                          GitCommitOptions (GitCommitOptionsUi),
+                                          GitSkipHooksCommitHandlerFactory; VcsBundle and
+                                          GitBundle (texts)
+  src/commit/LocalChangesView.svelte      platform/vcs-impl: ChangesViewManager
+                                          (ChangesViewToolWindowPanel), PreviewDiffSplitterComponent,
+                                          VcsConfiguration (LOCAL_CHANGES_DETAILS_PREVIEW_SHOWN)
+  src/commit/ChangesPanel.svelte          platform/vcs-impl: ChangesViewManager
+                                          (configureToolbars), VcsActions.xml (order of the
+                                          ChangesViewToolbar and ChangesViewPopupMenu groups),
+                                          MultipleLocalChangeListsBrowser (createPopupMenuActions)
+  src/commit/dialogStore.ts               platform/vcs-impl: CheckinActionUtil (entry points of
+                                          the modal commit)
+  src/lib/tabs.ts                         platform/vcs-impl: ChangesViewContentManager (content
+                                          weights, isInCommitToolWindow, tab names); VcsBundle
+                                          (texts)
 
 Test data: src-tauri/src/log/testdata/
 --------------------------------------

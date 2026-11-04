@@ -27,6 +27,31 @@ function apply(event: TaskEvent) {
   waiting.delete(event.id);
 }
 
+// Work of this window that is not a backend task, such as the commit that runs once the Commit
+// Changes dialog has closed. It is shown while it runs, with negative ids and without Cancel.
+let lastLocal = 0;
+
+export const isLocal = (task: TaskEvent) => task.id < 0;
+
+export async function runLocal<T>(title: string, text: string, work: () => Promise<T>): Promise<T> {
+  const id = --lastLocal;
+  const shown: TaskEvent = {
+    id,
+    title,
+    text,
+    fraction: null,
+    state: "running",
+    kind: null,
+    value: null,
+  };
+  store.update((running) => [...running, shown]);
+  try {
+    return await work();
+  } finally {
+    store.update((running) => running.filter((task) => task.id !== id));
+  }
+}
+
 export async function trackTasks(): Promise<() => void> {
   store.set([]);
   return onTaskChanged(apply);

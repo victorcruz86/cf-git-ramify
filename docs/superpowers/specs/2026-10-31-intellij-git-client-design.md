@@ -75,7 +75,7 @@ Measurement conditions: Apple Silicon Mac, one open window, a public repository 
 
 **Decided after phase 0:**
 
-- **Startup:** the app opens on the Commit view, and the log is loaded only when its tab is opened. Measured reason: loading the log costs 1.3 s in a repository of 86,000 commits. **[Claude's decision]**
+- **Startup:** the app opens on Local Changes (modal) or on the Commit tool window (non-modal), and the log loads only when its tab is opened. Measured reason: loading the log costs 1.3 s in a repository of 86,000 commits. **[Claude's decision]**
 - **Diff in its own window**, because it is the user's current setting in IntelliJ. **[Claude's decision]**
 - **The recoverable copy goes into phase 1**, with the rollback. **[user, when approving the matrix]**
 

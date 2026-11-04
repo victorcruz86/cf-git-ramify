@@ -749,7 +749,7 @@ describe("cherry-pick and revert from the log", () => {
 
   test("with_staging_area_it_does_not_commit_and_brings_the_commit_view", async () => {
     repoState = NORMAL;
-    settingsNow = { ...SETTINGS, stagingArea: true };
+    settingsNow = { ...SETTINGS, nonModalCommit: true, stagingArea: true };
     const sessions = sequence(CONFLICT_SESSION, NO_CONFLICTS);
     mockCommands({
       apply_commits: STOPPED,

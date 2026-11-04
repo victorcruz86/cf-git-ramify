@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { TaskEvent } from "./api";
 import { isOutdated } from "./errors";
-import { taskResult } from "./tasks";
+import { runLocal, taskResult } from "./tasks";
 import TaskStatus from "./TaskStatus.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -165,4 +165,23 @@ test("a_resolution_with_a_changed_file_arrives_with_kind_outdated", async () => 
   expect(isOutdated(failure)).toBe(true);
   expect(isOutdated({ kind: "failed", message: "The file has changed" })).toBe(false);
   expect(isOutdated(new Error("outdated"))).toBe(false);
+});
+
+test("work of this window shows while it runs, without Cancel", async () => {
+  render(TaskStatus);
+  let finish: () => void = () => {};
+  const work = runLocal(
+    "Commit Changes",
+    "Committing…",
+    () => new Promise<string>((done) => (finish = () => done("abc"))),
+  );
+
+  expect(await screen.findByText("Commit Changes")).toBeTruthy();
+  expect(screen.getByText("Committing…")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+
+  finish();
+
+  expect(await work).toBe("abc");
+  await vi.waitFor(() => expect(screen.queryByText("Commit Changes")).toBeNull());
 });

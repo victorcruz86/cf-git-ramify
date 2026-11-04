@@ -3,6 +3,7 @@
 
 import argparse
 import re
+import sys
 import xml.etree.ElementTree as ElementTree
 from typing import NamedTuple, Optional
 
@@ -13,6 +14,7 @@ OUT_OF_SCOPE = (
     r"|AnnotateStackTrace|CloseAllUnmodifiedEditors|MarkFileDirty|RunCommitChecks"
     r"|SwitchToCommitDialog|QuickListPopup|CopyPathFromRepositoryRoot"
     r"|CheckIgnoredAndNotExcludedDirectories"
+    r"|^Git\.Log\.(GitDumpLogIndexDataAction|GitUseSharedLogAction|Show\.Command)$"
 )
 # From a file's history and from comparisons: phase 4 even though the name is a `Vcs.Log.` one.
 LOG_HISTORY = (
@@ -28,6 +30,8 @@ RULES = (
     (BRANCH_POPUP + r"(GitCompareWithBranchAction|GitShowDiffWithBranchAction)$",
      "History and comparison", 4, "include"),
     (BRANCH_POPUP, "Log and branches", 2, "include"),
+    # The search toggles of the branches popup gear (241).
+    (r"^git\.branches\.popup\.", "Log and branches", 2, "include"),
     (OUT_OF_SCOPE, "Out of scope", None, "out"),
     (LOG_HISTORY, "History and comparison", 4, "include"),
     (r"^Vcs\.Log\.|PushUpToCommit|CopyCommitSubject", "Log and branches", 2, "include"),
@@ -64,10 +68,29 @@ RULES = (
 )
 
 
+# In 241 the staging area only exists in the non-modal commit interface; the user commits in the modal one.
+NON_MODAL_ONLY = (r"^Git\.Stage\.", "only in non-modal mode with the staging area")
+SECTION_FOUR = "## 4. "
+HEADER = "| Area | Phase | Status | Feature | Action | Shortcut |"
+PREVIOUS_ROW = re.compile(
+    r"^\| (?P<area>[^|]*) \| (?P<phase>[^|]*) \| (?P<status>[^|]*) \| (?P<feature>.*?) \| `(?P<id>[^`]+)` "
+    r"\| (?P<shortcut>.*?) \| (?P<result>.*) \|$"
+)
+
+
 class Action(NamedTuple):
     id: str
     cls: str
     group: Optional[str]
+
+
+class PreviousRow(NamedTuple):
+    area: str
+    phase: str
+    status: str
+    feature: str
+    shortcut: str
+    result: str
 
 
 def extract_actions(xml):
@@ -191,11 +214,70 @@ def pretty(strokes):
     return text
 
 
+def parse_previous(matrix):
+    """Reads the rows of section 4 of a matrix, by action id. The Result column is written by hand."""
+    previous = {}
+    in_section = False
+    for line in matrix.splitlines():
+        if line.startswith("## "):
+            in_section = line.startswith(SECTION_FOUR)
+        match = PREVIOUS_ROW.match(line) if in_section else None
+        if match:
+            previous[match["id"]] = PreviousRow(
+                *(match[key] for key in ("area", "phase", "status", "feature", "shortcut", "result"))
+            )
+    return previous
+
+
+def feature_text(action_id, name):
+    pattern, note = NON_MODAL_ONLY
+    if not re.search(pattern, action_id):
+        return name
+    return f"{name} ({note})" if name else f"({note})"
+
+
+def render_table(rows, previous=None):
+    """The lines of the table. With a previous matrix it adds the Result column, kept by action id."""
+    header = HEADER if previous is None else HEADER + " Result |"
+    lines = [header, "|---|---|---|---|---|---|" + ("" if previous is None else "---|")]
+    order = lambda item: (item[1][0][1] or 9, item[1][0][0], item[0])
+    for action_id, ((area, phase, status), name, strokes) in sorted(rows.items(), key=order):
+        cells = f"| {area} | {phase or '-'} | {status} | {feature_text(action_id, name)} | `{action_id}` | {pretty(strokes)} |"
+        if previous is not None:
+            old = previous.get(action_id)
+            cells += f" {old.result if old else ''} |"
+        lines.append(cells)
+    return lines
+
+
+def removed_rows(rows, previous):
+    return sorted((action_id, old) for action_id, old in previous.items() if action_id not in rows)
+
+
+def render_removed(removed):
+    if not removed:
+        return []
+    lines = [
+        "### Removed in 241",
+        "",
+        "Actions of the previous reference that 2024.1 no longer declares. They left the table above; their old rows are kept here.",
+        "",
+        HEADER + " Result |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for action_id, old in removed:
+        lines.append(
+            f"| {old.area} | {old.phase} | {old.status} | {old.feature} | `{action_id}` | {old.shortcut} | {old.result} |"
+        )
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--actions", nargs="+", required=True)
     parser.add_argument("--keymaps", nargs="+", required=True, help="from the most general to the most specific")
     parser.add_argument("--bundles", nargs="+", required=True)
+    parser.add_argument("--previous", help="the current matrix: its Result column is kept by action id")
     args = parser.parse_args()
 
     keymaps = []
@@ -221,11 +303,16 @@ def main():
             strokes = shortcut_of(action.id, shortcuts, bindings)
             rows[action.id] = (classify(action.id), names.get(action.id, ""), strokes)
 
-    print("| Area | Phase | Status | Feature | Action | Shortcut |")
-    print("|---|---|---|---|---|---|")
-    order = lambda item: (item[1][0][1] or 9, item[1][0][0], item[0])
-    for action_id, ((area, phase, status), name, strokes) in sorted(rows.items(), key=order):
-        print(f"| {area} | {phase or '-'} | {status} | {name} | `{action_id}` | {pretty(strokes)} |")
+    previous = None
+    if args.previous:
+        with open(args.previous, encoding="utf-8") as matrix:
+            previous = parse_previous(matrix.read())
+    print("\n".join(render_table(rows, previous)))
+    if previous is not None:
+        removed = removed_rows(rows, previous)
+        if removed:
+            print("\n" + "\n".join(render_removed(removed)))
+            print("removed: " + ", ".join(action_id for action_id, _ in removed), file=sys.stderr)
 
 
 if __name__ == "__main__":

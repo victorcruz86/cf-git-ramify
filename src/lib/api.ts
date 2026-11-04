@@ -421,6 +421,10 @@ export interface Settings {
   stagingArea: boolean;
   warnCrlf: boolean;
   warnDetached: boolean;
+  // `Warn when committing files larger than [limit] MB`.
+  warnLargeFiles: boolean;
+  largeFilesLimitMb: number;
+  warnBadFileNames: boolean;
   signCommits: boolean;
   signingKey: string | null;
   useCredentialHelper: boolean;
@@ -441,7 +445,21 @@ export interface Settings {
   mergeWhitespace: Whitespace;
   // `Add the 'cherry-picked from <hash>' suffix when picking commits pushed to protected branches`.
   cherryPickSuffix: boolean;
+  // `Use non-modal commit interface`. Off: the commit is a dialog.
+  nonModalCommit: boolean;
+  // `Clear initial commit message`.
+  clearInitialCommitMessage: boolean;
 }
+
+export type CommitMode = "modal" | "non-modal";
+
+export const commitMode = (settings: Settings): CommitMode =>
+  settings.nonModalCommit ? "non-modal" : "modal";
+
+// `Enable staging area` only counts in the non-modal interface (`canEnableStagingArea`): while modal it
+// stays saved but is not in effect.
+export const effectiveStaging = (settings: Settings): boolean =>
+  settings.nonModalCommit && settings.stagingArea;
 
 // `GitMergeOption`, in their order.
 export type MergeOption = "noFf" | "ffOnly" | "squash" | "message" | "noCommit" | "noVerify";
@@ -459,10 +477,16 @@ export interface RepoSettings {
   rebase: { options: RebaseFlag[]; newBase: string | null };
 }
 
+export type BadFileNameProblem = "reserved" | "invalidChar";
+
+// `paths` of `largeFiles` are the files over the limit with their size in bytes; those of `badFileNames`, the
+// first name of each that Windows does not accept, with the reason.
 export type CommitWarning =
   | { kind: "crlf"; paths: string[] }
+  | { kind: "largeFiles"; paths: [string, number][] }
   | { kind: "detachedHead" }
-  | { kind: "rebasing" };
+  | { kind: "rebasing" }
+  | { kind: "badFileNames"; paths: { name: string; problem: BadFileNameProblem }[] };
 
 export interface CommitRequest {
   added: string[];
@@ -512,6 +536,9 @@ export const changelistsCreate = (name: string) =>
   invoke<Changelists>("changelists_create", { name });
 export const changelistsRename = (id: string, name: string) =>
   invoke<Changelists>("changelists_rename", { id, name });
+// `repo`: the repository the comment was written for; if another one is open now, nothing is saved.
+export const changelistsSetComment = (id: string, comment: string, repo: string) =>
+  invoke<Changelists>("changelists_set_comment", { id, comment, repo });
 export const changelistsRemove = (id: string) => invoke<Changelists>("changelists_remove", { id });
 export const changelistsSetActive = (id: string) =>
   invoke<Changelists>("changelists_set_active", { id });
@@ -569,6 +596,12 @@ export const settingsSave = (settings: Settings) =>
 export const gitVersion = (path: string | null) => invoke<string>("git_version", { path });
 export const messagesList = () => invoke<string[]>("messages_list");
 export const headMessage = () => invoke<string>("head_message");
+// `LAST_COMMIT_MESSAGE`: the message of the last commit made through the app, if any.
+export const lastCommitMessage = () => invoke<string | null>("messages_last");
+// Into the history, as the text that was there before amend loaded the last commit's message.
+export const messagesPush = (message: string) => invoke<void>("messages_push", { message });
+// An executable `pre-commit` or `commit-msg`: only then is `Run Git hooks` offered.
+export const repoHasCommitHooks = () => invoke<boolean>("repo_has_commit_hooks");
 export const snapshotsList = () => invoke<Snapshot[]>("snapshots_list");
 export const snapshotsRestore = (id: string) => invoke<string>("snapshots_restore", { id });
 export const perfEnabled = () => invoke<boolean>("perf_enabled");
@@ -1265,12 +1298,20 @@ export interface SelectionChange {
   places: Record<string, string>;
 }
 
-// What the Commit view has chosen: the diff window shows it, it does not decide it.
+// Who keeps the line checkboxes the diff window shows: nobody (Local Changes in modal mode, which has no
+// checkboxes), the non-modal Commit view, or the Commit Changes dialog while it is open.
+export type SelectionOwner = "none" | "commit-view" | "dialog";
+
+// What the owner has chosen: the diff window shows it, it does not decide it.
 export interface SelectionState {
+  owner: SelectionOwner;
   included: string[];
   selections: Record<string, LineSelection[]>;
   lists: Changelists | null;
 }
+
+// What a view publishes: the application adds who owns it.
+export type PublishedSelection = Omit<SelectionState, "owner">;
 
 export interface LostSelection extends SelectionLost {
   text: string;

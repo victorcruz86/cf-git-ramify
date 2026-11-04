@@ -59,7 +59,7 @@ function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
     repo_status: () => STATUS,
     worktree_sides: () => SIDES,
     show_window: () => undefined,
-    settings_get: () => ({ stagingArea: false }),
+    settings_get: () => ({ nonModalCommit: false, stagingArea: false }),
     perf_enabled: () => false,
     ...commands,
   };
@@ -97,7 +97,7 @@ afterEach(cleanup);
 
 async function open() {
   const view = render(DiffWindow);
-  await waitFor(() => expect(document.querySelector(".rm-check")).not.toBeNull());
+  await waitFor(() => expect(document.querySelector(".rm-editor .cm-line")).not.toBeNull());
   await waitFor(() => expect(handlers.has("selection-lost")).toBe(true));
   return view;
 }
@@ -108,8 +108,12 @@ function clickCheck(check: HTMLElement) {
   check.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
 }
 
-function selectionState(included: string[], selections: Record<string, unknown> = {}) {
-  deliver("selection-state", { included, selections, lists: null });
+function selectionState(
+  included: string[],
+  selections: Record<string, unknown> = {},
+  owner: "none" | "commit-view" | "dialog" = "commit-view",
+) {
+  deliver("selection-state", { owner, included, selections, lists: null });
 }
 
 test("requests_what_is_chosen_and_is_shown_when_done", async () => {
@@ -214,11 +218,78 @@ test("with_nothing_checked_the_file_leaves_the_commit", async () => {
   expect(emitted("selection-changed")[0]).toMatchObject({ selection: [], included: false });
 });
 
+describe("who_owns_the_line_checkboxes", () => {
+  const titleCheck = () => screen.queryByRole("checkbox", { name: "Include into commit" });
+
+  test("without a commit session the diff shows no line checkboxes", async () => {
+    mockCommands();
+    await open();
+
+    selectionState(["a.txt"], {}, "none");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(checks()).toHaveLength(0);
+    expect(titleCheck()).toBeNull();
+  });
+
+  test("before the application says who owns them there are no line checkboxes", async () => {
+    mockCommands();
+    await open();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(checks()).toHaveLength(0);
+    expect(titleCheck()).toBeNull();
+  });
+
+  test("line checkboxes in the window change the inclusion of the open dialog", async () => {
+    mockCommands();
+    await open();
+    selectionState(["a.txt"], {}, "dialog");
+    await waitFor(() => expect(checks()[0].getAttribute("aria-checked")).toBe("true"));
+
+    clickCheck(checks()[0]);
+
+    await waitFor(() => expect(emitted("selection-changed")).toHaveLength(1));
+    expect(emitted("selection-changed")[0]).toEqual({
+      path: "a.txt",
+      selection: [{ hunk: "h2", lines: null }],
+      included: true,
+      places: { h2: "line 4" },
+    });
+  });
+
+  test("closing the dialog clears the window's checkboxes", async () => {
+    mockCommands();
+    await open();
+    selectionState(["a.txt"], { "a.txt": [{ hunk: "h1", lines: null }] }, "dialog");
+    await waitFor(() => expect(checks()).toHaveLength(2));
+    expect(titleCheck()).not.toBeNull();
+
+    selectionState([], {}, "none");
+
+    await waitFor(() => expect(checks()).toHaveLength(0));
+    expect(titleCheck()).toBeNull();
+  });
+
+  test("in non-modal mode the commit view still owns the line checkboxes", async () => {
+    mockCommands();
+    await open();
+
+    selectionState(["a.txt"], {}, "commit-view");
+
+    await waitFor(() => expect(checks()).toHaveLength(2));
+    expect(titleCheck()).not.toBeNull();
+    clickCheck(checks()[1]);
+    await waitFor(() => expect(emitted("selection-changed")).toHaveLength(1));
+  });
+});
+
 test("hunks_of_another_list_have_no_checkbox", async () => {
   mockCommands();
   await open();
 
   deliver("selection-state", {
+    owner: "commit-view",
     included: ["a.txt"],
     selections: {},
     lists: {
@@ -782,6 +853,7 @@ test("moving_the_only_chosen_hunk_removes_it_from_the_selection", async () => {
   mockCommands({ changelists_move_hunks: () => LISTS });
   await open();
   deliver("selection-state", {
+    owner: "commit-view",
     included: ["a.txt"],
     selections: { "a.txt": [{ hunk: "h1", lines: null }] },
     lists: LISTS,
@@ -821,7 +893,7 @@ describe("with_staging_area", () => {
 
   function mockStaging(commands: Record<string, (args: never) => unknown> = {}) {
     mockCommands({
-      settings_get: () => ({ stagingArea: true }),
+      settings_get: () => ({ nonModalCommit: true, stagingArea: true }),
       staging_sides: (args: { comparison: string }) =>
         args.comparison === "staged" ? STAGED : SIDES,
       staging_stage_hunks: () => null,
@@ -868,6 +940,15 @@ describe("with_staging_area", () => {
     await fireEvent.click(await screen.findByRole("menuitem", { name: "HEAD and Staged" }));
 
     await waitFor(() => expect(screen.getByText("In the stage")).toBeTruthy());
+  });
+
+  test("the_margin_of_the_stage_stays_when_nobody_owns_the_lines", async () => {
+    mockStaging();
+    await open();
+
+    selectionState([], {}, "none");
+
+    await waitFor(() => expect(checks()).toHaveLength(2));
   });
 
   test("the_margin_checkbox_moves_the_hunk_to_the_stage", async () => {
@@ -1085,7 +1166,7 @@ describe("with_staging_area", () => {
     mockStaging();
     await open();
 
-    deliver("settings-changed", { stagingArea: false });
+    deliver("settings-changed", { nonModalCommit: true, stagingArea: false });
 
     await waitFor(() => expect(calls("worktree_sides").length).toBeGreaterThan(0));
     await waitFor(() => expect(screen.getByText("Your version")).toBeTruthy());

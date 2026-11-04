@@ -1623,12 +1623,15 @@ pub(crate) fn repo_data_dir(
     app: &AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<PathBuf, ApiError> {
-    let repo = current_repo(state)?;
+    data_dir_of(app, &current_repo(state)?)
+}
+
+fn data_dir_of(app: &AppHandle, repo: &Path) -> Result<PathBuf, ApiError> {
     let base = app
         .path()
         .app_data_dir()
         .map_err(|error| failed(error.to_string()))?;
-    Ok(storage::repo_dir(&base, &repo))
+    Ok(storage::repo_dir(&base, repo))
 }
 
 // If the file exists but cannot be read we do not continue: saving over it would lose its data.
@@ -1706,6 +1709,37 @@ pub fn changelists_rename(
     edit_changelists(&repo_data_dir(&app, &state)?, |lists| {
         lists.rename(&id, &name)
     })
+}
+
+// The Commit Changes dialog saves its draft once its commit has finished, after it has closed: by then
+// another repository may be open, whose lists (the default one included) are not the ones it wrote for.
+pub fn set_list_comment(
+    open: &Path,
+    expected: &str,
+    dir: &Path,
+    id: &str,
+    comment: &str,
+) -> Result<Changelists, ApiError> {
+    if open != Path::new(expected) {
+        return Err(failed(
+            "Another repository was opened before the changelist comment was saved".to_string(),
+        ));
+    }
+    edit_changelists(dir, |lists| lists.set_comment(id, comment))
+}
+
+// Only the comment of the list: it writes neither the index nor the work tree, so it needs no
+// `flush_diff_window` or `RepoLocks`. `repo` is the repository the comment was written for.
+#[tauri::command]
+pub fn changelists_set_comment(
+    id: String,
+    comment: String,
+    repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Changelists, ApiError> {
+    let open = current_repo(&state)?;
+    set_list_comment(&open, &repo, &data_dir_of(&app, &open)?, &id, &comment)
 }
 
 #[tauri::command]
@@ -1979,7 +2013,7 @@ fn apply_settings(app: &AppHandle, settings: &Settings) {
         .set_credential_helper(settings.use_credential_helper);
     app.state::<AppState>()
         .tasks
-        .set_staging_area(settings.staging_area);
+        .set_staging_area(settings.effective_staging());
     app.state::<AppState>()
         .tasks
         .set_cherry_pick_suffix(settings.cherry_pick_suffix);
@@ -2030,6 +2064,34 @@ pub fn open_settings(app: &AppHandle) {
 #[tauri::command]
 pub fn messages_list(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<String>, ApiError> {
     Ok(messages::list(&repo_data_dir(&app, &state)?))
+}
+
+// `LAST_COMMIT_MESSAGE`, the last resort of the Commit Changes dialog's message.
+#[tauri::command]
+pub fn messages_last(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    Ok(messages::last_commit_message(&repo_data_dir(&app, &state)?))
+}
+
+// `VcsConfiguration.saveCommitMessage`: the text written before amend loads the last commit's
+// message goes to the history (and becomes `LAST_COMMIT_MESSAGE`). It writes only the app's data.
+#[tauri::command]
+pub fn messages_push(
+    message: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    messages::push(&repo_data_dir(&app, &state)?, &message)
+        .map_err(|error| failed(error.to_string()))
+}
+
+// Whether `Run Git hooks` is offered. It reads: it changes nothing.
+#[tauri::command]
+pub async fn repo_has_commit_hooks(state: State<'_, AppState>) -> Result<bool, ApiError> {
+    let repo = current_repo(&state)?;
+    blocking(move || Ok(commit::has_commit_hooks(&repo))).await
 }
 
 // The whole message of HEAD, for the Amend checkbox.
@@ -3030,6 +3092,37 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"{ broken");
     }
 
+    #[test]
+    fn a_list_comment_for_another_repository_is_not_saved() {
+        let dir = TempDir::new().unwrap();
+        let open = Path::new("/repos/b");
+
+        let error =
+            set_list_comment(open, "/repos/a", dir.path(), "default", "Draft of a").unwrap_err();
+        let saved =
+            set_list_comment(open, "/repos/b", dir.path(), "default", "Draft of b").unwrap();
+
+        assert_eq!(error.kind, "failed");
+        assert_eq!(saved.lists[0].comment, "Draft of b");
+        assert_eq!(Changelists::load(dir.path()).lists[0].comment, "Draft of b");
+    }
+
+    #[test]
+    fn a_rejected_list_comment_writes_nothing() {
+        let dir = TempDir::new().unwrap();
+
+        set_list_comment(
+            Path::new("/repos/b"),
+            "/repos/a",
+            dir.path(),
+            "default",
+            "x",
+        )
+        .unwrap_err();
+
+        assert!(!dir.path().join("changelists.json").exists());
+    }
+
     const IDEA_WORKSPACE: &str = include_str!("../testdata/workspace.xml");
 
     fn project_with_workspace(xml: &[u8]) -> TempDir {
@@ -3807,6 +3900,40 @@ mod tests {
         );
 
         assert_eq!(found, vec![CommitWarning::Crlf(vec!["a.txt".to_string()])]);
+    }
+
+    // Ruling R9: lines chosen in the Diff panel or the diff window do not change the size that is
+    // measured, the file on disk (`VirtualFile.length` in IntelliJ).
+    #[test]
+    fn a_file_chosen_by_lines_is_measured_whole_on_disk() {
+        let repo = TempRepo::new();
+        repo.git(&["config", "core.autocrlf", "false"]);
+        repo.commit("a.txt", b"small\n", "base");
+        let size = 1024 * 1024 + 1;
+        fs::write(repo.path().join("a.txt"), vec![b'x'; size]).unwrap();
+        let selections = [FileSelection {
+            path: "a.txt".to_string(),
+            selection: Vec::new(),
+        }];
+        let settings = Settings {
+            large_files_limit_mb: 1,
+            ..Default::default()
+        };
+
+        let found = warnings_for(
+            repo.path(),
+            CommitRequest::default(),
+            &selections,
+            &settings,
+        );
+
+        assert_eq!(
+            found,
+            vec![CommitWarning::LargeFiles(vec![(
+                "a.txt".to_string(),
+                size as u64
+            )])]
+        );
     }
 
     #[test]

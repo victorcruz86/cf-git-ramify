@@ -4,6 +4,7 @@
     diffFlushed,
     diffWindowOpen,
     diffWindowPath,
+    effectiveStaging,
     emitDiffDrawn,
     emitDiffReady,
     emitSelectionChanged,
@@ -26,6 +27,7 @@
     type FileChange,
     type LineSelection,
     type SelectionChange,
+    type SelectionOwner,
     type StageComparison,
   } from "../lib/api";
   import { errorText } from "../lib/errors";
@@ -76,6 +78,8 @@
   let files = $state.raw<FileChange[]>([]);
   let current = $state<string | null>(null);
   let version = $state(0);
+  // Until the application says who keeps them, nobody does: no line checkboxes.
+  let owner = $state<SelectionOwner>("none");
   let included = $state.raw(new Set<string>());
   let selections = $state.raw(new Map<string, LineSelection[]>());
   let lists = $state.raw<Changelists | null>(null);
@@ -175,8 +179,8 @@
     refreshFiles();
   }
 
-  // The selection is kept by the Commit view, and this window shows it as soon as it changes,
-  // without waiting for the notice to come back.
+  // The selection is kept by its owner (the Commit view or the dialog), and this window shows it as soon
+  // as it changes, without waiting for the notice to come back.
   function selectionChanged(change: SelectionChange) {
     const nextSelections = new Map(selections);
     if (change.selection.length > 0) nextSelections.set(change.path, change.selection);
@@ -380,17 +384,18 @@
         await diffFlushed(await transition());
       }),
       onSelectionState((state) => {
+        owner = state.owner;
         included = new Set(state.included);
         selections = new Map(Object.entries(state.selections));
         lists = state.lists;
       }),
       onSelectionLost((lost) => notify("warning", lost.text)),
       onComparison(setComparison),
-      onSettingsChanged((settings) => setStagingArea(settings.stagingArea)),
+      onSettingsChanged((settings) => setStagingArea(effectiveStaging(settings))),
     ];
     (async () => {
       try {
-        stagingArea = (await settingsGet()).stagingArea;
+        stagingArea = effectiveStaging(await settingsGet());
         measuring = await perfEnabled();
         current = await diffWindowPath();
         await refreshFiles();
@@ -559,6 +564,7 @@
               {version}
               {options}
               comparison={fileComparison}
+              checkboxes={fileComparison !== null || owner !== "none"}
               included={fileComparison ? fileComparison === "staged" : included.has(file.path)}
               selection={fileComparison ? [] : (selections.get(file.path) ?? [])}
               lists={fileComparison ? null : lists}
@@ -592,6 +598,7 @@
             {version}
             {options}
             comparison={fileComparison}
+            checkboxes={fileComparison !== null || owner !== "none"}
             included={fileComparison ? fileComparison === "staged" : included.has(path)}
             selection={fileComparison ? [] : (selections.get(path) ?? [])}
             lists={fileComparison ? null : lists}

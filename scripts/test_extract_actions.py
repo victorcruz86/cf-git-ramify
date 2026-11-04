@@ -9,7 +9,11 @@ from extract_actions import (
     extract_inline_shortcuts,
     extract_shortcuts,
     inherit_shortcuts,
+    parse_previous,
     pretty,
+    removed_rows,
+    render_removed,
+    render_table,
     shortcut_of,
 )
 
@@ -228,8 +232,104 @@ class ClassifyTest(unittest.TestCase):
         ):
             self.assertEqual(classify(action), ("Out of scope", None, "out"), action)
 
+    def test_the_internal_log_actions_of_241_stay_out_of_scope(self):
+        # 241 gave ids of the Git.Log. family to the internal actions that 232 declared as `git4idea.actions.*`.
+        for action in (
+            "Git.Log.GitDumpLogIndexDataAction",
+            "Git.Log.GitUseSharedLogAction",
+            "Git.Log.Show.Command",
+        ):
+            self.assertEqual(classify(action), ("Out of scope", None, "out"), action)
+
+    def test_the_branches_popup_search_toggles_are_in_phase_2(self):
+        for action in ("git.branches.popup.filter.by.action", "git.branches.popup.filter.by.repository"):
+            self.assertEqual(classify(action), ("Log and branches", 2, "include"), action)
+
     def test_without_a_rule_it_stays_unsure(self):
         self.assertEqual(classify("Something.Unknown"), ("Unclassified", None, "unsure"))
+
+
+PREVIOUS_MATRIX = """# Parity matrix
+
+## 2. Parts of the interface without an action of their own
+
+| Area | Phase | Status | Feature | Result |
+|---|---|---|---|---|
+| Commit and diff | 1 | include | Commit window | done: Test `commit_window`. |
+
+## 4. IntelliJ actions
+
+| Area | Phase | Status | Feature | Action | Shortcut | Result |
+|---|---|---|---|---|---|---|
+| Commit and diff | 1 | include | Add | `Git.Add` | ⌘ ⌥ A | partial: Same as `ChangesView.AddUnversioned`. |
+| Commit and diff | 1 | include |  | `Git.Stage.Add` | ⌘ ⌥ A | done: Test `stage_add`. |
+| Commit and diff | 1 | include | Refresh | `ChangesView.Refresh` |  |  |
+| History and comparison | 4 | include | Show Other Branches | `Vcs.Log.ShowOtherBranches` |  | pending: It should be dropped. |
+"""
+
+NEW_ROWS = {
+    "Git.Add": (("Commit and diff", 1, "include"), "Add", ["meta alt A"]),
+    "Git.Stage.Add": (("Commit and diff", 1, "include"), "", ["meta alt A"]),
+    "ChangesView.Refresh": (("Commit and diff", 1, "include"), "Refresh", []),
+    "Vcs.Log.Refresh": (("Log and branches", 2, "include"), "Refresh", []),
+}
+
+
+class PreviousMatrixTest(unittest.TestCase):
+    def test_reads_the_result_of_each_action_of_section_4_only(self):
+        previous = parse_previous(PREVIOUS_MATRIX)
+        self.assertEqual(
+            set(previous), {"Git.Add", "Git.Stage.Add", "ChangesView.Refresh", "Vcs.Log.ShowOtherBranches"}
+        )
+        self.assertEqual(previous["Git.Stage.Add"].result, "done: Test `stage_add`.")
+        self.assertEqual(previous["ChangesView.Refresh"].result, "")
+
+    def test_results_are_kept_by_action_id(self):
+        table = render_table(NEW_ROWS, parse_previous(PREVIOUS_MATRIX))
+        self.assertEqual(table[0], "| Area | Phase | Status | Feature | Action | Shortcut | Result |")
+        self.assertIn(
+            "| Commit and diff | 1 | include | Add | `Git.Add` | ⌘ ⌥ A | partial: Same as `ChangesView.AddUnversioned`. |",
+            table,
+        )
+        self.assertIn("| Commit and diff | 1 | include | Refresh | `ChangesView.Refresh` |  |  |", table)
+
+    def test_a_new_action_has_an_empty_result(self):
+        table = render_table(NEW_ROWS, parse_previous(PREVIOUS_MATRIX))
+        self.assertIn("| Log and branches | 2 | include | Refresh | `Vcs.Log.Refresh` |  |  |", table)
+
+    def test_without_a_previous_matrix_the_table_has_no_result_column(self):
+        table = render_table(NEW_ROWS)
+        self.assertEqual(table[0], "| Area | Phase | Status | Feature | Action | Shortcut |")
+        self.assertIn("| Log and branches | 2 | include | Refresh | `Vcs.Log.Refresh` |  |", table)
+
+    def test_removed_actions_are_listed_apart(self):
+        previous = parse_previous(PREVIOUS_MATRIX)
+        table = render_table(NEW_ROWS, previous)
+        self.assertFalse([line for line in table if "Vcs.Log.ShowOtherBranches" in line])
+        removed = removed_rows(NEW_ROWS, previous)
+        self.assertEqual([action_id for action_id, _ in removed], ["Vcs.Log.ShowOtherBranches"])
+        listing = render_removed(removed)
+        self.assertIn("### Removed in 241", listing)
+        self.assertIn("| Area | Phase | Status | Feature | Action | Shortcut | Result |", listing)
+        self.assertIn("`Vcs.Log.ShowOtherBranches`", "\n".join(listing))
+        self.assertIn("pending: It should be dropped.", "\n".join(listing))
+
+    def test_nothing_removed_prints_no_list(self):
+        self.assertEqual(render_removed([]), [])
+
+    def test_stage_actions_are_marked_non_modal(self):
+        table = render_table(NEW_ROWS, parse_previous(PREVIOUS_MATRIX))
+        stage = [line for line in table if "`Git.Stage.Add`" in line][0]
+        self.assertIn("only in non-modal mode with the staging area", stage)
+        # The hand-written Result stays as it was.
+        self.assertTrue(stage.endswith("| done: Test `stage_add`. |"))
+        add = [line for line in table if "`Git.Add`" in line][0]
+        self.assertNotIn("non-modal", add)
+
+    def test_the_mark_goes_after_the_name_of_the_feature(self):
+        rows = {"Git.Stage.Add.All": (("Commit and diff", 1, "include"), "Stage All", [])}
+        table = render_table(rows)
+        self.assertIn("| Stage All (only in non-modal mode with the staging area) |", table[2])
 
 
 if __name__ == "__main__":
