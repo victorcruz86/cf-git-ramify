@@ -1,0 +1,336 @@
+# Parity matrix with IntelliJ IDEA CE 2023.2.3
+
+Reference: build `IC-232.10072.27`, tag `idea/232.10072.27` of `JetBrains/intellij-community`.
+
+Approved by the user on 2026-10-31.
+
+The actions in section 4 come from the source code of that version through `scripts/extract_actions.py`, and their area, phase and status come from the rules of that script. Sections 2 and 3 are written by hand, because they are parts of the interface and settings that are not declared as actions.
+
+The Result column is written by hand and covers phases 1, 2 and 3, according to what the code does and what the tests show (2026-11-01 for phases 1 and 2, 2026-11-02 for 3). Each `done` cites its test, or the report of the task that checked it by hand in the real app with throwaway repositories. "Confirm by hand" marks what only a person with a real keyboard or an active window can check. The script does not generate that column: when the table is regenerated it has to be kept.
+
+In phase 2, `done` means: the Rust logic tested with real git and throwaway repositories or bare remotes, and the interface tested in jsdom with a simulated Tauri API. None of those tests goes through the real IPC or through WebKit with an active window; that is in the manual checklist of `docs/reports/phase-2-validation.md`, and it holds for all the rows, in addition to whatever each one says.
+
+In phase 3, `done` means the same, with real git and throwaway repositories: the Rust logic and the commands, tested with real conflicts, rebases and rewrites, and the interface in jsdom. The merge and interactive rebase windows, and the shortcuts with a physical keyboard, have not been seen in WebKit, and no conflict or rebase has been tried with one of the user's real repositories; that is in the list of `docs/reports/phase-3-validation.md`, and it holds for all the rows of phase 3, in addition to whatever each one says. The classification of the `git4idea.actions.branch.*` rows changed in phase 3 (decision 9).
+
+
+## 1. User configuration in IntelliJ
+
+Read from `~/Library/Application Support/JetBrains/IdeaIC2023.2/options/`.
+
+| Setting | Value | Effect in the app |
+|---|---|---|
+| Theme | `ExperimentalDark` | Copy the New UI in dark |
+| Keymap | No `keymap.xml`, default macOS keymap | Use the shortcuts of section 4 |
+| Log columns | Root, Subject, Author, Date, Space | Copy Subject, Author and Date; Root does not apply with one repository per window |
+| Diff | `openInNewWindow = true` | Open the diff in its own window. Phase 1 implements it |
+
+The Git settings of each project are in its `.idea/` folder. They have not been read.
+
+## 2. Parts of the interface without an action of their own
+
+| Area | Phase | Status | Feature | Result |
+|---|---|---|---|---|
+| Commit and diff | 1 | include | Commit window: change tree, checkboxes per file and per changelist | done: Tests `shows_each_list_with_its_files` and `commit_sends_what_is_checked`. |
+| Commit and diff | 1 | include | Hunk and line selection in the diff gutter | done: Tests `commit_with_hunk_selection_uses_the_selection` and `unchecking_a_hunk_chooses_the_others_and_reports_it_to_the_commit_view`. Confirm by hand: a real partial commit and the comparison with IntelliJ. |
+| Commit and diff | 1 | include | Live refresh when files change from outside | done: Tests `detects_a_real_write` and `repo_changed_reloads_without_losing_checkboxes_or_selection`. |
+| Commit and diff | 1 | include | Message field, author, sign-off and message validation | done: Tests `commit_options`, `sign_off` and `long_subject`. |
+| Commit and diff | 1 | include | Side-by-side and unified view, and highlighting per line and per word | done: Tests `the_unified_view_has_checkbox_and_number_on_the_old_lines`, `word_highlighting_marks_only_what_changes` and `in_repetitive_text_the_hunk_lines_are_marked_and_no_others`. |
+| Log and branches | 2 | include | Real graph from `platform/vcs-log/graph`, replacing the provisional one | done: Rust tests `same_as_intellij_many_nodes`, `same_as_intellij_long_edges`, `same_as_intellij_ea68497` and `same_as_intellij_when_expanding_an_edge`, with IntelliJ's data. `docs/reports/phase-2-graph.md` also compares the outputs with the real Java classes (git/git, 4,000 and 6,000 random graphs): identical. Clicks in Linear order are covered only by the tests. |
+| Log and branches | 2 | include | Filters by branch, user, date and path | done: Tests `branch_popup_shows_select_head_recent_favorites_local_and_remotes`, `user_popup_with_me_and_recents`, `date_popup` and `paths_popup`; in Rust `author_args_escaped_and_anchored`, `date_args`, `path_args_at_the_end` and `in_memory_branch_filter_does_not_launch_git`. |
+| Log and branches | 2 | include | Text search with regex and match case | done: Tests `regex_and_match_case_in_the_gear` and `typing_must_wait_for_enter`; in Rust `fixed_text_args`, `regex_args_only_with_a_valid_metacharacter` and `match_case_removes_ignore_case`. |
+| Log and branches | 2 | include | Commit details panel | done: Tests `details_in_order_message_author_references_branches`, `details_with_a_different_committer_say_so` and `in_n_branches_with_show_all`; in Rust `details_in_the_requested_order_with_parents_and_references` and `containing_branches_in_memory`. |
+| Log and branches | 2 | include | Branches popup with favorites and incoming and outgoing indicators | done: Tests `icon_and_tooltip_of_incoming_and_outgoing`, `space_toggles_favorite` and `opens_without_waiting_for_incoming_and_outgoing_and_fills_them_in_afterwards`; in Rust `incoming_with_rev_list`, `never_does_not_launch_ls_remote` and `auto_skips_ssh_if_the_agent_is_not_the_system_one`. Confirm by hand: the background `ls-remote` against a real remote over https and over ssh with an agent. |
+| Log and branches | 2 | include | Push dialog with force-with-lease and protected branches | done: Tests `protected_disables_with_force_push_prohibited`, `force_push_from_the_dialog_is_with_lease` and `rejection_merge_rebase_cancel_literal`; in Rust `force_with_lease_carries_branch_and_sha`, `protected_branch_rejects_force_in_the_core` and `retry_after_updating_pushes`. The GitHub rules are left for phase 4 (decision 7). |
+| Conflicts and rebase | 3 | include | Three-pane merge with per-block acceptance | done: Tests `center_starts_with_the_base`, `apply_both_sides_of_a_conflict_leaves_left_and_then_right`, `resolve_automatically_also_applies_the_non_conflicting_like_intellij` and those ported from `MergeTest` (`test_conflicting_change`, `test_apply_merge_then_undo`, `test_apply_modified_deleted_conflict`…); of the window, `apply_with_pending_asks_apply_changes_and_mark_resolved`, `file_changed_outside_shows_conflict_is_not_valid_and_does_not_write` and `crlf_breaks_are_read_as_lf_and_written_like_the_file`; in Rust, `sides_reads_the_three_stages` and the 20 cases of `LineComparisonMergeUtilTest` in `merge3.rs`. Without `Show Details` or `Filter by conflicted file` (decision 6); a single window (decision 3). Confirm by hand: the look of the bands and the physical keyboard in WebKit, and that the window is destroyed on applying without hanging. |
+| Conflicts and rebase | 3 | include | Interactive rebase dialog | partial: Tests `table_with_the_oldest_on_top_and_title_rebasing_commits`, `editing_inline_with_cmd_enter_applies`, `squash_marks_the_root_as_reword_with_the_united_messages`, `shortcuts_alt_p_e_d_r_s_f` and `view_git_commands_shows_the_todo`; in Rust, `log_entries_and_plan_with_drop_reword_and_fixup`, `mismatching_plan_fails_without_rebasing` and `edit_stops_and_notifies_rebase_stopped_for_editing`. Drag and drop, quick search and the diff preview of the dialog's changes panel are missing. Confirm by hand: the look, and reopening the app with the rebase stopped at `edit`. |
+| More | 4 | include | Worktrees and submodules |  |
+| More | 4 | include | Commit signing with GPG and SSH |  |
+| More | 4 | include | Pull requests and merge requests: list, detail, status, changes and fetching the branch |  |
+| More | 4 | include | File tree and read-only viewer |  |
+| Commit and diff | 1 | include | Recoverable copy before destructive operations | done: Tests `line_rollback_creates_snapshot` and `restore_first_takes_a_snapshot_of_the_current_state`. |
+| Log and branches | 2 | include | Columns Subject, Author and Date, as in the user's current configuration. Panel sizes equal to IntelliJ. Claude's decision | partial: Columns: test `columns_subject_author_date_by_default`. Remembered dividers: `changing_an_option_or_a_divider_does_not_launch_git_again`. The row height (24) and the sizes were not compared with IntelliJ screenshots (decision 12): `row_height` only sets the chosen value. Confirm by hand: put them side by side. |
+| Log and branches | 4 | include | `Select in Tree…` of the log context menu | pending: It needs the file tree, which belongs to phase 4 (ruling of Task 6 and decision 11). The log menu does not offer it (`menu_in_intellij_order_without_phase_4_items`). |
+| Log and branches | 4 | include | `Compare with…` of the log menu and `Show Diff with Working Tree` of the branches popup | pending: Phase 4 (decision 11). Neither the log menu nor the branches one offers them (`local_and_remote_branch_submenu_like_the_popup_without_phase_4_items`). |
+
+## 3. Settings of `Settings > Version Control > Git`
+
+All of them are included, in the phase in which the feature they control comes in.
+
+| Phase | Setting | Result |
+|---|---|---|
+| 1 | Path to the Git executable | done: Test `configured_git_path`. |
+| 1 | Enable staging area, which disables changelists | done: Test `turning the mode off brings the changelists back`. |
+| 1 | Warn about CRLF line breaks before the commit | partial: The detection is not the same as `GitCrlfProblemsDetector`. |
+| 1 | Warn when committing with a detached HEAD or during a rebase | done: Test `warns about a detached HEAD and lets the user continue`. |
+| 1 | Commit signing with GPG | partial: Tested only with a fake `gpg`. Confirm by hand: real GPG. |
+| 2 | Update method: Merge or Rebase | done: Tests `push_and_update_rows_with_their_texts`, `saves_the_push_and_update_settings` and `without_a_dialog_it_uses_the_saved_method`; in Rust `fast_merge` and `linear_rebase`. The row said "or the branch's one" (`BRANCH_DEFAULT`), but the settings screen of 2023.2.3 only offers Merge and Rebase (`getUpdateMethods`). |
+| 2 | Clean working tree using: Stash or Shelve | partial: Fixed Stash (decision 2). Test `clean_working_tree_is_a_fixed_stash`; in Rust `merge_only_saves_if_the_changes_overlap` and `rebase_saves_any_change`. The matrix said "auto, always or never", a setting that does not exist in 2023.2.3. |
+| 4 | Clean working tree using: Shelve (IntelliJ's default value) | pending: The shelf arrives in phase 4 (decision 1). Until then everything is saved with `git stash`. |
+| 2 | Update automatically if the push of the current branch is rejected | done: Tests `remember_saves_method_and_autoupdate` and `with_autoupdate_it_does_not_ask_and_uses_the_saved_method`; in Rust `retry_after_updating_pushes`, `retries_limited_to_10` and `it_does_not_retry_on_force_or_on_a_non_current_branch`. |
+| 2 | Show the push dialog in Commit and Push, and do it only on protected branches | done: Tests `commit_and_push_opens_dialog_by_default`, `commit_and_push_without_dialog_if_only_protected` and `only_protected_depends_on_showing_the_dialog`. |
+| 2 | Protected branches: list of patterns per repository | done: Tests `protected_branches_belong_to_the_repository_separated_by_semicolons` and `an_invalid_pattern_is_reported_when_saving`; in Rust `main_and_master_protected_by_default`, `pattern_is_an_anchored_regex` and `protected_branch_rejects_force_in_the_core`. |
+| 4 | Protected branches: rules loaded from GitHub | pending: They need the token from the Keychain (decision 7). |
+| 2 | Use credential helper | done: Test `use credential helper is shown and saved`; in Rust `helper_off_adds_an_empty_config` and `helper_on_adds_nothing`. Enabled by default, unlike IntelliJ (decision 3). Confirm by hand: a real helper (`osxkeychain`) with https. |
+| 2 | Filter the Update Project information by paths | done: Tests `update_path_filter_is_saved_as_a_list_without_empty_lines` and `path_filter_counts_matching_commits`; in Rust `the_path_filter_counts_the_received_commits_that_touch_them`. |
+| 2 | Check incoming commits on remotes | done: Tests `incoming_check_is_shown_and_saved`; in Rust `never_does_not_launch_ls_remote` and `with_never_there_are_no_incoming_but_there_are_outgoing`. Confirm by hand: `Auto` and `Always` against real remotes. |
+| 3 | Add the `cherry picked from` suffix to the chosen commits | done: Test `cherry_pick_suffix_setting_on_the_git_screen`; in Rust, `cherry_pick_of_a_published_commit_carries_x`, `unpublished_cherry_pick_carries_no_x`, `setting_off_never_carries_x` and `only_protected_branches_publish`. |
+
+## 4. IntelliJ actions
+
+| Area | Phase | Status | Feature | Action | Shortcut | Result |
+|---|---|---|---|---|---|---|
+| Commit and diff | 1 | include |  | `ActivateCommitToolWindow` | ⌘ 0 | done: Test `shortcuts_switch_tabs`. Confirm by hand: physical ⌘0. |
+| Commit and diff | 1 | include | Add to VCS | `ChangesView.AddUnversioned` | ⌘ ⌥ A | partial: With staging area, ⌥⌘A takes it to the stage. With changelists ⌥⌘A does nothing: new files only get in through their checkbox when committing. |
+| Commit and diff | 1 | include | Check Out | `ChangesView.Edit` |  | pending: It is for systems with file locking. Git does not use it. |
+| Commit and diff | 1 | include | Directory | `ChangesView.GroupBy.Directory` | ⌃ P | done: Test `group_by_directory_with_the_shortcut_and_it_is_remembered`. |
+| Commit and diff | 1 | include | Repository | `ChangesView.GroupBy.Repository` |  | pending: No effect with one repository per window. |
+| Commit and diff | 1 | include | Move to Another Changelist... | `ChangesView.Move` | ⌘ ⇧ M | done: Test `move_to_another_list`. |
+| Commit and diff | 1 | include | New Changelist... | `ChangesView.NewChangeList` |  | done: Test `create_a_list_from_the_menu`. |
+| Commit and diff | 1 | include | Refresh | `ChangesView.Refresh` |  | done: Test `the_refresh_button_reads_the_state_again`. |
+| Commit and diff | 1 | include | Delete Changelist | `ChangesView.RemoveChangeList` |  | done: With IntelliJ's dialogs. Test `removing_a_list_with_files_asks_like_intellij`. |
+| Commit and diff | 1 | include | Remove from VCS | `ChangesView.RemoveDeleted` |  | pending: What was deleted on disk only gets in by marking it for the commit. There is no standalone `git rm`. |
+| Commit and diff | 1 | include | Edit Changelist... | `ChangesView.Rename` | F2, ⇧ F6 | done: Test `f2_renames_the_list`. ⇧F6 in `matrix_shortcuts`. |
+| Commit and diff | 1 | include | Rollback... | `ChangesView.Revert` | ⌘ ⌥ Z | done: With a dialog and a recoverable copy. Test `rollback_confirms_and_offers_to_restore`. Confirm by hand: physical ⌥⌘Z. |
+| Commit and diff | 1 | include | Rollback File... | `ChangesView.RevertFiles` |  | partial: Done with Rollback… from the tree. There is no separate action, because the app has no editor. |
+| Commit and diff | 1 | include | Set Active Changelist | `ChangesView.SetDefault` | ⌃ SPACE | done: Test `set_active_with_the_shortcut`. |
+| Commit and diff | 1 | include | Show Commit Options | `ChangesView.ShowCommitOptions` |  | done: Test `commit_options`. |
+| Commit and diff | 1 | include | Preview Diff | `ChangesView.SingleClickPreview` |  | pending: There is no single-click preview. The diff opens in its own window with a double click, Enter or ⌘D. |
+| Commit and diff | 1 | include | Toggle Commit UI... | `ChangesView.ToggleCommitUi` | ⌘ K | partial: ⌘K goes to the message, but does not toggle the interface. The app only has the non-modal interface. |
+| Commit and diff | 1 | include | Unshelve Silently | `ChangesView.UnshelveSilently` | ⌘ ⌥ U | pending: It is a shelf action, from phase 4. The classification rule left it here. |
+| Commit and diff | 1 | include | Commit File | `CheckinFiles` |  | done: Test `commit_file_leaves_only_that_file_checked`. |
+| Commit and diff | 1 | include | Commit... | `CheckinProject` | ⌘ K | done: Test `cmd_k_goes_to_the_message_and_includes_what_is_new`. Confirm by hand: physical ⌘K. |
+| Commit and diff | 1 | include | Add | `Git.Add` | ⌘ ⌥ A | partial: Same as `ChangesView.AddUnversioned`: ⌥⌘A only acts with staging area. |
+| Commit and diff | 1 | include |  | `Git.Commit.And.Push.Executor` | ⌘ ⌥ K | done: Tests `cmd_alt_k_commits_and_opens_the_push_dialog`, `commit_and_push_opens_dialog_by_default`, `failed_commit_does_not_push` and `successful_commit_pushes_once`. Confirm by hand: physical ⌥⌘K. |
+| Commit and diff | 1 | include | Commit… | `Git.Commit.Stage` | ⌘ K | done: Test `the commit uses the index as it is`. |
+| Log and branches | 2 | include | Push All up to Here… | `Git.PushUpToCommit` |  | done: Tests `push_all_up_to_here_only_on_the_current_branch`, `push_all_up_to_here_opens_with_that_commit` and, in Rust, `push_up_to_commit_uses_hash`. |
+| Commit and diff | 1 | include | Show Staging Area | `Git.Show.Stage` |  | done: The Commit tab with staging area enabled. Test `with staging area saved it starts without changelists`. |
+| Commit and diff | 1 | include |  | `Git.Stage.Add` | ⌘ ⌥ A | done: Test `⌥⌘A moves what is in Unstaged and Untracked to the stage`. Confirm by hand: physical ⌥⌘A. |
+| Commit and diff | 1 | include | Stage All | `Git.Stage.Add.All` |  | done: Test `Stage All moves what is modified and what is new to the stage`. |
+| Commit and diff | 1 | include |  | `Git.Stage.Add.No.Content` |  | pending: `git add -N` is missing as an action. Internally it is only used to restore the stage after a commit. |
+| Commit and diff | 1 | include | Stage All Tracked | `Git.Stage.Add.Tracked` |  | pending: Missing. Stage All also includes unversioned files. |
+| Commit and diff | 1 | include |  | `Git.Stage.Reset` | ⌘ ⌥ Z | done: Test `⌥⌘Z in Staged takes it out of the stage`. Confirm by hand: physical ⌥⌘Z. |
+| Commit and diff | 1 | include |  | `Git.Stage.Revert` | ⌘ ⌥ Z | done: Without a dialog, like IntelliJ, and with a copy. Test `⌥⌘Z in Unstaged goes back to what is in the stage without a dialog and can be restored`. Confirm by hand: physical ⌥⌘Z. |
+| Commit and diff | 1 | include | Show Local Version | `Git.Stage.Show.Local` |  | pending: Missing. The selector of the diff window compares, but does not open that version alone. |
+| Commit and diff | 1 | include | Show Staged Version | `Git.Stage.Show.Staged` |  | pending: Missing. Same case as `Git.Stage.Show.Local`. |
+| Commit and diff | 1 | include |  | `Git.Stage.ToggleIgnored` |  | pending: Missing. Ignored files are never shown. |
+| Log and branches | 2 | include | Copy Commit Subject | `Vcs.CopyCommitSubjectAction` |  | done: Tests `copy_hash_and_subject` and `context_menu_selects_the_row_and_copies_the_subject`; in Rust `copy_passes_the_text_as_utf8`. Confirm by hand: the real clipboard (`/usr/bin/pbcopy`). |
+| Commit and diff | 1 | include | Split Chunks and Exclude Selected Lines from Commit | `Vcs.Diff.ExcludeChangedLinesFromCommit` |  | partial: Lines are chosen in the gutter. The action on the lines selected in the editor is missing. |
+| Commit and diff | 1 | include | Split Chunks and Include Selected Lines into Commit | `Vcs.Diff.IncludeChangedLinesIntoCommit` |  | partial: Same case as `Vcs.Diff.ExcludeChangedLinesFromCommit`. |
+| Commit and diff | 1 | include | Show Combined Diff | `Vcs.Diff.ShowCombinedDiff` |  | done: Test `switching_to_the_combined_view_saves_first`. |
+| Commit and diff | 1 | include | Show Diff in Editor Tab | `Vcs.Diff.ShowDiffInEditorTab` |  | pending: The app has no editor tabs. The user uses a window of its own. |
+| Commit and diff | 1 | include | Show Diff in Separate Window | `Vcs.Diff.ShowDiffInNewWindow` |  | done: It always opens in a window of its own, with no toggle. Test `show_diff_opens_the_diff_window_and_tells_it_what_is_chosen`. |
+| Commit and diff | 1 | include | Align Changes In Side-by-Side Diff | `Vcs.Diff.ToggleDiffAligningMode` |  | done: Tests `the_align_setting_changes_the_option` and `each_aligned_side_has_the_gap_of_the_lines_it_lacks`. |
+| Commit and diff | 1 | include | Edit Source | `Vcs.EditSource` | ⌘ DOWN, F4 | pending: The app has no editor. ⌘↓ and F4 are not bound. |
+| Log and branches | 2 | include |  | `Vcs.Log.CheckFirstCommitsIndexData` |  | pending: No effect in the app: it belongs to IntelliJ's index, which the app does not have (decision 10 of the plan). |
+| Log and branches | 2 | include |  | `Vcs.Log.CheckSelectedCommitsIndexData` |  | pending: Same as `Vcs.Log.CheckFirstCommitsIndexData` (decision 10). |
+| Log and branches | 2 | include |  | `Vcs.Log.MoveDiffPreviewToBottom` |  | done: Test `diff_preview_below_or_on_the_right`, in the gear menu of the changes panel. |
+| Log and branches | 2 | include |  | `Vcs.Log.MoveDiffPreviewToRight` |  | done: Same case as `Vcs.Log.MoveDiffPreviewToBottom`. |
+| Log and branches | 2 | include |  | `Vcs.Log.PreferCommitDate` |  | done: Test `prefer_commit_timestamp_changes_the_date`; in Rust `commit_date_in_milliseconds`. |
+| Log and branches | 2 | include |  | `Vcs.Log.ShowDiffPreview` |  | done: Tests `diff_preview_below_or_on_the_right` (it turns it on from the gear menu) and `opening_a_log_commit_opens_its_diff`. |
+| Commit and diff | 1 | include | Move Lines to Another Changelist... | `Vcs.MoveChangedLinesToChangelist` | ⌘ ⇧ M | done: Tests `moving_hunks_to_another_list` and `moving_the_only_chosen_hunk_removes_it_from_the_selection`. Also by hand, according to the report of task 10. |
+| Commit and diff | 1 | include |  | `Vcs.ReformatCommitMessage` | ⌘ ⌥ L | pending: Missing. ⌥⌘L is not bound. |
+| Commit and diff | 1 | include | Rollback Lines | `Vcs.RollbackChangedLines` | ⌘ ⌥ Z | done: Tests `line_rollback_undoes_only_what_was_chosen` and `line_rollback_creates_snapshot`. Confirm by hand: physical ⌥⌘Z in the diff window. |
+| Commit and diff | 1 | include | Show Local Changes | `Vcs.Show.Local.Changes` |  | done: The Commit tab, with ⌘0. Test `shortcuts_switch_tabs`. |
+| Commit and diff | 1 | include | Show Diff for Lines | `Vcs.ShowDiffChangedLines` |  | done: No automatic test. Checked by hand in the app, according to the report of task 10. |
+| Commit and diff | 1 | include | Compare with Local | `Vcs.ShowDiffWithLocal` |  | pending: Moves to phase 4 with the log comparisons (`Compare with…` and `Show Diff with Working Tree`). |
+| Commit and diff | 1 | include | Compare Before with Local | `Vcs.ShowDiffWithLocal.Before` |  | pending: Same case as `Vcs.ShowDiffWithLocal`. |
+| Commit and diff | 1 | include | Amend Commit | `Vcs.ToggleAmendCommitMode` | ⌃ ⌥ M | done: Test `amend_loads_the_message_and_restores_it_when_removed`. |
+| Commit and diff | 1 | include | Change Under Caret | `VcsShowCurrentChangeMarker` |  | pending: It belongs to the editor gutter, and the app has no editor. |
+| Commit and diff | 1 | include | Next Change | `VcsShowNextChangeMarker` | ⇧ ⌃ ⌥ DOWN | pending: It belongs to the editor gutter. In the diff, F7 plays that role. |
+| Commit and diff | 1 | include | Previous Change | `VcsShowPrevChangeMarker` | ⇧ ⌃ ⌥ UP | pending: It belongs to the editor gutter. In the diff, ⇧F7 plays that role. |
+| Log and branches | 2 | include | Branches… | `Git.Branches` |  | done: Tests `the_branch_widget_opens_and_closes_the_popup` and `the_git_menu_actions_open_branches_new_branch_and_commit`. No shortcut, like IntelliJ on Mac (`plugin.xml:150-153`): `on_mac_git_branches_has_no_shortcut` and `git_branches_has_no_shortcut_on_mac`. |
+| Log and branches | 2 | include | Checkout Selected… | `Git.Checkout.Branch` |  | done: Tests `choosing_in_the_submenu_closes_and_launches_the_operation`, `plain_checkout_notifies` and `problem_offers_smart_and_force_and_retries`; in Rust `checkout_local`, `smart_checkout_carries_the_changes` and `force_checkout_creates_a_copy_first`. Commands compared in `docs/reports/phase-2-commands.md`. |
+| Log and branches | 2 | include | Checkout Revision | `Git.CheckoutRevision` |  | done: Tests `checkout_in_the_menu_lists_branches_and_revision` and `typed_reference_goes_with_caret_zero`; in Rust `checkout_of_a_revision_is_not_taken_for_a_branch`. |
+| Log and branches | 2 | include | Clone… | `Git.Clone` |  | done: Tests `clone_opens_the_repository_when_done`, `clone_with_an_open_repository_asks_for_another_window` and `clone_without_an_open_repository_opens_it_in_this_window`; in Rust `clone_with_recurse_submodules` and `cancelled_clone_deletes_only_what_it_created`. Confirm by hand: a real clone over https and over ssh, and `open -n` with the new window. |
+| Log and branches | 2 | include | Manage Remotes… | `Git.Configure.Remotes` |  | done: Tests `the_table_shows_name_and_url_in_list_order`, `edit_sends_the_old_name_the_new_one_and_the_url` and `confirm_remove_remote_literal`; in Rust `add_rename_seturl_remove`. |
+| Log and branches | 2 | include | New Branch… | `Git.CreateNewBranch` |  | done: Tests `new_branch_from_the_log_cleans_the_name_and_creates_the_branch`, `branch_dialog_errors` and `the_git_menu_actions_open_branches_new_branch_and_commit`; in Rust `new_branch_from_another_does_not_set_upstream`. |
+| Log and branches | 2 | include | New Tag… | `Git.CreateNewTag` |  | done: Tests `new_tag_on_a_commit` and `failing_tag`; in Rust `lightweight_and_annotated_tag` and `tag_force`. |
+| Log and branches | 2 | include | Fetch | `Git.Fetch` |  | done: Tests `git_fetch_launches_the_fetch`, `successful_fetch_lists_the_deleted_branches` and `failed_fetch_shows_stderr`; in Rust `fetch_runs_each_remote_with_prune`. Commands compared in `docs/reports/phase-2-commands.md`. Confirm by hand: a real fetch over https and over ssh with credentials. |
+| Log and branches | 2 | include | Create Git Repository… | `Git.Init` |  | done: Tests `init_creates_and_opens_in_this_window_if_there_is_no_repository` and `init_in_a_folder_under_git_asks_with_intellijs_text`; in Rust `init_creates_a_repository`. |
+| Log and branches | 2 | include | Show Git Repository Log… | `Git.Log` |  | done: The Log tab, with ⌘9. Tests `shortcuts_switch_tabs` and `log_tab_loads_once`. Confirm by hand: physical ⌘9. |
+| Log and branches | 2 | include | Update Branch Filter in Log | `Git.Log.Branches.Change.Branch.Filter` | ENTER | done: Test `enter_changes_the_filter_and_head_counts`. |
+| Log and branches | 2 | include | Update Branch Filter | `Git.Log.Branches.Change.Branch.Filter.On.Selection` |  | done: Tests `panel_double_click_changes_the_branch_filter`, `cmd_click_selects_several_and_the_filter_carries_them` and `update_branch_filter_and_navigate_are_mutually_exclusive`. |
+| Log and branches | 2 | include |  | `Git.Log.Branches.GroupBy.Directory` |  | done: Tests `groups_by_slash` and `without_grouping_the_name_goes_whole`. |
+| Log and branches | 2 | include |  | `Git.Log.Branches.GroupBy.Repository` |  | pending: No effect with one repository per window (decision 10). |
+| Log and branches | 2 | include | Navigate Log to Branch Head | `Git.Log.Branches.Navigate.Log.To.Branch.On.Selection` |  | done: Tests `navigate_requires_a_single_branch` and `update_branch_filter_and_navigate_are_mutually_exclusive`. |
+| Log and branches | 2 | include | Navigate Log to Selected Branch Head | `Git.Log.Branches.Navigate.Log.To.Selected.Branch` | ⌥ F1 | done: Button of the branches panel (`navigate_requires_a_single_branch`) and ⌥F1 with focus on the panel, as in IntelliJ, where `GIT_BRANCH_FILTERS` only comes from `BranchesTreePanel` (`option_f1_navigates_to_the_chosen_branch`). Confirm by hand: physical ⌥F1. |
+| Log and branches | 2 | include | Hide Git Branches | `Git.Log.Hide.Branches` |  | done: Test `branches_panel_open_on_the_main_tab_and_can_be_hidden`. |
+| Log and branches | 2 | include |  | `Git.New.Branch.In.Log` | ⌘ ⌥ N | done: New Branch button of the branches panel and ⌘⌥N with focus on the panel (`cmd_option_n_opens_new_branch_from_the_chosen_branch`); popup row (`top_rows_update_commit_push_new_branch_checkout_tag`) and menu of each branch (`current_branch_only_has_new_branch_update_push_rename`). Difference: with `HEAD` chosen IntelliJ creates from HEAD, and here the button and the shortcut do nothing (minor issue of Task 10). Confirm by hand: physical ⌘⌥N. |
+| Log and branches | 2 | include |  | `Git.OpenExcludeFile` |  | done: Tests `open_exclude_says_nothing_if_it_does_not_exist_and_warns_on_failure`; in Rust `existing_exclude_is_opened` and `nonexistent_exclude_is_silent`. Confirm by hand: that it opens with the system text editor (`open -t`). |
+| Log and branches | 2 | include | Pull… | `Git.Pull` |  | done: Tests `title_pull_to_branch`, `tracked_remote_and_branch_by_default`, `selection_errors`, `incompatible_options_greyed_out` and `accepting_launches_the_pull_and_remembers_the_options`; in Rust `pull_merge_uses_the_intellij_arguments` and `pull_rebase_goes_through_update`. Commands compared in `docs/reports/phase-2-commands.md`. Confirm by hand: a real pull over the network. `Pull into…` belongs to phase 3. |
+| Log and branches | 2 | include | Rename… | `Git.Rename.Local.Branch` | F2, ⇧ F6 | done: Tests `rename` and, in Rust, `rename_changes_the_name_and_does_not_overwrite_another`. F2 and ⇧F6 with focus on the branches panel, only for a local branch (`f2_and_shift_f6_rename_the_chosen_local_branch`, `f2_does_not_rename_a_remote_nor_without_a_single_branch`); in the Commit view they remain the rename of the list (`f2_outside_the_panel_is_still_the_commit_views`). Not in the popup: neither in IntelliJ, which only provides `GIT_BRANCHES` from `BranchesTreePanel`. Confirm by hand: physical F2 and ⇧F6. |
+| Log and branches | 2 | include | Reset HEAD… | `Git.Reset` |  | done: Git menu entry with the old `Reset Head` dialog, without `Keep` and without remembering the mode. Tests `reset_head_from_the_git_menu_opens_the_old_dialog`, `reset_head_has_the_old_dialog_without_keep` and `launches_the_reset_and_like_gitresethead_does_not_warn_on_success`. Difference: no root selector (one repository per window) and no `Validate` button. |
+| Log and branches | 2 | include | Reset Current Branch to Here… | `Git.Reset.In.Log` |  | done: Tests `reset_offers_the_remembered_mode_of_the_repository`, `hard_asks_for_no_further_confirmation` and `keep_with_conflict_offers_hard_reset`; in Rust `reset_hard_creates_a_copy_of_what_was_modified`, `reset_hard_includes_overwritten_unversioned` and `reset_keep_with_conflict_returns_files`. |
+| Log and branches | 2 | include |  | `Git.SelectInGitLog` |  | pending: It belongs to a file's history and to the selection (phase 4). |
+| Log and branches | 2 | include | Show Branches | `Git.ShowBranches` |  | done: Test `branches_panel_open_on_the_main_tab_and_can_be_hidden`; the popup, with `the_branch_widget_opens_and_closes_the_popup`. |
+| Log and branches | 2 | include | New Tag… | `Git.Tag` |  | done: Git menu entry with the `Tag` variant of `TagDialog` (name, Force, commit, message). Tests `new_tag_from_the_git_menu_opens_the_tag_dialog` and `the_tag_of_the_git_menu_asks_for_name_commit_and_message`. Difference: no `Validate` button. |
+| Log and branches | 2 | include | Update | `UpdateFiles` |  | done: Test `vcs_updateproject_and_updatefiles_are_the_same`. |
+| Log and branches | 2 | include | Copy Revision Number | `Vcs.CopyRevisionNumberAction` | ⌘ ⌥ ⇧ C | done: Tests `copy_hash_with_the_shortcut` and `matrix_shortcuts`; it joins with a space, like the installed app (ruling of Task 8). Confirm by hand: physical ⌥⌘⇧C. |
+| Log and branches | 2 | include |  | `Vcs.Log.AlignLabels` |  | done: It is `References on the Left`. Test `references_on_the_left_moves_the_label`. |
+| Log and branches | 2 | include |  | `Vcs.Log.CollapseAll` |  | done: Tests `collapse_hidden_with_a_details_filter` and `collapse_disabled_if_there_are_no_rows`; in Rust `collapse_all_collapses_linear_fragments` and `collapse_all_in_linear_collapses_merges`. The output was compared with the Java classes (`docs/reports/phase-2-graph.md`). |
+| Log and branches | 2 | include |  | `Vcs.Log.CompactReferencesView` |  | done: Tests `compact_label_joins_groups` and `compact_with_icons_and_label_painter_measures`. |
+| Log and branches | 2 | include |  | `Vcs.Log.EnableFilterByRegexAction` |  | done: Test `regex_and_match_case_in_the_gear`; in Rust `regex_args_only_with_a_valid_metacharacter`. |
+| Log and branches | 2 | include |  | `Vcs.Log.ExpandAll` |  | done: Same case as `Vcs.Log.CollapseAll`; in Rust `expand_all_returns_to_the_original_graph`. |
+| Log and branches | 2 | include |  | `Vcs.Log.FocusTextFilter` | ⌘ L | done: Tests `cmd_l_toggles_filter_and_table` and `matrix_shortcuts`. Confirm by hand: physical ⌘L. |
+| Log and branches | 2 | include |  | `Vcs.Log.GoToChild` | LEFT | done: Tests `left_arrow_goes_to_the_child` and `several_children_open_their_popup`; in Rust `rows_of_parents_and_children_sorted`. |
+| Log and branches | 2 | include |  | `Vcs.Log.GoToParent` | RIGHT | done: Tests `right_arrow_goes_to_the_parent` and `several_parents_open_a_numbered_popup`. |
+| Log and branches | 2 | include |  | `Vcs.Log.GoToRef` | ⌘ F | done: Tests `go_to_jumps_to_the_row_and_leaves_focus_on_the_table`, `go_to_completes_references_and_chooses_with_the_arrows` and `go_to_filtered_offers_to_view_and_remove_the_filters`. Confirm by hand: physical ⌘F. |
+| Log and branches | 2 | include |  | `Vcs.Log.IntelliSortChooser` |  | done: Test `changing_the_order_requests_the_rows_again_and_is_remembered`; in Rust `standard_leaves_the_branch_right_below_the_merge` and `same_as_intellij_ea68497`. The BEK order was compared with the Java classes (`docs/reports/phase-2-graph.md`). |
+| Log and branches | 2 | include |  | `Vcs.Log.InvalidateCaches` |  | pending: Same as `Vcs.Log.CheckFirstCommitsIndexData` (decision 10). |
+| Log and branches | 2 | include |  | `Vcs.Log.MatchCaseAction` |  | done: Test `regex_and_match_case_in_the_gear`; in Rust `match_case_removes_ignore_case`. |
+| Log and branches | 2 | include |  | `Vcs.Log.OpenAnotherTab` |  | done: Tests `open_another_tab_starts_without_filters` and `closing_a_tab_returns_to_the_main_one_and_releases_its_view`. |
+| Log and branches | 2 | include |  | `Vcs.Log.Refresh` | ⌘ R | done: Tests `the_refresh_button_always_reloads`, `cmd_r_rereads_the_log` and `cmd_r_outside_the_log_does_not_read_it`. Confirm by hand: physical ⌘R. |
+| Log and branches | 2 | include |  | `Vcs.Log.ResumeIndexing` |  | pending: Same as `Vcs.Log.CheckFirstCommitsIndexData` (decision 10). |
+| Log and branches | 2 | include |  | `Vcs.Log.ShowChangesFromParents` |  | done: Test `merge_without_own_changes_offers_show_changes_to_parents`; in Rust `merge_changes_are_those_against_all_parents`. |
+| Log and branches | 2 | include |  | `Vcs.Log.ShowDetailsAction` |  | done: Test `show_details_hides_the_panel`. |
+| Log and branches | 2 | include |  | `Vcs.Log.ShowLongEdges` |  | done: Rust tests `same_as_intellij_long_edges`, `with_long_edges_edges_of_1000_keep_250_per_end` and `long_edges_changes_the_limits_without_touching_what_was_collapsed`; the option, in `view_options_in_order`. |
+| Log and branches | 2 | include |  | `Vcs.Log.ShowOnlyAffectedChanges` |  | done: Tests `show_only_affected_changes_filters_by_paths` and `without_changes_in_the_paths_says_so_and_offers_to_go_back`. |
+| Log and branches | 2 | include |  | `Vcs.Log.ShowRootsColumnAction` |  | pending: No effect with one repository per window (decision 10). |
+| Log and branches | 2 | include |  | `Vcs.Log.ShowTagNames` |  | done: Test `show_tag_names_shows_the_name`. |
+| Log and branches | 2 | include |  | `Vcs.Log.ShowTooltip` | F1, ⌃ J | done: Tests `commit_tooltip_shows_its_references` and `commit_tooltip_with_ctrl_j_and_a_limit_of_ten`; F1 in `matrix_shortcuts`. Confirm by hand: physical F1 and ⌃J (F1 may arrive as a brightness key without ⌘fn). |
+| Log and branches | 2 | include | Push... | `Vcs.Push` | ⌘ ⇧ K | done: Tests `cmd_shift_k_opens_the_dialog`, `title_push_commits_to_repo`, `row_branch_arrow_remote_and_editable_target`, `shows_20_commits_and_the_rest_with_dots` and `success_notifications_literal`; in Rust `real_push_to_a_bare_remote`. Commands compared in `docs/reports/phase-2-commands.md`. Confirm by hand: physical ⌘⇧K and a real push over https and over ssh. |
+| Log and branches | 2 | include | Force Push | `Vcs.Push.Force` |  | done: Tests `force_push_button_in_the_dropdown`, `force_push_dialog_literal` and `protected_disables_with_force_push_prohibited`; in Rust `force_with_lease_carries_branch_and_sha`, `protected_branch_rejects_force_in_the_core` and `stale_lease_is_rejected_stale`. It differs from IntelliJ in the form of the command (rulings of Task 14). Confirm by hand: a real force push, on an unprotected branch. |
+| Log and branches | 2 | include |  | `Vcs.Push.Simple` |  | done: Tests `normal_push_carries_no_force` and `enter_never_forces`; in Rust `push_arguments`. |
+| Log and branches | 2 | include |  | `Vcs.Show.Log` |  | done: Same case as `Git.Log`. |
+| Log and branches | 2 | include | Show VCS Console Tab | `Vcs.ShowConsoleTab` |  | done: Tests `console_tab_with_show_console_tab` and `commit_and_log_shortcuts_do_not_go_through_the_console`; in Rust `console_shows_only_commands_that_write`. No shortcut, as in the reference. |
+| Log and branches | 2 | include | Update Project | `Vcs.UpdateProject` | ⌘ T | done: Tests `cmd_t_opens_update_project_from_any_view`, `dialog_with_merge_and_rebase`, `result_n_files_updated_in_m_commits` and `conflicts_offer_abort`; in Rust `fast_merge`, `linear_rebase`, `conflict_leaves_merge_head_and_the_stash`, `cancelling_merge_does_reset_merge_and_restores` and `devin_writes_while_it_is_saved`. Commands compared in `docs/reports/phase-2-commands.md`. Confirm by hand: physical ⌘T and a real Update over the network. |
+| Log and branches | 2 | include | Get from Version Control... | `Vcs.VcsClone` |  | done: Same case as `Git.Clone`. |
+| Log and branches | 2 | include |  | `git4idea.actions.branch.GitCheckoutAction` |  | done: Same case as `Git.Checkout.Branch`: tests `plain_checkout_notifies` and `problem_offers_smart_and_force_and_retries`. |
+| Log and branches | 2 | include |  | `git4idea.actions.branch.GitCheckoutAsNewBranch` |  | done: Same case as `Git.CreateNewBranch`: test `new_branch_from_the_log_cleans_the_name_and_creates_the_branch`. |
+| Log and branches | 2 | include |  | `git4idea.actions.branch.GitCheckoutFromInputAction` |  | done: Same case as `Git.CheckoutRevision`: test `typed_reference_goes_with_caret_zero`. |
+| Log and branches | 2 | include |  | `git4idea.actions.branch.GitDeleteBranchAction` |  | done: Phase 2. The branch menu of the popup and of the panel offers Delete (`context_menu_with_the_branch_actions`); in Rust, `delete_remote_deletes_the_branch_and_its_locals_if_asked`. |
+| Log and branches | 2 | include |  | `git4idea.actions.branch.GitNewBranchAction` |  | done: Same case as `Git.CreateNewBranch`. |
+| Log and branches | 2 | include |  | `git4idea.actions.branch.GitPushBranchAction` |  | done: Same case as `Vcs.Push`: test `row_branch_arrow_remote_and_editable_target`. |
+| Log and branches | 2 | include |  | `git4idea.actions.branch.GitRenameBranchAction` |  | done: Same case as `Git.Rename.Local.Branch`: test `rename`. |
+| Log and branches | 2 | include |  | `git4idea.actions.branch.GitUpdateSelectedBranchAction` |  | done: Phase 2: `current_branch_only_has_new_branch_update_push_rename` and `Vcs.UpdateProject` for the current branch; `update_branch` for another. |
+| Conflicts and rebase | 3 | include |  | `Git.ChangesView.AcceptTheirs` |  | done: Tests `accept_yours_and_theirs_from_the_menu_accept_the_chosen_conflicts` and `accept_theirs_of_several_chosen_files`; in Rust, `accept_theirs_in_rebase_keeps_the_base_branch_content`, `accept_theirs_of_a_deletion_does_rm` and `accept_saves_a_copy_of_the_file_with_markers` (decision 5). |
+| Conflicts and rebase | 3 | include |  | `Git.ChangesView.AcceptYours` |  | done: Tests `accept_yours_and_theirs_from_the_menu_accept_the_chosen_conflicts` and `accept_yours_resolves_and_removes_the_row`; in Rust, `accept_yours_keeps_main_content_and_marks_it_resolved` and `in_rebase_sides_and_columns_are_swapped`. |
+| Conflicts and rebase | 3 | include |  | `Git.ChangesView.Merge` |  | done: Tests `context_menu_of_a_conflict_starts_with_merge_accept_theirs_accept_yours`, `a_conflict_with_both_sides_deleted_leaves_merge_disabled` and `merge_is_the_default_button_and_double_click_launches_it`. Confirm by hand: the merge window with a real conflict. |
+| Conflicts and rebase | 3 | include | Abort Cherry-Pick | `Git.CherryPick.Abort` |  | done: Tests `pending_conflicts_warn_performed_with_conflicts_with_resolve_and_abort_cherry_pick`, `abort_asks_for_the_intellij_confirmation` and `cherry_pick_and_revert_use_their_name`; in Rust, `abort_cherry_pick_and_revert` (with a prior copy). |
+| Conflicts and rebase | 3 | include | Drop Commits | `Git.Drop.Commits` |  | done: Tests `drop_without_confirmation` and `success_commit_message_changed_with_undo`; in Rust, `drop_of_two_commits`, `local_changes_are_saved_and_restored` and `conflict_when_rewriting_follows_task_2`. Confirm by hand: a Drop on a real branch of your own, with its Undo. |
+| Conflicts and rebase | 3 | include | Fixup… | `Git.Fixup.To.Commit` |  | done: Tests `fixup_opens_the_commit_view_with_fixup_and_the_subject`, `the_rebase_after_the_commit_warns_rebase_successful` and `without_changes_in_the_default_list_says_nothing_to_commit`; in Rust, `autosquash_launches_interactive_rebase_without_autosquash_flags` and `commit_and_rebase_respects_the_users_rebase_autosquash_and_restores_local_changes`. Confirm by hand: Commit and Rebase… with a real repository. |
+| Conflicts and rebase | 3 | include | Interactively Rebase from Here… | `Git.Interactive.Rebase` |  | done: Tests `opens_rebasing_commits_and_launches_the_chosen_onto_the_parent`, `cancelling_the_dialog_does_not_launch_git`, `without_a_log_list_git_generates_it_and_the_dialog_appears_afterwards` and `a_todo_that_does_not_match_offers_retry_with_gits`; in Rust, `merge_in_the_range_gives_none_and_uses_native_mode`, `log_entries_and_plan_with_drop_reword_and_fixup` and `noop_asks_whether_to_continue`. Decision 10. Confirm by hand: an interactive rebase of a real branch of your own. |
+| Conflicts and rebase | 3 | include | Merge… | `Git.Merge` |  | done: Tests `title_merge_into_branch_and_merge_button`, `remembered_options_come_out_as_buttons_and_travel_in_the_answer`, `conflict_opens_conflicts_and_on_resolving_does_merge_commit_except_no_commit` and `merge_from_the_git_menu_opens_the_dialog_and_launches_the_merge_with_the_head_it_saw`; in Rust, `merge_with_each_option_launches_the_intellij_command`, `merge_with_conflict_gives_conflicts_and_leaves_merge_head` and `merge_with_unresolved_files_gives_unmerged_and_changes_nothing`. With the options before the branch (`phase-3-commands.md`, row 2). |
+| Conflicts and rebase | 3 | include | Abort Merge | `Git.Merge.Abort` |  | done: Tests `abort_asks_for_the_intellij_confirmation` and `cancelling_the_confirmation_does_not_abort`; in Rust, `abort_merge_uses_merge_abort_and_saves_a_copy` and `abort_with_head_different_from_the_dialog_fails_without_touching`. |
+| Conflicts and rebase | 3 | include | Rebase… | `Git.Rebase` |  | done: Tests `rebase_from_the_git_menu_opens_the_dialog_and_launches_the_rebase`, `accepting_saves_the_flags_and_the_base_and_launches_the_rebase` and `with_git_older_than_2_22_the_flag_is_preserve_merges_and_it_does_not_go_with_interactive`; in Rust, `rebase_onto_and_root_build_the_command_in_order`, `rebase_from_the_dialog_with_local_changes_saves_and_restores_them` and `rebase_with_conflict_gives_conflicts`. |
+| Conflicts and rebase | 3 | include | Abort Rebase | `Git.Rebase.Abort` |  | done: Tests `continue_and_abort_of_the_notification_do_their_job` and `when_the_stopped_rebase_is_aborted_it_gives_back_what_was_saved`; in Rust, `abort_rebase_copies_against_the_rebases_orig_head` and `abort_without_rebase_fails_and_touches_nothing`. |
+| Conflicts and rebase | 3 | include | Continue Rebase | `Git.Rebase.Continue` |  | done: Tests `continue_rebase_with_conflicts_opens_conflicts`, `two_consecutive_stops_open_conflicts_twice_and_finish` and `without_a_rebase_in_progress_says_cannot_continue`; in Rust, `continue_with_conflicts_gives_conflicts`, `continue_after_resolving_finishes` and `continue_that_asks_for_a_message_asks_it`. |
+| Conflicts and rebase | 3 | include | Skip Commit | `Git.Rebase.Skip` |  | done: Tests `skip_with_conflicts_opens_conflicts_and_if_any_remain_leaves_the_card` and `if_the_rebase_finished_outside_continue_and_skip_give_back_what_was_saved`; in Rust, `skip_skips_the_commit` and `no_changes_skips_by_itself`. |
+| Conflicts and rebase | 3 | include | Resolve Conflicts… | `Git.ResolveConflicts` |  | done: Tests `resolve_conflicts_from_the_git_menu_turns_on_with_conflicts_and_opens_the_dialog`, `conflicts_dialog_columns_name_yours_theirs_with_branches`, `resolving_everything_closes_by_itself_and_calls_onresolved` and `in_rebase_the_columns_are_inverted`; in Rust, `lists_the_seven_kinds` and `the_kind_uses_intellijs_texts`. Without `Show Details` (decision 6). |
+| Conflicts and rebase | 3 | include | Abort Revert | `Git.Revert.Abort` |  | done: Tests `a_pending_revert_offers_abort_revert` and `cherry_pick_and_revert_use_their_name`; in Rust, `abort_cherry_pick_and_revert`. |
+| Conflicts and rebase | 3 | include | Revert Commit | `Git.Revert.In.Log` |  | done: Tests `a_revert_says_revert_successful`, `a_revert_with_conflicts_makes_the_revert_commit`, `cherry_pick_and_revert_carry_the_commits_in_log_order` and `revert_disabled_on_merges_with_its_text`; in Rust, `revert_of_several_goes_from_the_most_recent`, `revert_with_conflict_proposes_revert_quotes` and `revert_of_a_merge_is_rejected`. |
+| Conflicts and rebase | 3 | include | Edit Commit Message… | `Git.Reword.Commit` | F2, ⇧ F6 | done: Tests `f2_in_the_log_opens_edit_commit_message_and_in_commit_is_still_rename`, `reword_dialog_with_full_message` and `dialog_rejects_a_commit_on_a_protected_branch_without_losing_the_message`; in Rust, `reword_of_head_uses_amend`, `reword_of_an_earlier_one_uses_rebase_and_keeps_the_others` and `commit_on_protected_branch_is_rejected_with_its_text`. The dialog is modal (ruling of Task 12). Confirm by hand: F2 and ⇧F6 with a physical keyboard. |
+| Conflicts and rebase | 3 | include | Squash Commits… | `Git.Squash.Commits` |  | done: Tests `squash_joins_the_messages_with_two_blank_lines` and `in_the_menu_after_squash_commits_only_with_one_commit`; in Rust, `non_contiguous_squash_reorders_like_intellij`. Confirm by hand: a Squash on a real branch of your own. |
+| Conflicts and rebase | 3 | include | Squash Into… | `Git.Squash.Into.Commit` |  | done: Tests `undo_commit_fixup_and_squash_into_only_with_one_commit_and_turned_off_with_their_reason` and `enabled_entries_launch_their_action`; in Rust, `autosquash_launches_interactive_rebase_without_autosquash_flags`. Same path as `Git.Fixup.To.Commit`. |
+| Conflicts and rebase | 3 | include |  | `Git.Stage.AcceptTheirs` |  | partial: The Staging view menu reuses the actions of the changelists menu (`conflictActions` in `CommitView.svelte`), which `accept_yours_and_theirs_from_the_menu_accept_the_chosen_conflicts` tests. There is no test that opens the menu with the staging area on and a conflict. The separator after Accept Yours is missing in the Staging menu (`Git.Stage.Tree.Menu`, `plugin.xml:384-388`). |
+| Conflicts and rebase | 3 | include |  | `Git.Stage.AcceptYours` |  | partial: Same as `Git.Stage.AcceptTheirs`, including the separator that is missing after Accept Yours. |
+| Conflicts and rebase | 3 | include | Compare HEAD, Staged and Local Versions | `Git.Stage.Compare.Three.Versions` |  | partial: Tests `three_panes_head_staged_local`, `stage_of_a_range_writes_the_index`, `unstage_of_a_range_returns_head_to_the_index`, `revert_of_a_range_changes_the_file_with_a_snapshot`, `index_changed_outside_is_not_overwritten`, `only_with_the_three_versions` (Rust and jsdom) and `editing_staged_and_switching_files_saves_it`. It is the third comparison of the diff window, editable in Staged and Local. Missing: word highlighting, folding, unified view, combined view and chain of files in three panes; with `autocrlf` or git filters it goes back to two panes; neither the editor's menu nor the local file's menu, where IntelliJ also puts it: it opens from the Staging view (decision of Task 15). Confirm by hand: the arrows, the scrolling and the bands in the real app. |
+| Conflicts and rebase | 3 | include |  | `Git.Stage.Merge` |  | partial: Same as `Git.Stage.AcceptTheirs`: `merge_from_the_menu_opens_the_merge_window` tests the changelists menu, and the Staging one uses the same code. |
+| Conflicts and rebase | 3 | include | Compare HEAD, Staged and Local Versions | `Git.Stage.ThreeSideDiff` |  | partial: Tests `the_menu_compares_head_staged_and_local` and `only_with_the_three_versions` of the Staging view menu, and `a_file_without_the_three_versions_is_compared_two_at_a_time`. Missing: it opens the first chosen file, not a chain with all the chosen ones, and it shares the other gaps of `Git.Stage.Compare.Three.Versions` (words, folding, unified and combined view, return to two panes with `autocrlf` or filters). It is only enabled if the three versions exist; a file that does not have them is compared two by two, like `ThreeSidesProducer`. Confirm by hand: opening it from the menu in the real app. |
+| Conflicts and rebase | 3 | include | Undo Commit… | `Git.Uncommit` |  | done: Tests `undo_commit_asks_select_target_changelist_with_the_subject`, `undo_commit_successful_and_failed`, `with_staging_area_there_are_no_changelists_or_chooser` and `undo_commit_on_a_protected_branch_is_rejected`; in Rust, `undo_commit_keeps_the_changes_and_moves_the_head`, `undo_commit_outside_head_says_it_is_not_the_last_and_moves_nothing` and `undo_commit_of_a_merge_or_the_root_is_rejected_with_its_parents`. |
+| Conflicts and rebase | 3 | include | Cherry-Pick Selected Changes | `Vcs.ApplySelectedChanges` |  | done: Tests `a_file_menu_offers_revert_and_cherry_pick_selected_changes`, `with_conflicts_moves_first_and_opens_the_conflicts_dialog` and `failure_shows_failed_to_revert_changes`; in Rust, `applying_paths_leaves_local_changes_unstaged`, `if_it_does_not_apply_cleanly_it_retries_with_3way_and_leaves_a_conflict` and `an_unstaged_local_deletion_is_not_undone`. With `git apply` (decision 8). The name of the list with several commits was not compared with IntelliJ. |
+| Conflicts and rebase | 3 | include |  | `Vcs.CherryPick` |  | done: Tests `cherry_pick_successful_notification_with_one_line_per_commit`, `with_conflicts_opens_conflicts_and_on_resolving_makes_the_commit` and `after_resolving_continues_with_the_remaining_commits`; in Rust, `several_commits_in_intellij_order`, `conflict_stops_and_leaves_cherry_pick_head` and `commit_after_conflicts_keeps_the_author_and_the_suffix`. Confirm by hand: cherry-pick between branches of a real repository. |
+| Conflicts and rebase | 3 | include | Revert Selected Changes | `Vcs.RevertSelectedChanges` |  | done: Tests `a_file_menu_offers_revert_and_cherry_pick_selected_changes` and `the_suggested_changelist_is_revert_colon_name`; in Rust, `reverting_paths_uses_minus_r`, `reverting_a_root_commit_deletes_what_it_created` and `a_binary_file_goes_in_byte_by_byte`. With `git apply -R` (decision 8). |
+| Conflicts and rebase | 3 | include |  | `git4idea.actions.branch.GitCheckoutWithRebaseAction` |  | done: Tests `checkout_and_rebase_notifies_checked_out_and_rebased` and `checkout_and_rebase_of_a_remote_asks_like_intellij`; in Rust, `checkout_and_rebase_local_is_rebase_head_x` and `checkout_and_rebase_remote_creates_the_local_one_first`. Also in the branch submenu of the log menu, with the same texts and rules: tests `local_and_remote_branch_submenu_like_the_popup_without_phase_4_items` and `the_branch_submenu_says_and_disables_the_same_as_the_popup`. |
+| Conflicts and rebase | 3 | include |  | `git4idea.actions.branch.GitMergeBranchAction` |  | done: Tests `successful_merge_notifies_merged_x_to_y_with_delete_x`, `changes_that_would_be_overwritten_offer_smart_merge_and_dont_merge` and `merge_with_conflicts_opens_conflicts_and_if_any_remain_warns_merged_with_conflicts`; in Rust, `merge_into_is_merge_without_arguments`, `smart_merge_saves_merges_and_restores` and `merge_into_during_a_rebase_stopped_at_edit_touches_nothing`. Also in the branch submenu of the log menu, with the same texts and rules: tests `local_and_remote_branch_submenu_like_the_popup_without_phase_4_items` and `the_branch_submenu_says_and_disables_the_same_as_the_popup`. |
+| Conflicts and rebase | 3 | include |  | `git4idea.actions.branch.GitPullBranchAction$WithMerge` |  | done: Tests `pull_into_only_on_remotes` and `pull_into_launches_the_update_towards_the_remote`; in Rust, `pull_into_does_fetch_and_merge_of_the_remote`. Also in the remote branch submenu of the log menu: test `local_and_remote_branch_submenu_like_the_popup_without_phase_4_items`. Confirm by hand: against a real remote. |
+| Conflicts and rebase | 3 | include |  | `git4idea.actions.branch.GitPullBranchAction$WithRebase` |  | done: Test `pull_into_launches_the_update_towards_the_remote`; in Rust, `pull_into_rebase_goes_through_update_with_rebase`. Also in the remote branch submenu of the log menu: test `local_and_remote_branch_submenu_like_the_popup_without_phase_4_items`. Confirm by hand: against a real remote. |
+| Conflicts and rebase | 3 | include |  | `git4idea.actions.branch.GitRebaseBranchAction` |  | done: Tests `successful_rebase_notifies_rebased_x_on_y`, `published_rebase_asks_rebasing_published_commit_with_cancel_by_default` and `disallowed_rebase_says_so_with_its_title`; in Rust, `rebase_y_onto_x_is_rebase_x`, `published_sees_a_commit_in_origin_main` and `branch_rebase_checks_head_and_what_starts_with_a_dash`. Also in the branch submenu of the log menu, with the same texts and rules: tests `local_and_remote_branch_submenu_like_the_popup_without_phase_4_items` and `the_branch_submenu_says_and_disables_the_same_as_the_popup`. |
+| History and comparison | 4 | include | Annotate | `Annotate` |  |  |
+| History and comparison | 4 | include | Browse Changes... | `ChangesView.Browse` |  |  |
+| History and comparison | 4 | include | Compare with Latest Repository Version | `Compare.LastVersion` |  |  |
+| History and comparison | 4 | include | Compare with the Same Repository Version | `Compare.SameVersion` |  |  |
+| History and comparison | 4 | include | Compare with Revision... | `Compare.Selected` |  |  |
+| History and comparison | 4 | include | Compare with Specified Revision... | `Compare.Specified` |  |  |
+| History and comparison | 4 | include |  | `FileHistory.AnnotateRevision` |  |  |
+| History and comparison | 4 | include | Show Repository at Revision | `Git.BrowseRepoAtRevision` |  |  |
+| History and comparison | 4 | include | Compare with Branch… | `Git.CompareWithBranch` |  |  |
+| History and comparison | 4 | include | Compare with Tag… | `Git.CompareWithTag` |  |  |
+| History and comparison | 4 | include | Not Cherry-Picked Commits | `Git.Log.DeepCompare` |  |  |
+| History and comparison | 4 | include | Compare with Staged Version | `Git.Stage.Compare.Local.Staged` |  |  |
+| History and comparison | 4 | include | Compare with HEAD Version | `Git.Stage.Compare.Staged.Head` |  |  |
+| History and comparison | 4 | include | Compare with Local Version | `Git.Stage.Compare.Staged.Local` |  |  |
+| History and comparison | 4 | include | Show Current Revision | `Show.Current.Revision` |  |  |
+| History and comparison | 4 | include | Get | `Vcs.GetVersion` |  |  |
+| History and comparison | 4 | include |  | `Vcs.Log.AnnotateRevisionAction` |  |  |
+| History and comparison | 4 | include |  | `Vcs.Log.CompareRevisions` |  |  |
+| History and comparison | 4 | include |  | `Vcs.Log.OpenRepositoryVersion` |  |  |
+| History and comparison | 4 | include |  | `Vcs.Log.ShowAllAffected` | ⌘ ⌃ A | pending: Moves to phase 4 (decision 11 of the plan): it only acts on a file's history. |
+| History and comparison | 4 | include |  | `Vcs.Log.ShowOtherBranches` |  | pending: Moves to phase 4 (decision 11 of the plan): it only acts on a file's history. |
+| History and comparison | 4 | include |  | `Vcs.OpenRepositoryVersion` |  |  |
+| History and comparison | 4 | include | Annotated Line Operations | `Vcs.Operations.Popup.Annotate` |  |  |
+| History and comparison | 4 | include |  | `Vcs.RefreshFileHistory` | ⌘ R |  |
+| History and comparison | 4 | include | Show History for Selection… | `Vcs.ShowHistoryForBlock` |  |  |
+| History and comparison | 4 | include | History Up to Here | `Vcs.ShowHistoryForRevision` |  |  |
+| History and comparison | 4 | include | Commit Message History | `Vcs.ShowMessageHistory` | ⌃ M |  |
+| History and comparison | 4 | include | Show History | `Vcs.ShowTabbedFileHistory` |  |  |
+| History and comparison | 4 | include | Show All Affected Files | `VcsHistory.ShowAllAffected` | ⌘ ⌃ A |  |
+| History and comparison | 4 | include |  | `git4idea.actions.branch.GitCompareWithBranchAction` |  | pending: Phase 4 (decision 11 of phase 2 and 9 of phase 3). Neither the popup nor the branch menu offers it (`local_and_remote_branch_submenu_like_the_popup_without_phase_4_items`). |
+| History and comparison | 4 | include |  | `git4idea.actions.branch.GitShowDiffWithBranchAction` |  | pending: Same as `git4idea.actions.branch.GitCompareWithBranchAction`. |
+| Stash and shelf | 4 | include | Apply Patch... | `ChangesView.ApplyPatch` |  |  |
+| Stash and shelf | 4 | include | Apply Patch from Clipboard... | `ChangesView.ApplyPatchFromClipboard` |  |  |
+| Stash and shelf | 4 | include | Create Patch from Local Changes... | `ChangesView.CreatePatch` |  |  |
+| Stash and shelf | 4 | include | Create Patch... | `ChangesView.CreatePatchFromChanges` |  |  |
+| Stash and shelf | 4 | include | Copy as Patch to Clipboard | `ChangesView.CreatePatchToClipboard` |  |  |
+| Stash and shelf | 4 | include | Save To Shelf | `ChangesView.SaveToShelve` |  |  |
+| Stash and shelf | 4 | include | Shelve Changes... | `ChangesView.Shelve` |  |  |
+| Stash and shelf | 4 | include | Shelve Silently | `ChangesView.ShelveSilently` | ⇧ ⌘ H |  |
+| Stash and shelf | 4 | include | Show Git Stash | `Git.Show.Stash` |  |  |
+| Stash and shelf | 4 | include | Stash Changes… | `Git.Stash` |  |  |
+| Stash and shelf | 4 | include | Apply | `Git.Stash.Apply` |  |  |
+| Stash and shelf | 4 | include | Drop | `Git.Stash.Drop` | DELETE, BACK_SPACE, ⌘ BACK_SPACE |  |
+| Stash and shelf | 4 | include | Pop | `Git.Stash.Pop` |  |  |
+| Stash and shelf | 4 | include | Refresh Stashes | `Git.Stash.Refresh` |  |  |
+| Stash and shelf | 4 | include | Stash Silently | `Git.Stash.Silently` |  |  |
+| Stash and shelf | 4 | include | Unstash… | `Git.Stash.UnstashAs` |  |  |
+| Stash and shelf | 4 | include | Unstash Changes… | `Git.Unstash` |  |  |
+| Stash and shelf | 4 | include | Unshelve... | `ShelveChanges.UnshelveWithDialog` | ⌘ ⇧ U |  |
+| Stash and shelf | 4 | include |  | `ShelvedChanges.ImportPatches` |  |  |
+| Stash and shelf | 4 | include | Rename... | `ShelvedChanges.Rename` | F2, ⇧ F6 |  |
+| Stash and shelf | 4 | include | Restore Applied Shelved Change | `ShelvedChanges.Restore` |  |  |
+| Stash and shelf | 4 | include | Show/Hide Applied Shelved Changes | `ShelvedChanges.ShowHideDeleted` |  |  |
+| Stash and shelf | 4 | include |  | `Vcs.Shelf.Apply` |  |  |
+| Stash and shelf | 4 | include |  | `Vcs.Shelf.Drop` | DELETE, BACK_SPACE, ⌘ BACK_SPACE |  |
+| Stash and shelf | 4 | include |  | `Vcs.Shelf.Pop` |  |  |
+| Stash and shelf | 4 | include |  | `Vcs.Shelf.UnshelveChanges` |  |  |
+| Stash and shelf | 4 | include |  | `Vcs.Shelf.UnshelveChangesAndRemove` |  |  |
+| Stash and shelf | 4 | include | Show Shelf | `Vcs.Show.Shelf` |  |  |
+| Out of scope | - | out | Show files modification info | `AnnotateStackTraceAction.show.files.modification.info` |  |  |
+| Out of scope | - | out | Check Ignored but not Excluded Directories | `CheckIgnoredAndNotExcludedDirectories` |  |  |
+| Out of scope | - | out | Check Status | `CheckStatusForFiles` |  |  |
+| Out of scope | - | out | Close Unmodified Tabs | `CloseAllUnmodifiedEditors` |  |  |
+| Out of scope | - | out | Show Diff on Double-Click | `CommitView.ShowOnDoubleClick.EditorPreview` |  |  |
+| Out of scope | - | out | Show Source on Double-Click | `CommitView.ShowOnDoubleClick.Source` |  |  |
+| Out of scope | - | out | Switch to Commit Dialog | `CommitView.SwitchToCommitDialog` |  |  |
+| Out of scope | - | out | Clear | `CommittedChanges.Clear` |  |  |
+| Out of scope | - | out | Show Details | `CommittedChanges.Details` |  |  |
+| Out of scope | - | out | Filter | `CommittedChanges.Filter` |  |  |
+| Out of scope | - | out | Refresh | `CommittedChanges.Refresh` |  |  |
+| Out of scope | - | out | Revert Changes | `CommittedChanges.Revert` |  |  |
+| Out of scope | - | out | Path From Repository Root | `CopyPathFromRepositoryRootProvider` |  |  |
+| Out of scope | - | out | Version Control | `Git.Toolbar.ShowMoreActions` |  |  |
+| Out of scope | - | out | Refresh | `IncomingChanges.Refresh` |  |  |
+| Out of scope | - | out | Integrate | `IntegrateFiles` |  |  |
+| Out of scope | - | out | Show Diff on Double-Click | `LocalChangesView.ShowOnDoubleClick.EditorPreview` |  |  |
+| Out of scope | - | out | Show Source on Double-Click | `LocalChangesView.ShowOnDoubleClick.Source` |  |  |
+| Out of scope | - | out | Mark File Dirty in VCS | `MarkFileDirty` |  |  |
+| Out of scope | - | out | Enable Version Control Integration… | `Start.Use.Vcs` |  |  |
+| Out of scope | - | out | Integrate Project | `Vcs.IntegrateProject` |  |  |
+| Out of scope | - | out | VCS Operations Popup... | `Vcs.QuickListPopupAction` | ⌃ V |  |
+| Out of scope | - | out | Run Commit Checks | `Vcs.RunCommitChecks` |  |  |
+| Out of scope | - | out | Version Control | `Vcs.Toolbar.ShowMoreActions` |  |  |
+| Out of scope | - | out | VCS Label | `VcsToolbarLabelAction` |  |  |
+| Out of scope | - | out | Commit... | `addQuickAction.Git.Commit` |  |  |
+| Out of scope | - | out | Show Diff... | `addQuickAction.Git.Diff` |  |  |
+| Out of scope | - | out | Show History... | `addQuickAction.Git.History` |  |  |
+| Out of scope | - | out | Push... | `addQuickAction.Git.Push` |  |  |
+| Out of scope | - | out | Rollback... | `addQuickAction.Git.Rollback` |  |  |
+| Out of scope | - | out | Update Project... | `addQuickAction.Git.Update` |  |  |
+| Out of scope | - | out |  | `git4idea.actions.GitDumpLogIndexDataAction` |  |  |
+| Out of scope | - | out |  | `git4idea.actions.GitUseSharedLogAction` |  |  |
+| Out of scope | - | out | Test Git Login Dialog | `git4idea.commands.TestGitHttpLoginDialogAction` |  |  |
+| Out of scope | - | out |  | `git4idea.ui.branch.popup.GitBranchesTreePopupGroupByPrefixAction` |  |  |
+| Out of scope | - | out |  | `git4idea.ui.branch.popup.GitBranchesTreePopupResizeAction` |  |  |
+| Out of scope | - | out |  | `git4idea.ui.branch.popup.GitBranchesTreePopupShowRecentBranchesAction` |  |  |
+| Out of scope | - | out |  | `git4idea.ui.branch.popup.GitBranchesTreePopupTrackReposSynchronouslyAction` |  |  |
+| Out of scope | - | out | VCS Widget | `main.toolbar.git.Branches` |  |  |

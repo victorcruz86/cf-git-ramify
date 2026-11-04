@@ -1,0 +1,956 @@
+{
+ "steps": [
+  {
+   "command": "initial_repo",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/repo\""
+  },
+  {
+   "command": "app_version",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "\"0.0.1\""
+  },
+  {
+   "command": "perf_enabled",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "true"
+  },
+  {
+   "command": "show_window",
+   "ok": true,
+   "ipc": false,
+   "ms": 9,
+   "detail": "null"
+  },
+  {
+   "command": "repo_open",
+   "ok": true,
+   "ipc": false,
+   "ms": 153,
+   "detail": "{\"path\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/repo\",\"head\":\"9e3637e9cfa4d16eedbd775ac7f3140c14c458b7\",\"branch\":\"main\",\"recovery\":null,\"pending\":[],\"unfinished\":false}"
+  },
+  {
+   "command": "repo_status",
+   "ok": true,
+   "ipc": false,
+   "ms": 28,
+   "detail": "[{\"path\":\"a.txt\",\"oldPath\":null,\"state\":\"modified\",\"staged\":false,\"unstaged\":true},{\"path\":\"b.txt\",\"oldPath\":null,\"state\":\"modified\",\"staged\":false,\"unstaged\":true},{\"path\":\"c.txt\",\"oldPath\":null,\"state\":\"modified\",\"staged\":false,\"unstaged\":true},{\"path\":\"d.txt\",\"oldPath\":null,\"state\":\"modified\",\"staged\":false,\"unstaged\":true},{\"path\":\"e.txt\",\"oldPath\":null,\"state\":\"modified\",\"staged\":false,\"unsta"
+  },
+  {
+   "command": "changelists_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 8,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"}],\"active\":\"default\",\"assignments\":{\"a.txt\":\"default\",\"b.txt\":\"default\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{}}"
+  },
+  {
+   "command": "changelists_create",
+   "ok": true,
+   "ipc": false,
+   "ms": 6,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"},{\"id\":\"cl-18e4187e6127e350-0\",\"name\":\"smoke\",\"comment\":\"\"}],\"active\":\"default\",\"assignments\":{\"a.txt\":\"default\",\"b.txt\":\"default\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{}}"
+  },
+  {
+   "command": "changelists_rename",
+   "ok": true,
+   "ipc": false,
+   "ms": 6,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"},{\"id\":\"cl-18e4187e6127e350-0\",\"name\":\"smoke 2\",\"comment\":\"\"}],\"active\":\"default\",\"assignments\":{\"a.txt\":\"default\",\"b.txt\":\"default\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{}}"
+  },
+  {
+   "command": "changelists_move",
+   "ok": true,
+   "ipc": false,
+   "ms": 6,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"},{\"id\":\"cl-18e4187e6127e350-0\",\"name\":\"smoke 2\",\"comment\":\"\"}],\"active\":\"default\",\"assignments\":{\"a.txt\":\"default\",\"b.txt\":\"cl-18e4187e6127e350-0\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{}}"
+  },
+  {
+   "command": "changelists_set_active",
+   "ok": true,
+   "ipc": false,
+   "ms": 5,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"},{\"id\":\"cl-18e4187e6127e350-0\",\"name\":\"smoke 2\",\"comment\":\"\"}],\"active\":\"cl-18e4187e6127e350-0\",\"assignments\":{\"a.txt\":\"default\",\"b.txt\":\"cl-18e4187e6127e350-0\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{}}"
+  },
+  {
+   "command": "file_hunks",
+   "ok": true,
+   "ipc": false,
+   "ms": 161,
+   "detail": "[{\"id\":\"51befe847985972fde0a78e84ef2473e72c06d44824572bd27bf674698620e41\",\"oldStart\":40,\"oldLines\":0,\"newStart\":40,\"newLines\":1}]"
+  },
+  {
+   "command": "changelists_move_hunks",
+   "ok": true,
+   "ipc": false,
+   "ms": 153,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"},{\"id\":\"cl-18e4187e6127e350-0\",\"name\":\"smoke 2\",\"comment\":\"\"}],\"active\":\"cl-18e4187e6127e350-0\",\"assignments\":{\"a.txt\":\"cl-18e4187e6127e350-0\",\"b.txt\":\"cl-18e4187e6127e350-0\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{\"a.txt\":{\"51befe847985972fde0a78e84ef2473e72c06d44824572bd27bf674698620e41\""
+  },
+  {
+   "command": "changelists_set_active",
+   "ok": true,
+   "ipc": false,
+   "ms": 6,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"},{\"id\":\"cl-18e4187e6127e350-0\",\"name\":\"smoke 2\",\"comment\":\"\"}],\"active\":\"default\",\"assignments\":{\"a.txt\":\"cl-18e4187e6127e350-0\",\"b.txt\":\"cl-18e4187e6127e350-0\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{\"a.txt\":{\"51befe847985972fde0a78e84ef2473e72c06d44824572bd27bf674698620e41\":\"cl-18e4187e6"
+  },
+  {
+   "command": "changelists_remove",
+   "ok": true,
+   "ipc": false,
+   "ms": 6,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"}],\"active\":\"default\",\"assignments\":{\"a.txt\":\"default\",\"b.txt\":\"default\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{\"a.txt\":{\"51befe847985972fde0a78e84ef2473e72c06d44824572bd27bf674698620e41\":\"default\"}}}"
+  },
+  {
+   "command": "changelists_import",
+   "ok": true,
+   "ipc": false,
+   "ms": 5,
+   "detail": "{\"lists\":[{\"id\":\"default\",\"name\":\"Changes\",\"comment\":\"\"}],\"active\":\"default\",\"assignments\":{\"a.txt\":\"default\",\"b.txt\":\"default\",\"c.txt\":\"default\",\"d.txt\":\"default\",\"e.txt\":\"default\",\"new.txt\":\"default\"},\"hunkAssignments\":{\"a.txt\":{\"51befe847985972fde0a78e84ef2473e72c06d44824572bd27bf674698620e41\":\"default\"}}}"
+  },
+  {
+   "command": "worktree_sides",
+   "ok": true,
+   "ipc": false,
+   "ms": 209,
+   "detail": "{\"old\":{\"kind\":\"text\",\"content\":\"a 0\\na 1\\na 2\\na 3\\na 4\\na 5\\na 6\\na 7\\na 8\\na 9\\na 10\\na 11\\na 12\\na 13\\na 14\\na 15\\na 16\\na 17\\na 18\\na 19\\na 20\\na 21\\na 22\\na 23\\na 24\\na 25\\na 26\\na 27\\na 28\\na 29\\na 30\\na 31\\na 32\\na 33\\na 34\\na 35\\na 36\\na 37\\na 38\\na 39\\n\"},\"new\":{\"kind\":\"text\",\"content\":\"a 0\\na 1\\na 2\\na 3\\na 4\\na 5\\na 6\\na 7\\na 8\\na 9\\na 10\\na 11\\na 12\\na 13\\na 14\\na 15\\na 16\\na 17\\na 18"
+  },
+  {
+   "command": "worktree_preview",
+   "ok": true,
+   "ipc": false,
+   "ms": 62,
+   "detail": "[{\"id\":\"ace8a8c7db8f6b995603afdb3f6ffb1222d36e7d14ecc589924d6c15f5e52a5e\",\"oldStart\":40,\"oldLines\":0,\"newStart\":40,\"newLines\":2}]"
+  },
+  {
+   "command": "file_write",
+   "ok": true,
+   "ipc": false,
+   "ms": 147,
+   "detail": "\"0ff0a1351217f2d38be5bee6eb503dd7e1a2e4a2914cc134b1e6e8413da2eebd\""
+  },
+  {
+   "command": "diff_window_open",
+   "ok": true,
+   "ipc": false,
+   "ms": 34,
+   "detail": "null"
+  },
+  {
+   "command": "diff_window_path",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "\"a.txt\""
+  },
+  {
+   "command": "diff_flushed",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "null"
+  },
+  {
+   "command": "commit_warnings",
+   "ok": true,
+   "ipc": false,
+   "ms": 97,
+   "detail": "[]"
+  },
+  {
+   "command": "commit_warnings_staged",
+   "ok": true,
+   "ipc": false,
+   "ms": 115,
+   "detail": "[]"
+  },
+  {
+   "command": "commit_fix_autocrlf",
+   "ok": true,
+   "ipc": false,
+   "ms": 15,
+   "detail": "null"
+  },
+  {
+   "command": "commit_changes",
+   "ok": true,
+   "ipc": false,
+   "ms": 202,
+   "detail": "\"54ac2bb1366c9d9e2092010d30132d347cbba34d\""
+  },
+  {
+   "command": "file_hunks",
+   "ok": true,
+   "ipc": false,
+   "ms": 172,
+   "detail": "[{\"id\":\"ace8a8c7db8f6b995603afdb3f6ffb1222d36e7d14ecc589924d6c15f5e52a5e\",\"oldStart\":40,\"oldLines\":0,\"newStart\":40,\"newLines\":2}]"
+  },
+  {
+   "command": "commit_changes_selected",
+   "ok": true,
+   "ipc": false,
+   "ms": 370,
+   "detail": "\"8ad00de62de84e19fdf1e72b204bf47267f342df\""
+  },
+  {
+   "command": "file_hunks",
+   "ok": true,
+   "ipc": false,
+   "ms": 180,
+   "detail": "[{\"id\":\"66d1f123aedc1afd11dd6436fa2b239d18406090747d440c9a21b8ccdc5c521a\",\"oldStart\":40,\"oldLines\":0,\"newStart\":40,\"newLines\":1}]"
+  },
+  {
+   "command": "lines_rollback",
+   "ok": true,
+   "ipc": false,
+   "ms": 248,
+   "detail": "\"0001793585485829-000000000000-33349\""
+  },
+  {
+   "command": "rollback_files",
+   "ok": true,
+   "ipc": false,
+   "ms": 130,
+   "detail": "\"0001793585485931-000000000001-33349\""
+  },
+  {
+   "command": "snapshots_list",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "[{\"id\":\"0001793585485931-000000000001-33349\",\"createdMs\":1793585485931,\"reason\":\"Rollback\",\"entries\":[{\"path\":\"e.txt\",\"kind\":\"file\",\"staged\":false,\"stagedBlob\":false,\"mode\":420,\"stagedMode\":null,\"stamp\":{\"size\":211,\"modifiedNs\":1793585481583115800}}]},{\"id\":\"0001793585485829-000000000000-33349\",\"createdMs\":1793585485829,\"reason\":\"before undoing lines\",\"entries\":[{\"path\":\"b.txt\",\"kind\":\"file\",\""
+  },
+  {
+   "command": "snapshots_restore",
+   "ok": true,
+   "ipc": false,
+   "ms": 61,
+   "detail": "\"0001793585486025-000000000002-33349\""
+  },
+  {
+   "command": "messages_list",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "[\"smoke: lines\",\"smoke: new\"]"
+  },
+  {
+   "command": "head_message",
+   "ok": true,
+   "ipc": false,
+   "ms": 17,
+   "detail": "\"smoke: lines\""
+  },
+  {
+   "command": "staging_sides",
+   "ok": true,
+   "ipc": false,
+   "ms": 250,
+   "detail": "{\"old\":{\"kind\":\"text\",\"content\":\"c 0\\nc 1\\nc 2\\nc 3\\nc 4\\nc 5\\nc 6\\nc 7\\nc 8\\nc 9\\nc 10\\nc 11\\nc 12\\nc 13\\nc 14\\nc 15\\nc 16\\nc 17\\nc 18\\nc 19\\nc 20\\nc 21\\nc 22\\nc 23\\nc 24\\nc 25\\nc 26\\nc 27\\nc 28\\nc 29\\nc 30\\nc 31\\nc 32\\nc 33\\nc 34\\nc 35\\nc 36\\nc 37\\nc 38\\nc 39\\n\"},\"new\":{\"kind\":\"text\",\"content\":\"c 0\\nc 1\\nc 2\\nc 3\\nc 4\\nc 5\\nc 6\\nc 7\\nc 8\\nc 9\\nc 10\\nc 11\\nc 12\\nc 13\\nc 14\\nc 15\\nc 16\\nc 17\\nc 18"
+  },
+  {
+   "command": "staging_preview",
+   "ok": true,
+   "ipc": false,
+   "ms": 48,
+   "detail": "[{\"id\":\"8d0136d60969430a24374e8cad6e187bb41ad89d314da03b74f7f2b28fd90d15\",\"oldStart\":40,\"oldLines\":0,\"newStart\":40,\"newLines\":1}]"
+  },
+  {
+   "command": "staging_stage_hunks",
+   "ok": true,
+   "ipc": false,
+   "ms": 297,
+   "detail": "null"
+  },
+  {
+   "command": "staging_sides",
+   "ok": true,
+   "ipc": false,
+   "ms": 247,
+   "detail": "{\"old\":{\"kind\":\"text\",\"content\":\"c 0\\nc 1\\nc 2\\nc 3\\nc 4\\nc 5\\nc 6\\nc 7\\nc 8\\nc 9\\nc 10\\nc 11\\nc 12\\nc 13\\nc 14\\nc 15\\nc 16\\nc 17\\nc 18\\nc 19\\nc 20\\nc 21\\nc 22\\nc 23\\nc 24\\nc 25\\nc 26\\nc 27\\nc 28\\nc 29\\nc 30\\nc 31\\nc 32\\nc 33\\nc 34\\nc 35\\nc 36\\nc 37\\nc 38\\nc 39\\n\"},\"new\":{\"kind\":\"text\",\"content\":\"c 0\\nc 1\\nc 2\\nc 3\\nc 4\\nc 5\\nc 6\\nc 7\\nc 8\\nc 9\\nc 10\\nc 11\\nc 12\\nc 13\\nc 14\\nc 15\\nc 16\\nc 17\\nc 18"
+  },
+  {
+   "command": "staging_unstage_hunks",
+   "ok": true,
+   "ipc": false,
+   "ms": 333,
+   "detail": "null"
+  },
+  {
+   "command": "staging_stage",
+   "ok": true,
+   "ipc": false,
+   "ms": 109,
+   "detail": "null"
+  },
+  {
+   "command": "staging_unstage",
+   "ok": true,
+   "ipc": false,
+   "ms": 94,
+   "detail": "null"
+  },
+  {
+   "command": "staging_revert",
+   "ok": true,
+   "ipc": false,
+   "ms": 89,
+   "detail": "\"0001793585487496-000000000003-33349\""
+  },
+  {
+   "command": "staging_stage",
+   "ok": true,
+   "ipc": false,
+   "ms": 107,
+   "detail": "null"
+  },
+  {
+   "command": "commit_staged",
+   "ok": true,
+   "ipc": false,
+   "ms": 73,
+   "detail": "\"4f9f1560b394da83a1bbd962aec6254f6b78249f\""
+  },
+  {
+   "command": "settings_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "{\"gitPath\":null,\"stagingArea\":false,\"warnCrlf\":true,\"warnDetached\":true,\"signCommits\":false,\"signingKey\":null,\"useCredentialHelper\":true,\"incomingCheck\":\"auto\",\"updateMethod\":\"merge\",\"showUpdateDialog\":true,\"updatePaths\":[],\"pushAutoUpdate\":false,\"previewPushOnCommit\":true,\"previewPushProtectedOnly\":false}"
+  },
+  {
+   "command": "settings_save",
+   "ok": true,
+   "ipc": false,
+   "ms": 5,
+   "detail": "{\"gitPath\":null,\"stagingArea\":false,\"warnCrlf\":true,\"warnDetached\":true,\"signCommits\":false,\"signingKey\":null,\"useCredentialHelper\":true,\"incomingCheck\":\"auto\",\"updateMethod\":\"merge\",\"showUpdateDialog\":true,\"updatePaths\":[],\"pushAutoUpdate\":false,\"previewPushOnCommit\":true,\"previewPushProtectedOnly\":false}"
+  },
+  {
+   "command": "git_version",
+   "ok": true,
+   "ipc": false,
+   "ms": 14,
+   "detail": "\"2.45.2\""
+  },
+  {
+   "command": "repo_status",
+   "ok": true,
+   "ipc": false,
+   "ms": 17,
+   "detail": "[{\"path\":\"e.txt\",\"oldPath\":null,\"state\":\"modified\",\"staged\":false,\"unstaged\":true}]"
+  },
+  {
+   "command": "rollback_files",
+   "ok": true,
+   "ipc": false,
+   "ms": 129,
+   "detail": "\"0001793585487821-000000000004-33349\""
+  },
+  {
+   "command": "log_open",
+   "ok": true,
+   "ipc": false,
+   "ms": 122,
+   "detail": "{\"viewId\":1,\"count\":8,\"collapsible\":true}"
+  },
+  {
+   "command": "log_rows",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "[{\"hash\":\"4f9f1560b394da83a1bbd962aec6254f6b78249f\",\"subject\":\"smoke: stage\",\"author\":\"Test\",\"time\":1793585487,\"commitTime\":1793585487,\"samePerson\":true,\"refs\":[{\"name\":\"HEAD\",\"kind\":\"head\"},{\"name\":\"main\",\"kind\":\"local\"}],\"labels\":{\"compact\":[{\"name\":\"main\",\"kinds\":[\"head\",\"local\"]}],\"normal\":[{\"name\":\"main\",\"kinds\":[\"head\",\"local\"]}]},\"highlight\":{\"bold\":false,\"muted\":false,\"branch\":true},\"pri"
+  },
+  {
+   "command": "log_view_set",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "{\"viewId\":1,\"count\":8,\"collapsible\":true}"
+  },
+  {
+   "command": "log_view_set",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "{\"viewId\":1,\"count\":8,\"collapsible\":true}"
+  },
+  {
+   "command": "log_graph_hover",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "null"
+  },
+  {
+   "command": "log_graph_click",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "{\"changed\":false,\"summary\":{\"viewId\":1,\"count\":8,\"collapsible\":true}}"
+  },
+  {
+   "command": "log_row_of",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "{\"row\":7,\"hash\":\"a00118327c25d636f46f469f68fe4acaf432d1e0\"}"
+  },
+  {
+   "command": "log_find_rows",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "[0]"
+  },
+  {
+   "command": "log_adjacent_rows",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "[5]"
+  },
+  {
+   "command": "log_current_branch",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "\"main\""
+  },
+  {
+   "command": "log_view_open",
+   "ok": true,
+   "ipc": false,
+   "ms": 19,
+   "detail": "{\"summary\":{\"collapsible\":false,\"count\":1,\"viewId\":2},\"viewId\":2}"
+  },
+  {
+   "command": "log_view_close",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "null"
+  },
+  {
+   "command": "log_users",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "[{\"name\":\"Test\",\"email\":\"test@example.com\"}]"
+  },
+  {
+   "command": "log_refs",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "[{\"name\":\"HEAD\",\"kind\":\"head\"},{\"name\":\"main\",\"kind\":\"local\"},{\"name\":\"origin/main\",\"kind\":\"remote\"},{\"name\":\"feature\",\"kind\":\"local\"},{\"name\":\"gone\",\"kind\":\"local\"},{\"name\":\"tracked2\",\"kind\":\"local\"},{\"name\":\"origin/feature\",\"kind\":\"remote\"},{\"name\":\"origin/tracked2\",\"kind\":\"remote\"},{\"name\":\"v1\",\"kind\":\"tag\"}]"
+  },
+  {
+   "command": "log_refs_changed",
+   "ok": true,
+   "ipc": false,
+   "ms": 46,
+   "detail": "false"
+  },
+  {
+   "command": "log_options_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "{}"
+  },
+  {
+   "command": "log_options_set",
+   "ok": true,
+   "ipc": false,
+   "ms": 5,
+   "detail": "null"
+  },
+  {
+   "command": "commit_details",
+   "ok": true,
+   "ipc": false,
+   "ms": 16,
+   "detail": "[{\"hash\":\"f18c943f09396c9ba628522524e193f48d1ddb08\",\"subject\":\"local only\",\"body\":\"\",\"author\":\"Test\",\"authorEmail\":\"test@example.com\",\"authorTime\":1793585480,\"committer\":\"Test\",\"committerEmail\":\"test@example.com\",\"commitTime\":1793585480,\"samePerson\":true,\"refs\":[{\"name\":\"gone\",\"kind\":\"local\"}],\"parents\":[\"f5c1140d67840dee075104ac3eb96037e4db2c17\"],\"links\":{}}]"
+  },
+  {
+   "command": "branches_containing",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "[\"gone\"]"
+  },
+  {
+   "command": "commit_changes_of",
+   "ok": true,
+   "ipc": false,
+   "ms": 47,
+   "detail": "[{\"parent\":null,\"subject\":null,\"base\":\"f5c1140d67840dee075104ac3eb96037e4db2c17\",\"merge\":false,\"files\":[{\"path\":\"h.txt\",\"oldPath\":null,\"status\":\"A\"}],\"size\":1}]"
+  },
+  {
+   "command": "commit_changes_start",
+   "ok": true,
+   "ipc": false,
+   "ms": 18,
+   "detail": "{\"commits\":[{\"group\":{\"base\":\"f5c1140d67840dee075104ac3eb96037e4db2c17\",\"files\":[{\"oldPath\":null,\"path\":\"h.txt\",\"status\":\"A\"}],\"merge\":false,\"parent\":null,\"size\":1,\"subject\":null},\"hash\":\"f18c943f09396c9ba628522524e193f48d1ddb08\"}],\"maxSize\":1}"
+  },
+  {
+   "command": "log_recent_filters",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "{}"
+  },
+  {
+   "command": "log_remember_filter",
+   "ok": true,
+   "ipc": false,
+   "ms": 5,
+   "detail": "{\"branch\":[[\"main\"]]}"
+  },
+  {
+   "command": "commit_files",
+   "ok": true,
+   "ipc": false,
+   "ms": 34,
+   "detail": "[{\"path\":\"h.txt\",\"oldPath\":null,\"status\":\"A\"}]"
+  },
+  {
+   "command": "file_sides",
+   "ok": true,
+   "ipc": false,
+   "ms": 73,
+   "detail": "{\"old\":{\"kind\":\"absent\"},\"new\":{\"kind\":\"text\",\"content\":\"h\\n\"}}"
+  },
+  {
+   "command": "branch_list",
+   "ok": true,
+   "ipc": false,
+   "ms": 60,
+   "detail": "{\"local\":[{\"name\":\"feature\",\"tracked\":\"origin/feature\"},{\"name\":\"gone\",\"tracked\":null},{\"name\":\"main\",\"tracked\":\"origin/main\"},{\"name\":\"tracked2\",\"tracked\":\"origin/tracked2\"}],\"remote\":[\"origin/feature\",\"origin/main\",\"origin/tracked2\"],\"recent\":[\"main\",\"gone\",\"feature\"],\"current\":\"main\",\"previous\":\"gone\"}"
+  },
+  {
+   "command": "branch_current",
+   "ok": true,
+   "ipc": false,
+   "ms": 17,
+   "detail": "\"main\""
+  },
+  {
+   "command": "branch_incoming_outgoing",
+   "ok": true,
+   "ipc": false,
+   "ms": 49,
+   "detail": "{\"main\":{\"incoming\":false,\"outgoing\":true}}"
+  },
+  {
+   "command": "branch_refs_fingerprint",
+   "ok": true,
+   "ipc": false,
+   "ms": 46,
+   "detail": "\"16667336399460319848\""
+  },
+  {
+   "command": "favorites_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "{\"local\":[\"main\",\"master\"],\"remote\":[\"origin/main\",\"origin/master\"]}"
+  },
+  {
+   "command": "favorites_toggle",
+   "ok": true,
+   "ipc": false,
+   "ms": 5,
+   "detail": "{\"local\":[\"master\"],\"remote\":[\"origin/main\",\"origin/master\"]}"
+  },
+  {
+   "command": "branch_options_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "{}"
+  },
+  {
+   "command": "branch_options_set",
+   "ok": true,
+   "ipc": false,
+   "ms": 5,
+   "detail": "null"
+  },
+  {
+   "command": "pull_options_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "[]"
+  },
+  {
+   "command": "pull_options_set",
+   "ok": true,
+   "ipc": false,
+   "ms": 4,
+   "detail": "null"
+  },
+  {
+   "command": "reset_mode_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "null"
+  },
+  {
+   "command": "reset_mode_set",
+   "ok": true,
+   "ipc": false,
+   "ms": 4,
+   "detail": "null"
+  },
+  {
+   "command": "branch_checkout",
+   "ok": true,
+   "ipc": false,
+   "ms": 238,
+   "detail": "{\"kind\":\"done\"}"
+  },
+  {
+   "command": "branch_checkout",
+   "ok": true,
+   "ipc": false,
+   "ms": 101,
+   "detail": "{\"kind\":\"done\"}"
+  },
+  {
+   "command": "fetch_all",
+   "ok": true,
+   "ipc": false,
+   "ms": 209,
+   "detail": "{\"failed\":[],\"pruned\":[]}"
+  },
+  {
+   "command": "branch_checkout_remote",
+   "ok": true,
+   "ipc": false,
+   "ms": 207,
+   "detail": "{\"kind\":\"done\"}"
+  },
+  {
+   "command": "branch_checkout",
+   "ok": true,
+   "ipc": false,
+   "ms": 163,
+   "detail": "{\"kind\":\"done\"}"
+  },
+  {
+   "command": "branch_create",
+   "ok": true,
+   "ipc": false,
+   "ms": 68,
+   "detail": "{\"kind\":\"done\"}"
+  },
+  {
+   "command": "branch_rename",
+   "ok": true,
+   "ipc": false,
+   "ms": 102,
+   "detail": "null"
+  },
+  {
+   "command": "branch_delete",
+   "ok": true,
+   "ipc": false,
+   "ms": 151,
+   "detail": "{\"base\":null,\"forced\":false,\"name\":\"smoke/renamed\",\"tip\":\"4f9f1560b394da83a1bbd962aec6254f6b78249f\",\"upstream\":null}"
+  },
+  {
+   "command": "branch_restore",
+   "ok": true,
+   "ipc": false,
+   "ms": 98,
+   "detail": "null"
+  },
+  {
+   "command": "branch_unmerged_commits",
+   "ok": true,
+   "ipc": false,
+   "ms": 67,
+   "detail": "[{\"hash\":\"f18c943f09396c9ba628522524e193f48d1ddb08\",\"subject\":\"local only\",\"author\":\"Test\",\"time\":1793585480}]"
+  },
+  {
+   "command": "branch_trackers",
+   "ok": true,
+   "ipc": false,
+   "ms": 37,
+   "detail": "[\"feature\"]"
+  },
+  {
+   "command": "branch_delete_remote",
+   "ok": true,
+   "ipc": false,
+   "ms": 157,
+   "detail": "{\"failures\":[],\"local\":[]}"
+  },
+  {
+   "command": "branch_rebase_onto",
+   "ok": true,
+   "ipc": false,
+   "ms": 362,
+   "detail": "{\"kind\":\"done\"}"
+  },
+  {
+   "command": "branch_rebase_abort",
+   "ok": false,
+   "ipc": false,
+   "ms": 107,
+   "detail": "git rebase --abort failed: fatal: no rebase in progress"
+  },
+  {
+   "command": "branch_checkout",
+   "ok": true,
+   "ipc": false,
+   "ms": 130,
+   "detail": "{\"kind\":\"done\"}"
+  },
+  {
+   "command": "branch_reset",
+   "ok": true,
+   "ipc": false,
+   "ms": 104,
+   "detail": "{\"kind\":\"done\"}"
+  },
+  {
+   "command": "tag_create",
+   "ok": true,
+   "ipc": false,
+   "ms": 78,
+   "detail": "null"
+  },
+  {
+   "command": "tag_delete",
+   "ok": true,
+   "ipc": false,
+   "ms": 156,
+   "detail": "{\"name\":\"smoke-tag\",\"tip\":\"3d7d50b6ee3239ad27c5a0c2d7714d7ae38906d5\"}"
+  },
+  {
+   "command": "tag_restore",
+   "ok": true,
+   "ipc": false,
+   "ms": 68,
+   "detail": "null"
+  },
+  {
+   "command": "fetch_remote",
+   "ok": true,
+   "ipc": false,
+   "ms": 183,
+   "detail": "[]"
+  },
+  {
+   "command": "pull_info",
+   "ok": true,
+   "ipc": false,
+   "ms": 252,
+   "detail": "{\"branch\":\"main\",\"remotes\":[\"origin\"],\"remoteBranches\":[\"origin/extra\",\"origin/feature\",\"origin/main\"],\"tracked\":[\"origin\",\"main\"]}"
+  },
+  {
+   "command": "update_project",
+   "ok": true,
+   "ipc": false,
+   "ms": 707,
+   "detail": "{\"commits\":1,\"files\":1,\"inProgress\":false,\"matching\":null,\"outcome\":{\"kind\":\"success\"},\"range\":[\"9e3637e9cfa4d16eedbd775ac7f3140c14c458b7\",\"191bc8f8f9eb772d199ffc505e39746af07850b0\"],\"restore\":null,\"saved\":null,\"title\":null}"
+  },
+  {
+   "command": "git_pull",
+   "ok": true,
+   "ipc": false,
+   "ms": 395,
+   "detail": "{\"commits\":0,\"files\":0,\"inProgress\":false,\"matching\":null,\"outcome\":{\"kind\":\"success\"},\"range\":null,\"restore\":null,\"saved\":null,\"title\":null}"
+  },
+  {
+   "command": "update_branch",
+   "ok": true,
+   "ipc": false,
+   "ms": 247,
+   "detail": "null"
+  },
+  {
+   "command": "update_abort",
+   "ok": true,
+   "ipc": false,
+   "ms": 98,
+   "detail": "\"nothing\""
+  },
+  {
+   "command": "update_restore",
+   "ok": true,
+   "ipc": false,
+   "ms": 150,
+   "detail": "{\"kind\":\"gone\"}"
+  },
+  {
+   "command": "push_info",
+   "ok": true,
+   "ipc": false,
+   "ms": 282,
+   "detail": "{\"repository\":\"repo\",\"branch\":\"main\",\"head\":\"4ad25eeaaf603e72bc31c351cb51b0b96bdaefde\",\"remotes\":[\"origin\"],\"remoteBranches\":[\"origin/extra\",\"origin/feature\",\"origin/main\"],\"target\":{\"remote\":\"origin\",\"branch\":\"main\",\"isNew\":false},\"prePushHook\":false,\"protectedBranches\":[\"master\",\"main\"],\"forcePushTargets\":[]}"
+  },
+  {
+   "command": "log_rows",
+   "ok": true,
+   "ipc": false,
+   "ms": 120,
+   "detail": "[{\"hash\":\"4ad25eeaaf603e72bc31c351cb51b0b96bdaefde\",\"subject\":\"Merge remote-tracking branch 'origin/main'\",\"author\":\"Test\",\"time\":1793585492,\"commitTime\":1793585492,\"samePerson\":true,\"refs\":[{\"name\":\"HEAD\",\"kind\":\"head\"},{\"name\":\"main\",\"kind\":\"local\"}],\"labels\":{\"compact\":[{\"name\":\"main\",\"kinds\":[\"head\",\"local\"]}],\"normal\":[{\"name\":\"main\",\"kinds\":[\"head\",\"local\"]}]},\"highlight\":{\"bold\":true,\"mut"
+  },
+  {
+   "command": "push_branch_of",
+   "ok": true,
+   "ipc": false,
+   "ms": 29,
+   "detail": "\"main\""
+  },
+  {
+   "command": "push_outgoing",
+   "ok": true,
+   "ipc": false,
+   "ms": 88,
+   "detail": "[{\"author\":\"Test\",\"hash\":\"4ad25eeaaf603e72bc31c351cb51b0b96bdaefde\",\"subject\":\"Merge remote-tracking branch 'origin/main'\",\"time\":1793585492},{\"author\":\"Test\",\"hash\":\"4f9f1560b394da83a1bbd962aec6254f6b78249f\",\"subject\":\"smoke: stage\",\"time\":1793585487},{\"author\":\"Test\",\"hash\":\"8ad00de62de84e19fdf1e72b204bf47267f342df\",\"subject\":\"smoke: lines\",\"time\":1793585485},{\"author\":\"Test\",\"hash\":\"54"
+  },
+  {
+   "command": "git_push",
+   "ok": true,
+   "ipc": false,
+   "ms": 302,
+   "detail": "{\"destination\":\"origin/main\",\"pushed\":4,\"remote\":\"origin\",\"source\":\"main\",\"status\":{\"kind\":\"success\"},\"tags\":[\"smoke-tag\"],\"updatable\":null}"
+  },
+  {
+   "command": "git_push_update",
+   "ok": true,
+   "ipc": false,
+   "ms": 805,
+   "detail": "{\"attempts\":2,\"push\":{\"destination\":\"origin/main\",\"pushed\":0,\"remote\":\"origin\",\"source\":\"main\",\"status\":{\"kind\":\"upToDate\"},\"tags\":[],\"updatable\":null},\"update\":{\"commits\":0,\"files\":0,\"inProgress\":false,\"matching\":null,\"outcome\":{\"kind\":\"nothingToUpdate\"},\"range\":null,\"restore\":null,\"saved\":null,\"title\":null}}"
+  },
+  {
+   "command": "push_tags_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "null"
+  },
+  {
+   "command": "push_tags_set",
+   "ok": true,
+   "ipc": false,
+   "ms": 8,
+   "detail": "null"
+  },
+  {
+   "command": "repo_settings_get",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "{\"protectedBranches\":[\"master\",\"main\"],\"forcePushTargets\":[]}"
+  },
+  {
+   "command": "protected_branches_set",
+   "ok": true,
+   "ipc": false,
+   "ms": 6,
+   "detail": "[]"
+  },
+  {
+   "command": "force_push_target_remember",
+   "ok": true,
+   "ipc": false,
+   "ms": 5,
+   "detail": "null"
+  },
+  {
+   "command": "remote_list",
+   "ok": true,
+   "ipc": false,
+   "ms": 14,
+   "detail": "[{\"name\":\"origin\",\"url\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/remote.git\",\"pushUrl\":null}]"
+  },
+  {
+   "command": "remote_add",
+   "ok": true,
+   "ipc": false,
+   "ms": 45,
+   "detail": "null"
+  },
+  {
+   "command": "remote_edit",
+   "ok": true,
+   "ipc": false,
+   "ms": 139,
+   "detail": "null"
+  },
+  {
+   "command": "remote_test_url",
+   "ok": true,
+   "ipc": false,
+   "ms": 100,
+   "detail": "null"
+  },
+  {
+   "command": "remote_remove",
+   "ok": true,
+   "ipc": false,
+   "ms": 34,
+   "detail": "null"
+  },
+  {
+   "command": "clone_repository",
+   "ok": true,
+   "ipc": false,
+   "ms": 522,
+   "detail": "{\"path\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/repo-clone\",\"warning\":null}"
+  },
+  {
+   "command": "init_repository",
+   "ok": false,
+   "ipc": false,
+   "ms": 1,
+   "detail": "The folder '/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/repo-new' does not exist"
+  },
+  {
+   "command": "open_exclude_file",
+   "ok": true,
+   "ipc": false,
+   "ms": 107,
+   "detail": "false"
+  },
+  {
+   "command": "console_lines",
+   "ok": true,
+   "ipc": false,
+   "ms": 1,
+   "detail": "[{\"time\":\"21:11:28.604\",\"command\":true,\"text\":\"[repo] git -c core.quotepath=false -c log.showSignature=false stash save Uncommitted changes before Checkout at 2026-11-01 21:11:28\"},{\"time\":\"21:11:28.706\",\"command\":true,\"text\":\"[repo] git -c core.quotepath=false -c log.showSignature=false checkout feature --\"},{\"time\":\"21:11:28.723\",\"command\":false,\"text\":\"Switched to branch 'feature'\"},{\"time\":\"21"
+  },
+  {
+   "command": "task_cancel",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "null"
+  },
+  {
+   "command": "askpass_answer",
+   "ok": true,
+   "ipc": false,
+   "ms": 0,
+   "detail": "null"
+  },
+  {
+   "command": "hide_window",
+   "ok": true,
+   "ipc": false,
+   "ms": 4,
+   "detail": "null"
+  }
+ ]
+}

@@ -1,0 +1,16 @@
+{
+  "samples": [
+    {
+      "memory_mb": 2919.46,
+      "cpu_percent": 10.0
+    },
+    {
+      "memory_mb": 2917.47,
+      "cpu_percent": 5.07
+    },
+    {
+      "memory_mb": 2918.47,
+      "cpu_percent": 13.63
+    }
+  ]
+}

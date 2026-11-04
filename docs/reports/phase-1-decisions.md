@@ -1,0 +1,189 @@
+# Phase 1: decisions and pending items
+
+Record of what was decided during execution and of the minor findings that were left unattended. Each decision says what it costs if it turns out to be wrong.
+
+## Decisions
+
+- Preparation: R1 T8 also modifies src-tauri/src/changelists.rs — the plan asks for move_hunks there — cost if wrong: none.
+- Preparation: R2 T11 adds CommitOptions.sign: bool — -S requires that datum — cost if wrong: none.
+- Preparation: R3 T12 also modifies src/perf/run.ts — the measurement must open Commit — cost if wrong: none.
+- Preparation: R4 T1 shows the window when onMount finishes, not in rAF — rAF does not run with a hidden window — cost if wrong: a brief flash on opening.
+- Preparation: R5 use "cargo test -- filter1 filter2" — cargo only accepts one filter without -- — cost if wrong: none.
+- Preparation: R6 T6 and T7 handle repositories without commits (first commit) without git reset HEAD, with test first_commit_of_the_repository — first commit is a basic flow — cost if wrong: one more test.
+- Preparation: R7 T7 restores deletions in stage with update-index --force-remove — cacheinfo does not work for deletions — cost if wrong: none.
+- Preparation: R8 T10 does not allow editing non-UTF-8 files, with editable=false in worktree_sides — avoids corrupting bytes when saving — cost if wrong: those files are not edited in the diff.
+- Task 1: physical ⌘Q untested; the implementer tested terminate:, which is the same path — check by hand in Task 12 — cost if wrong: the app does not close with ⌘Q.
+- Task 1: ⌘9 and toggling with ⌘0 stay as the implementer chose them — matches toggling tool windows in IntelliJ — cost if wrong: change a shortcut.
+- Task 2: Unmerged is staged=false, unstaged=true; Untracked unstaged=true; Ignored none — implementer's decision accepted — cost if wrong: default checkboxes.
+- Task 3: closing the window stops the watcher and reopening restarts it and emits repo-changed once — the brief asks to stop it on close and the app stays alive — cost if wrong: refresh lost until reopening.
+- Task 5: the own active list is kept if it has files — matches the instruction; in practice the app's one almost always wins — cost if wrong: one line in merge_import.
+- Task 6: rollback rejects conflicts instead of saving their stages — safer and lets them be resolved first — cost if wrong: differs from IntelliJ in conflicts; reviewed in phase 3.
+- Task 6: the copy stores by index files/<n> — avoids name collisions, which lost data — cost if wrong: the copies are not read directly by their name.
+- Task 6: repo_open normalizes to the repository root — avoids reverting another file from a subfolder — cost if wrong: opening a subfolder shows the whole repository.
+- Task 6: the guard compares dev/ino of all versioned names, without filtering by name — imitating the APFS rules is fragile — cost if wrong: one stat per versioned file in rollbacks that delete.
+- Task 7: the live comparison with IntelliJ of Step 5 moves to Task 12 with the user — it requires operating their IDE; here it is compared with the source code of the tag — cost if wrong: differences detected later.
+- Task 7: lock per repository in AppState for commit, rollback and restore — two commits at once gave a wrong commit — cost if wrong: operations in series.
+- Task 7: commit::commit receives dir and saves a copy if the stage of a partial differs from HEAD and disk — keeps IntelliJ's result without losing that stage — cost if wrong: one more copy.
+- Task 7: journal commit-journal.json and commit::recover on open — the hook window had no recoverable record — cost if wrong: a file and a step on open.
+- Task 7: flock inherited by git commit as stdin to know whether it is still alive — no unsafe or crates — cost if wrong: review the mechanism.
+- Task 7: recover restores only paths whose index is still the same and reports the skipped ones in RepoInfo.recovery — avoids overwriting later commits or conflicts — cost if wrong: the user resolves by hand with the hash from the report.
+- Task 7: round 4 with a new implementer of lower cost instead of a more capable one — it is a change to one function with the solution given — cost if wrong: one round.
+- Task 8: everything is computed in the form stored by git, with a temporary index, and PartialFile.content is stored form with hash-object --no-filters — the plan said blob against disk and commit.rs unchanged, and with autocrlf=input it stored incorrect bytes — cost if wrong: one copy of the index per file.
+- Task 8: within a hunk the lines are aligned by position — avoids reordering lines — cost if wrong: odd results in hunks of very different sizes.
+- Task 8: the hunk id includes 3 lines of context on each side — avoids carrying a selection over to another identical hunk — cost if wrong: an edit next to the hunk loses its selection with a warning.
+- Task 8: selection_lost, ensure_idle, non-regular entries and mandatory lines are included although they were minor — Task 10 depends on them — cost if wrong: none.
+- Task 10: the margin is drawn from Hunk, not from the MergeView chunks — they differ in 20 % of repetitive cases — cost if wrong: wrong line indexes.
+- Task 9: Import Changelists from .idea, without the brand name — the global restriction overrides my earlier instruction, which was incorrect — cost if wrong: change a text.
+- Task 9: what is selected by lines leaves the inclusion when consumed or lost — avoids including hunks that were not chosen — cost if wrong: tick the file again.
+- Task 10: the diff shows HEAD against the stored form and is only editable if that form equals the disk and is UTF-8 — the hunks are in stored form and saving with conversion would corrupt bytes — cost if wrong: those files are not edited in the diff.
+- Task 10: toggleLine receives the Hunk, not just its id — going from None to a list needs the total number of lines — cost if wrong: none.
+- Task 10: autosave when changing file, toggling view, closing or changing repository, like IntelliJ; if it fails, it stops — avoids losing text without warning — cost if wrong: saves without ⌘S.
+- Task 10: unticking a file deletes its line selection and ticking it again means whole file — same as IntelliJ — cost if wrong: redo the selection.
+- Task 10: ⌘Q goes through its own menu item that saves before quitting — same loss as C1; Dock and logout stay uncovered — cost if wrong: quitting from the Dock loses unsaved text.
+- Task 11: rebase and merge with a detached HEAD follow IntelliJ — the goal is identical behaviour — cost if wrong: no warning in those cases.
+- Task 11: + and - icons on hover instead of checkboxes — my instruction was incorrect and 232 does not show them with one repository — cost if wrong: none.
+- Task 11: in staging, ⌃⌥Z reverts to the index without a dialog but with a copy — keeps IntelliJ and the copy restriction — cost if wrong: one copy per action.
+- Task 11: rollback becomes ⌥⌘Z and stage ⌥⌘A — ⌃⌥Z came from an extraction error of mine; the user asked for the same as IntelliJ — cost if wrong: change a shortcut.
+- Task 12: correct the matrix, because extract_actions does not convert the shortcuts inherited from $default to macOS — rows Git.New.Branch.In.Log, ShelveChanges.UnshelveWithDialog and rollback — cost if wrong: wrong shortcuts in phases 2 and 4.
+- Task 11: update-index --replace is removed and restore refuses if it collides with the index — fails closed and avoids losing stage — cost if wrong: that copy is recovered by hand.
+- Task 12: without frames it is decided by real visibility and a 5 s wait — avoids losing the measurement with a visible window — cost if wrong: a repeated measurement.
+- Task 12: each done row of the matrix cites its evidence — the legend requires verified — cost if wrong: more partial rows.
+- Task 12: the measurement with a visible window has not been done because the screen was locked; it is left for the user — cost if wrong: consumption goals unconfirmed.
+- Final: the diff is saved on losing focus and before each operation — the earlier autosave fell short compared with IntelliJ — cost if wrong: saves without ⌘S.
+- Final: a partial commit during a merge is rejected — avoids a merge that does not contain the merge — cost if wrong: differs if IntelliJ allows it.
+- Final: final review delivered with 8 more minor findings unattended (see the phase 2 list) — they do not block — cost if wrong: they are fixed in the next phase.
+- Final: blur and ⌥⌘Z without a dialog in staging remain to be verified against real IntelliJ — requires the user — cost if wrong: review with the manual list.
+
+## Minor findings unattended
+
+- Task 1: showWindow without try/catch or watchdog if onMount does not arrive
+- Task 1: a log error stays visible in the Commit tab
+- Task 1: tabs without tabpanel, aria-controls or arrows
+- Task 1: no test that repo_open clears the saved log
+- Task 1: relaunching with another repository in the background ignores the argument
+- Task 1: measurement mode marks first-paint before drawing the Log
+- Task 1: shortcuts_switch_tabs does not check log_open or the case without a repository
+- Task 2: non-UTF-8 paths are converted with loss and then cannot be operated on
+- Task 2: malformed entries are silently discarded
+- Task 2: no tests of Deleted, Copied, T, MD, RM or Unmerged flags
+- Task 2: conflict uses Command directly; a tolerant helper is missing in TempRepo
+- Task 2: same path twice, nested repos and cost of --ignored with -uall
+- Task 3: the .git filter only looks at the first component, and a .git file (worktree, submodule) is not watched
+- Task 3: no filter for node_modules or target, and the debouncer has no maximum wait: continuous writes delay the refresh
+- Task 3: two concurrent repo_open calls could mix repository and watcher; the interface avoids it
+- Task 3: no test pins that reading the state does not wake the watcher
+- Task 3: a 200 ms limit in a test includes launching git; fragile under load
+- Task 3: dropping_the_watcher_stops_notifying does not distinguish silence from disconnection
+- Task 3: app.emit to all windows; use emit_to if there are several windows
+- Task 3: a failure when restarting the watcher is ignored; no refresh until reopening
+- Task 3: a repo_open in progress on close can leave an active watcher; ⌘H does not stop it
+- Task 4: mutual exclusion implicit in synchronous commands, with I/O on the UI thread; use Mutex and blocking
+- Task 4: as_encoded_bytes is not stable across versions; use OsStrExt::as_bytes in the folder key
+- Task 4: no SHA-256 test vector and the nonexistent-path test is of little use
+- Task 4: the temporary's deletion branch has no test, fixed name and no fsync of the directory
+- Task 4: test with 0o555 does not work as root
+- Task 4: sha2 0.11 duplicates dependencies; 0.10 reuses tauri's
+- Task 4: ChangelistError is always kind failed and does not implement Error
+- Task 4: normalize does not validate unique or empty ids
+- Task 4: changelists_get fails if saving fails after reconciling
+- Task 4: keep_corrupt treats any symlink_metadata error as a free slot; checking and renaming is not atomic
+- Task 4: changelists_if_the_copy_is_not_kept_it_is_not_saved does not distinguish the corrected code
+- Task 5: read_workspace could unify event handling
+- Task 5: attribute errors without malformed XML prefix
+- Task 5: a bad entity in a foreign component aborts the import
+- Task 5: importing without a workspace writes changelists.json unchanged
+- Task 5: .idea as a file counts as an error
+- Task 6: a write by Devin between the copy and apply is lost; compare size and mtime before deleting
+- Task 6: a linked intermediate folder passes check_path
+- Task 6: a half-failed restore does not say where the prior copy is
+- Task 6: ?? d with D d/x.txt is blocked by rm without -r
+- Task 6: an unversioned nested/ blocks the batch with an error that blames the copy
+- Task 6: rev-parse code 1 does not distinguish a repo without commits from a corrupt ref; a versioned file was treated as new
+- Task 6: a file only in stage (AD) is not restored and returns Ok
+- Task 6: restore deletes without a copy a user's .name.rama-restore; ENAMETOOLONG with long names
+- Task 6: snapshots and rollback depend on commands::ApiError, git_with_paths should go in git.rs, NUL splitting duplicated, blocking_api almost repeats blocking
+- Task 6: a case-only rename without edit leaves the new name on disk after rollback
+- Task 6: an Added NFD entry stays in the index and rollback returns Ok without removing it from the stage
+- Task 6: opening .git gives a generic error instead of not a repository
+- Task 6: the new-name-only test does not check that the volume is case-insensitive
+- Task 6: selecting the path affected by ENOTDIR gives Snapshot(NotADirectory) without touching anything
+- Task 6: ELOOP in a versioned name aborts rollbacks that delete, without damage
+- Task 6: is_unborn assumes the files ref store, not reftable
+- Task 6: a HEAD truncated to a valid branch name is the same as a branch without commits
+- Task 6: an I/O failure when reading HEAD is presented as a damaged branch
+- Task 7: prepare-commit-msg does not count as a hook
+- Task 7: with an active hook, any failure is classified as Hook (invalid --author)
+- Task 7: a comment in commands.rs says everything comes back but a hook that adds foreign paths leaves them in stage
+- Task 7: --ignore-submodules=none is missing; an excluded gitlink gets in with diff.ignoreSubmodules=all
+- Task 7: add -N with a deleted file becomes AD after failing
+- Task 7: add --intent-to-add without -f fails with ignored files
+- Task 7: a selected folder is not rejected in the API
+- Task 7: a merge in progress with a partial selection creates an incomplete two-parent commit; decide whether to block
+- Task 7: a file selected whole with a stage different from HEAD and disk loses that version in a loose blob, same as IntelliJ
+- Task 7: the interface does not find out about recover; the lock is per process
+- Task 7: path_versioned_in_nfc_with_nfd_name_on_disk passes with and without exact
+- Task 7: snapshots::restore does not return the stage blob to the index
+- Task 7: pending by timeout also fires during a slow rollback; do not word it as commit only
+- Task 7: ensure_idle releases the lock before the operation; relevant only with two instances
+- Task 7: a journal of an old format is read as unreadable
+- Task 7: a path with a line break imitating the lock message would still be classified as a lock
+- Task 8: changelists_move_hunks does git and diff on the main thread
+- Task 8: reconcile_hunks only runs on move; dead ids until then, and an id that reappears goes back to its list
+- Task 8: lines_rollback on a file in conflict breaks the markers; has_unmerged guard missing
+- Task 8: with autocrlf=input, undoing lines turns a whole CRLF file into LF; there is a copy
+- Task 8: post-index-change fires in file_hunks; use core.hooksPath=/dev/null
+- Task 8: a long temporary name fails with names of about 229 bytes
+- Task 8: identical hunks that disappear and appear at the same time may move the selection
+- Task 8: stored_form without a test of --force with ignored files
+- Task 8: api.ts does not document that PartialFile.content is stored form
+- Task 9: shadows and measures scattered outside theme.ts; compare the values by eye
+- Task 9: the rollback checkbox is not remembered between openings
+- Task 9: history only after a successful commit; IntelliJ saves it before
+- Task 9: with restore_failed the commit may already exist and the view treats it as a failure
+- Task 9: changelistsGet does not receive oldPath and a rename jumps to the active list
+- Task 9: slow reads with consecutive notices may never be applied
+- Task 9: underline and margin of the message may misalign with a scroll bar
+- Task 9: screenshots with the window inactive; no evidence of the blue selection
+- Task 9: Button.arc of 6 could be a diameter; review DarculaButtonPainter
+- Task 9: duplicated if in CommitView.svelte:300-301
+- Task 9: blue focus and scrollbar drag in WebKit unchecked; review in Task 12
+- Task 10: if the whole selection of an included file is lost, the margin marks everything until Commit responds
+- Task 10: two consecutive clicks may lose one because of the snapshot coming back
+- Task 10: drawDivider walks all hunks on every scroll
+- Task 10: opening of 5.9 s with 72,000 lines not located; measure in release in Task 12
+- Task 10: a broken link does not open in the diff
+- Task 10: relative order of lines when confirming with lines of different size; compare with IntelliJ in Task 12
+- Task 10: diff_flush without a request id; a late response may answer the next one
+- Task 10: text written between the flush and window.destroy is lost
+- Task 10: CommitView stays alive during repo_open; a commit at that moment would go to the new repository
+- Task 10: test what_is_typed_during_the_save_is_not_lost with a weak waitFor, and a leftover variable in mover_el_unico_hunk
+- Task 10: a hung diff window refuses to exit for 10 s per attempt, with no escape except forcing
+- Task 10: Quit from the Dock and logout lose unsaved text
+- Task 10: is_quit_item depends on muda's English text
+- Task 10: late flush response may go to the next one waiting
+- Task 11: if saving fails when changing the setting, the diff window stays in the previous mode
+- Task 11: stage does not save first like IntelliJ, and margin clicks do nothing with unsaved text
+- Task 11: unstaging all the hunks of a rename leaves D and ?? separate
+- Task 11: mode not kept when restoring an executable AD; the manifest does not store mode
+- Task 11: settings_save does not take RepoLocks; changing the path during a commit leaves stage unrestored until recover
+- Task 11: CRLF detection differs from GitCrlfProblemsDetector; decide on parity
+- Task 11: unstage_hunks fails because of a broken clean filter even though the disk is only a reference
+- Task 11: order of settings differs from 232, Fix and Commit swallows failures, copy warning lost if the second call fails
+- Task 11: matrix rows Git.Stage.Add.Tracked, Add.No.Content, ToggleIgnored, Show.Staged and Show.Local not done; mark partial in Task 12
+- Task 11: with a mix, loses_lines does not copy if each line survives in a different version; only the order is lost
+- Task 11: revert on add -N empties the file; there is a copy
+- Task 11: with a mixed selection ⌥⌘Z does revert and unstage; IntelliJ probably only the first action
+- Task 11: after Restore, a 100755 comes back as 100644; the copy does not store mode
+- Task 11: unresolved ancestor: conflicted does not see it with pathspec d/f
+- Task 11: links outside the repository and broken ones stop Stage All because of check_paths
+- Task 11: unstage makes a harmless extra copy in cases like a.txt/inside
+- Task 11: unstaged_view without its own guard against paths behind a link in hunk staging
+- Task 12: test test_incomplete_report_is_retried does not cover the wait_for_report loop
+- Task 12: measureDiff listener leaks if the timeout expires before it registers
+- Task 12: three Vcs.Log.* rows with a phase different from the script's rules
+- Final: a pair of lines that differ only in the terminator duplicates a line if only one is marked
+- Final: renames look like a new file in the diff
+- Final: refresh may stall with continuous writing; target and node_modules not ignored
+- Final: a damaged changelists.json is replaced without warning the user
+- Final: no option to save anyway after an external change
+- Final: an unreadable journal blocks opening; a format change would need migration

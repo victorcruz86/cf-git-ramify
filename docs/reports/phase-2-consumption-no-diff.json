@@ -1,0 +1,61 @@
+{
+  "median": {
+    "load_1m": 9.03515625,
+    "memory_mb": 161.09375,
+    "webview_mb": 110.09375,
+    "cpu_percent": 0.0,
+    "window_visible": true,
+    "startup_ms": 3671.095947265625,
+    "first_paint_ms": 2406.095947265625,
+    "window_shown_ms": 2211.095947265625,
+    "diff_path": null,
+    "diff_error": null,
+    "diff_open_ms": null,
+    "diff_sides_ms": null,
+    "diff_build_ms": null,
+    "diff_paint_ms": null,
+    "frames": 994,
+    "p50": 10,
+    "p95": 11,
+    "p99": 12,
+    "over50ms": 0,
+    "stages": {
+      "window-shown": 909,
+      "log-open-start": 1070,
+      "first-paint": 1104,
+      "log-open-end": 2308,
+      "ready": 2369
+    },
+    "visible_runs": 1
+  },
+  "runs": [
+    {
+      "load_1m": 9.03515625,
+      "memory_mb": 161.09375,
+      "webview_mb": 110.09375,
+      "cpu_percent": 0.0,
+      "window_visible": true,
+      "startup_ms": 3671.095947265625,
+      "first_paint_ms": 2406.095947265625,
+      "window_shown_ms": 2211.095947265625,
+      "diff_path": null,
+      "diff_error": null,
+      "diff_open_ms": null,
+      "diff_sides_ms": null,
+      "diff_build_ms": null,
+      "diff_paint_ms": null,
+      "frames": 994,
+      "p50": 10,
+      "p95": 11,
+      "p99": 12,
+      "over50ms": 0,
+      "stages": {
+        "window-shown": 909,
+        "log-open-start": 1070,
+        "first-paint": 1104,
+        "log-open-end": 2308,
+        "ready": 2369
+      }
+    }
+  ]
+}

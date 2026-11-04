@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="5b1c7e0a-0d3f-4a52-9a6e-1f0c2f6d8a11" name="Changes" comment="Work in progress">
+      <change beforePath="$PROJECT_DIR$/src/a.txt" beforeDir="false" afterPath="$PROJECT_DIR$/src/a.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/Caf&#233; menu.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/Café menu.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/new.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Tom &amp; Jerry.txt" beforeDir="false" afterPath="$PROJECT_DIR$/src/Tom &amp; Jerry.txt" afterDir="false" />
+    </list>
+    <list id="0c9d4f6e-7a21-4c8b-b7d5-3e2a9b1c4d22" name="Refactor &amp; cleanup" comment="Mind the &quot;quotes&quot;">
+      <change beforePath="$PROJECT_DIR$/src/old.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/folder" beforeDir="true" />
+      <change afterPath="$PROJECT_DIR$/src/new dir" afterDir="true" />
+      <change beforePath="$PROJECT_DIR$/../outside.txt" beforeDir="false" afterPath="$PROJECT_DIR$/../outside.txt" afterDir="false" />
+      <change beforePath="/other/project/x.txt" beforeDir="false" afterPath="/other/project/x.txt" afterDir="false" />
+    </list>
+    <list id="7e8f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a33" name="Empty" comment="" />
+    <option name="SHOW_DIALOG" value="false" />
+  </component>
+  <component name="ProjectId" id="2abc" />
+</project>

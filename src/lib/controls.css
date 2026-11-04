@@ -1,0 +1,175 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font: 13px -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+  background: var(--editor);
+}
+
+/* Shared New UI controls. The classes are global because several views use them. */
+.button {
+  height: 28px;
+  padding: 0 14px;
+  font: inherit;
+  color: var(--text);
+  white-space: nowrap;
+  background: var(--panel);
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+}
+
+.button.default {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.button:disabled {
+  color: var(--disabled);
+  background: var(--panel);
+  border-color: var(--control-disabled-border);
+}
+
+.input {
+  height: 28px;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--input-background);
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--icon);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+}
+
+.action:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.action:active:not(:disabled) {
+  background: var(--pressed);
+}
+
+.action:disabled {
+  opacity: 0.4;
+}
+
+.toolbar-separator {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--divider);
+}
+
+/* Checkbox: rectangle from checkBoxTemp.svg and mark from checkBoxSelected.svg. */
+.check {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  background: var(--panel);
+  border: 1px solid var(--checkbox-border);
+  border-radius: 3px;
+  box-sizing: border-box;
+}
+
+.check[data-state="on"],
+.check[data-state="mixed"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.check[data-state="on"]::after {
+  position: absolute;
+  top: 1px;
+  left: 4px;
+  width: 3px;
+  height: 7px;
+  content: "";
+  border: solid var(--accent-text);
+  border-width: 0 2px 2px 0;
+  transform: rotate(40deg);
+}
+
+.check[data-state="mixed"]::after {
+  position: absolute;
+  top: 5px;
+  left: 2px;
+  width: 8px;
+  height: 2px;
+  content: "";
+  background: var(--accent-text);
+  border-radius: 1px;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--text);
+  user-select: none;
+}
+
+.checkbox-label input {
+  position: absolute;
+  opacity: 0;
+}
+
+.checkbox-label input:focus-visible + .check {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.checkbox-label.disabled {
+  color: var(--disabled);
+}
+
+.field-error {
+  margin: 6px 0 0;
+  color: var(--error);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  background-clip: padding-box;
+}

@@ -1,0 +1,420 @@
+rama
+====
+
+This project includes code ported from IntelliJ IDEA Community Edition, and test data taken
+from that same repository.
+
+Origin
+------
+
+  Project:   IntelliJ IDEA Community Edition (JetBrains/intellij-community)
+  Tag:       idea/232.10072.27 (build IC-232.10072.27, version 2023.2.3)
+  Copyright: JetBrains s.r.o. and contributors. The year of each original file appears in its
+             header, at that tag.
+  License:   Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+
+Changes
+-------
+
+The files were ported from Java and Kotlin to Rust and TypeScript, and adapted: the graph's
+data structure, the interface with the rest of the application and the names are not the
+original ones. The behaviour is preserved, and the graph tests compare it with IntelliJ's
+outputs. Each file states in its comments the class or method it comes from.
+
+A copy of the license is in LICENSE-APACHE.
+
+Ported code: src-tauri/src/log/
+-------------------------------
+
+The files in that folder were written by reading the following ones at the tag, under
+platform/vcs-log/ and plugins/git4idea/:
+
+  src-tauri/src/log/collapse.rs      graph: collapsing/ (CollapsedGraph, FragmentGenerator,
+                                     EdgeStorage, CollapsedActionManager), FilteredController
+  src-tauri/src/log/filter.rs        impl: VcsLogFiltererImpl; graph: DottedFilterEdgesGenerator;
+                                     git4idea: GitLogProvider (filters)
+  src-tauri/src/log/layout.rs        graph: impl/permanent/GraphLayoutBuilder
+  src-tauri/src/log/linear_bek.rs    graph: linearBek/ (LinearBekGraph, LinearBekGraphBuilder,
+                                     LinearBekController)
+  src-tauri/src/log/print.rs         graph: impl/print/ (PrintElementGeneratorImpl,
+                                     EdgesInRowGenerator)
+  src-tauri/src/log/refs.rs          git4idea: GitRefManager, GitLogUtil
+  src-tauri/src/log/sort.rs          graph: bek/ (BekBranchMerger and related ones)
+  src-tauri/src/log/view.rs          graph: impl/facade/ (PermanentGraphImpl, VisibleGraphImpl)
+  src-tauri/src/log/details.rs       impl: VcsStatusMerger, CommitPresentationUtil;
+                                     git4idea: GitDetailsCollector
+  src-tauri/src/log/store.rs         git4idea: GitLogProvider (reading of hashes)
+  src-tauri/src/log/commands.rs      impl: VcsLogNavigationUtil (only the navigation part)
+
+graph.rs, mod.rs, options.rs, parse.rs and recent.rs are rama's own and do not port code; they
+are cited here because they are in the same folder and share structures with the ones above.
+
+Ported code: src/
+-----------------
+
+These TypeScript files were written by reading the following ones at the tag, under
+platform/vcs-log/, plugins/git4idea/ and platform/:
+
+  src/log/draw.ts            graph: SimpleGraphCellPainter, PaintParameters; ui: VcsLogGraphTable,
+                             LabelPainter; DateFormatUtil
+  src/log/graphColor.ts      graph: DefaultColorGenerator
+  src/log/graphHit.ts        graph: PositionUtil, SimpleGraphCellPainter, VisibleGraphImpl
+  src/log/labels.ts          ui: LabelPainter, LabelIcon, GraphCommitCellRenderer, SimpleRefGroup,
+                             VcsLogStandardColors, VcsLogUiUtil
+  src/log/goto.ts            impl: VcsLogNavigationUtil, VcsLogUtil, GoToParentOrChildAction,
+                             TooltipReferencesPanel
+  src/log/filters.ts         ui: BranchFilterModel, MultipleValueFilterPopupComponent;
+                             VcsLogFilterObject, VcsUserUtil
+  src/log/selection.ts       ui: VcsLogGraphTable (SelectionSnapshot)
+  src/log/changes.ts         CommittedChangesTreeBrowser, FileHistoryUtil, VcsLogUtil
+  src/log/contextMenu.ts     git4idea: GitLogBranchOperationsActionGroup, GitBranchPopupActions,
+                             GitCheckoutActionGroup
+  src/branches/model.ts      git4idea: comparators and branch tree of ui/branch/
+  src/branches/refName.ts    git4idea: GitRefNameValidator, GitNewBranchDialog
+  src/lib/speedSearch.ts     MinusculeMatcherImpl and PreferStartMatchMatcherWrapper (approximation)
+
+Other files, in src/ and src-tauri/src/ (among them branches.rs, update.rs, push.rs,
+src/branches/actions.ts, src/update/flow.ts and src/push/model.ts), reproduce the steps and the
+texts of git4idea, and cite the origin in their comments.
+
+Ported code: git editor
+-----------------------
+
+  src-tauri/src/editor.rs                 git4idea: GitHandlerRebaseEditorManager,
+                                          GitRebaseEditorService, GitInteractiveRebaseEditorHandler,
+                                          GitImplBase (ignoreComments), GitImpl (REBASE_CONFIG_PARAMS)
+  src/editor/MessageEditorDialog.svelte   git4idea: GitUnstructuredEditor,
+                                          GitInteractiveRebaseEditorHandler (confirmNoopRebase),
+                                          GitBundle (texts)
+  src/editor/editor.ts                    git4idea: GitUnstructuredEditor,
+                                          GitInteractiveRebaseEditorHandler (confirmNoopRebase);
+                                          GitBundle (texts)
+
+Ported code: operation in progress
+----------------------------------
+
+  src-tauri/src/operation.rs              git4idea: GitRepositoryReader (readRepositoryState),
+                                          GitBranchUtil (getDisplayableBranchText),
+                                          GitAbortOperationAction, GitOperationActionBase
+  src-tauri/src/rebase.rs                 git4idea: GitRebaseProcess, GitRebaseProblemDetector,
+                                          GitUntrackedFilesOverwrittenByOperationDetector,
+                                          GitAbortRebaseProcess, GitImpl (rebase, rebaseContinue,
+                                          rebaseSkip)
+  src/operation/operation.ts              git4idea: GitRebaseProcess (notifications),
+                                          GitAbortOperationAction, GitAbortRebaseProcess,
+                                          GitBundle (texts)
+  src/operation/ConfirmDialog.svelte      git4idea: GitAbortOperationAction (confirmation of
+                                          Abort); platform/platform-api: DialogManager
+                                          (showOkCancelDialog)
+
+Ported code: Merge and Rebase dialogs
+-------------------------------------
+
+  src-tauri/src/merge.rs                  git4idea: GitMerge (getHandlerProvider),
+                                          GitMergeAction (handleResult), GitMergeOption,
+                                          GitMergeDialog (loadUnmergedBranchesForRoot),
+                                          GitSimpleEventDetector, GitBundle (texts)
+  src-tauri/src/rebase.rs (rebase)        git4idea: GitRebaseParams (asCommandLineArguments),
+                                          GitRebaseOption, GitRebaseDialog (isValidRevision),
+                                          GitVersionSpecialty (REBASE_MERGES_REPLACES_PRESERVE_MERGES)
+  src-tauri/src/settings.rs (merge, rebase)
+                                          git4idea: GitMergeSettings, GitRebaseSettings
+  src/git/options.ts                      git4idea: GitMergeOption (isOptionSuitable),
+                                          GitRebaseOption, GitRebaseDialog (isOptionEnabled),
+                                          GitVersionSpecialty (NO_VERIFY_SUPPORTED,
+                                          REBASE_MERGES_REPLACES_PRESERVE_MERGES), GitBundle
+                                          (texts)
+  src/git/flow.ts                         git4idea: GitMergeAction (handleResult), GitMergeDialog
+                                          (updateBranchesField), GitRebaseProcess (notifySuccess),
+                                          GitSuccessfulRebase (formatMessage),
+                                          LocalChangesWouldBeOverwrittenHelper,
+                                          GitUntrackedFilesHelper; GitBundle and VcsBundle (texts)
+  src/git/MergeDialog.svelte              git4idea: GitMergeDialog (validateBranchField),
+                                          GitOptionsPanel, GitOptionsPopupBuilder; GitBundle
+                                          (texts)
+  src/git/RebaseDialog.svelte             git4idea: GitRebaseDialog (validateUpstream, validateOnto,
+                                          validateBranch, moveNewBaseValue), GitOptionsPanel,
+                                          GitOptionsPopupBuilder; GitBundle (texts)
+  src/git/FilesDialog.svelte              git4idea: GitUtil (showPathsInDialog); GitBundle (texts)
+
+Ported code: merge, rebase and pull into from the branches popup
+----------------------------------------------------------------
+
+  src-tauri/src/rebase.rs (Process, published, branch_rebase, rebase_remote)
+                                          git4idea: GitRebaseProcess (doRebase, rebaseSingleRoot,
+                                          saveDirtyRootsInitially, isRebasingPublishedCommit),
+                                          GitRebaseUtils (rebase, isRebaseAllowed),
+                                          GitRebaseSpec (newSaver), GitProtectedBranches
+                                          (findProtectedRemoteBranchContainingCommit),
+                                          GitBranchWorker (rebase, rebaseOnCurrent),
+                                          GitCheckoutAndRebaseRemoteBranchWorkflow,
+                                          GitBranchActionsUtil (hasTrackingConflicts); GitBundle
+                                          (texts)
+  src-tauri/src/merge.rs (merge_into, smart_merge)
+                                          git4idea: GitMergeOperation (execute, doSmartMerge),
+                                          GitPreservingProcess
+  src-tauri/src/pull.rs (pull_into)       git4idea: GitPullBranchAction, GitUpdateExecutionProcess
+  src/branches/merging.ts                 git4idea: GitMergeBranchAction, GitRebaseBranchAction,
+                                          GitCheckoutWithRebaseAction, GitPullBranchAction,
+                                          GitMergeOperation (notifySuccess, MyMergeConflictResolver),
+                                          GitCheckoutAndRebaseRemoteBranchWorkflow,
+                                          GitRebaseProcess (checkForRebasingPublishedCommits),
+                                          GitSuccessfulRebase (formatMessage), GitBranchUiHandlerImpl
+                                          (showUnmergedFilesNotification); GitBundle (texts)
+  src/branches/model.ts (branchActions)   git4idea: GitBranchPopupActions
+                                          (getCurrentBranchPresentation), GitSingleBranchAction,
+                                          plugin.xml (Git.Branch)
+  src/branches/PublishedCommitsDialog.svelte
+                                          git4idea: GitRebaseProcess
+                                          (askIfShouldRebasePublishedCommit); GitBundle (texts)
+  src/branches/CheckoutProblemDialog.svelte
+                                          git4idea: GitSmartOperationDialog; GitBundle (texts)
+
+Ported code: cherry-pick and revert from the log
+------------------------------------------------
+
+  src-tauri/src/apply_commits.rs          git4idea: GitApplyChangesProcess (executeForCommit,
+                                          ConflictResolver), GitCherryPicker (createCommitMessage,
+                                          shouldAddSuffix), GitRevertOperation, GitRevertAction,
+                                          GitProtectedBranches (findProtectedRemoteBranch,
+                                          isCommitPublished), GitSimpleEventDetector; platform/
+                                          dvcs-impl: VcsCherryPickManager (order of the commits);
+                                          platform/vcs-impl: RevertSelectedChangesAction,
+                                          RevertCommittedStuffAbstractAction (with `git apply`);
+                                          GitBundle and DvcsBundle (texts)
+  src/log/applying.ts                     git4idea: GitApplyChangesProcess (notifyResult,
+                                          notifyConflictWarning, notifyError,
+                                          getSuccessfulCommitDetailsIfAny, StagingAreaCommit),
+                                          GitUntrackedFilesHelper; platform/dvcs-impl:
+                                          VcsCherryPickManager; platform/vcs-impl:
+                                          RevertCommittedStuffAbstractAction (actionPerformed);
+                                          GitBundle, DvcsBundle and VcsBundle (texts)
+  src/log/ChangesPanel.svelte (files menu)
+                                          platform/vcs-impl: RevertSelectedChangesAction,
+                                          VcsActions.xml (Vcs.RepositoryChangesBrowserMenu);
+                                          ActionsBundle (texts)
+  src/log/contextMenu.ts (Cherry-Pick, Revert Commit)
+                                          platform/dvcs-impl: VcsCherryPickAction; git4idea:
+                                          GitRevertAction (update), plugin.xml (Git.Log.ContextMenu)
+  src/settings/SettingsView.svelte (cherry-pick)
+                                          git4idea: GitVcsPanel (cdAddCherryPickSuffix),
+                                          GitVcsSettings; GitBundle (settings.add.suffix)
+
+Ported code: rewriting from the log
+-----------------------------------
+
+  src-tauri/src/todo.rs                   git4idea: GitRebaseEntry, GitInteractiveRebaseFile (load,
+                                          save), GitRebaseTodoModel, GitRebaseTodoModelConverter
+                                          (convertToModel, convertToEntries)
+  src-tauri/src/rewrite.rs                git4idea: GitCommitEditingActionBase (update,
+                                          checkHeadLinearHistory, lastCheckCommitsEditingAvailability,
+                                          getProhibitedStateMessage), GitSingleCommitEditingAction,
+                                          GitCommitEditingOperation, GitCommitEditingEditorHandler,
+                                          GitCommitEditingOperationResult (checkUndoPossibility, undo),
+                                          GitRewordAction, GitRewordOperation, GitSquashOperation,
+                                          GitDropOperation, GitAutomaticRebaseEditor,
+                                          GitInteractiveRebaseEditorHandler (processModel),
+                                          GitRewordedCommitMessageProvider, GitRebaseParams
+                                          (editCommits), GitProtectedBranches
+                                          (findProtectedRemoteBranch), GitUncommitAction,
+                                          GitResetOperation (execute), GitAutoSquashCommitAction,
+                                          GitRebaseCheckinHandlerFactory, GitInteractiveRebaseAction,
+                                          GitInteractiveRebaseUsingLog (getEntriesUsingLog,
+                                          startInteractiveRebase,
+                                          GitInteractiveRebaseUsingLogEditorHandler),
+                                          GitInteractiveRebaseEditorHandler (editCommits,
+                                          handleInteractiveEditor, confirmNoopRebase,
+                                          loadDetailsForEntries), GitImpl (createEditor),
+                                          GitRebaseUtils (getOntoHash); GitBundle (texts)
+  src/log/editing.ts                      git4idea: GitRewordAction, GitDropLogAction,
+                                          GitSquashLogAction (actionPerformedAfterChecks),
+                                          GitNewCommitMessageActionDialog (validate),
+                                          GitCommitEditingNotifications, GitUncommitAction
+                                          (actionPerformedAfterChecks, resetInBackground),
+                                          GitAutoSquashCommitAction (actionPerformedAfterChecks),
+                                          GitCommitFixupBySubjectAction,
+                                          GitCommitSquashBySubjectAction,
+                                          GitRebaseCheckinHandlerFactory (checkinSuccessful),
+                                          GitRebaseProcess (notifySuccess),
+                                          GitInteractiveRebaseAction,
+                                          GitInteractiveRebaseUsingLog
+                                          (interactivelyRebaseUsingLog); platform/vcs-impl:
+                                          CommitChangeListDialog (showNothingToCommitMessage);
+                                          GitBundle and VcsBundle (texts)
+  src/log/CommitMessageDialog.svelte      git4idea: GitNewCommitMessageActionDialog; GitBundle (texts)
+  src/log/contextMenu.ts (Edit Commit Message, Drop Commits, Squash Commits, Undo Commit,
+                          Fixup, Squash Into, Interactively Rebase from Here)
+                                          git4idea: GitCommitEditingActionBase (update),
+                                          GitDropLogAction (update), GitSquashLogAction (update),
+                                          GitUncommitAction (update), GitInteractiveRebaseAction,
+                                          plugin.xml (Git.Log.ContextMenu); GitBundle (texts)
+  src/rebase/model.ts                     git4idea: GitRebaseTodoModel, GitRebaseTodoModelConverter,
+                                          GitRebaseCommitsTableModel (SavedStates),
+                                          ChangeEntryStateActions (getIndicesToUnite, findNewRoot,
+                                          isEntryActionEnabled, shortcuts), GitRebaseEntry (mnemonic);
+                                          platform/platform-api: TableToolbarDecorator
+                                          (MoveRunnable), CommonActionsPanel (UpButton,
+                                          DownButton, getCommonShortcut), CommonShortcuts
+                                          (MOVE_UP, MOVE_DOWN); platform/vcs-log: IndexedDetails
+                                          (getSubject)
+  src/rebase/InteractiveRebaseDialog.svelte
+                                          git4idea: GitInteractiveRebaseDialog,
+                                          GitRebaseCommitsTableView (SubjectRenderer,
+                                          GitRebaseCommitIconTableCellRenderer, UndoAction,
+                                          RedoAction), CommitMessageCellEditor,
+                                          ChangeEntryStateActions, AnActionOptionButton;
+                                          platform/platform-api: ToolbarDecorator, CommonShortcuts
+                                          (CTRL_ENTER), MacKeymapUtil; GitBundle and UIBundle
+                                          (texts)
+  src/rebase/GitCommandsDialog.svelte     git4idea: GitRebaseCommandsDialog; GitBundle (texts)
+  src/lib/icons/pause.svg                 platform/icons/src/expui/run/pause_dark.svg
+  src/commit/CommitView.svelte (Commit and Rebase…)
+  src/commit/CommitMessage.svelte (Commit and Rebase…)
+                                          git4idea: GitAutoSquashCommitAction
+                                          (GitRebaseAfterCommitExecutor),
+                                          GitRebaseCheckinHandlerFactory (beforeCheckin,
+                                          checkinSuccessful); GitBundle (commit.action.commit.and.rebase.text)
+
+Ported code: conflicts
+----------------------
+
+  src-tauri/src/conflicts.rs              git4idea: GitMergeProvider, GitMergeUtil (loadMergeData,
+                                          acceptOneVersion, markConflictResolved), GitMergeHandler,
+                                          GitConflictsUtil (getConflictType),
+                                          GitStagingAreaHolder (createConflict),
+                                          GitDefaultMergeDialogCustomizer,
+                                          GitRebaseMergeDialogCustomizer,
+                                          GitApplyChangesProcess (MergeDialogCustomizer),
+                                          GitBundle (texts)
+  src-tauri/src/commit.rs (merge)         git4idea: GitMerger (mergeCommit), GitCheckinEnvironment
+                                          (getDefaultMessageFor)
+  src/conflicts/flow.ts                   git4idea: GitConflictResolver (merge, mergeNoProceed,
+                                          notifyUnresolvedRemain), GitMergeCommittingConflictResolver,
+                                          GitRebaseProcess (RebaseConflictResolver,
+                                          resolveConflicts); platform/vcs-impl:
+                                          MultipleFileMergeDialog (showMergeDialog); GitBundle
+                                          (texts)
+  src/conflicts/ConflictsDialog.svelte    platform/vcs-impl: MultipleFileMergeDialog,
+                                          MergeConflictsTreeTable; git4idea: GitMergeProvider
+                                          (StatusColumn); VcsBundle (texts)
+  src/commit/ChangesTree.svelte (node)    platform/vcs-impl: ChangesBrowserConflictsNode;
+                                          git4idea: GitStageTree (MyKindNode); VcsBundle (texts)
+  src/commit/CommitView.svelte (conflicts)
+                                          git4idea: GitConflictActions (GitConflictAction,
+                                          GitAcceptConflictSideAction, GitMergeConflictAction),
+                                          GitStageConflictActions, GitResolveConflictsAction,
+                                          GitCheckinEnvironment (getDefaultMessageFor)
+
+Ported code: three-way merge
+----------------------------
+
+  src-tauri/src/merge3.rs                 platform/util/diff: ComparisonMergeUtil
+                                          (FairMergeBuilder, ChangeBuilder,
+                                          IgnoringChangeBuilder, tryResolveConflict),
+                                          MergeRangeUtil (getMergeType, getLineMergeType,
+                                          compareLineMergeContents, getWordMergeType),
+                                          MergeResolveUtil (tryResolve, tryGreedyResolve,
+                                          SimpleHelper, GreedyHelper), MergeConflictType,
+                                          ByLineRt (doCompare of three texts), ByWordRt
+                                          (compare, getInlineChunks,
+                                          AdjustmentPunctuationMatcher, DefaultCorrector,
+                                          MergeDefaultCorrector, IgnoreSpacesCorrector,
+                                          MergeIgnoreSpacesCorrector), ByCharRt
+                                          (comparePunctuation), ChunkOptimizer
+                                          (WordChunkOptimizer), TrimUtil, ComparisonUtil
+                                          (isEqualTexts), DiffConfig
+                                          (USE_GREEDY_MERGE_MAGIC_RESOLVE,
+                                          DELTA_THRESHOLD_SIZE), and the limit of
+                                          DiffTooBigException from platform/util/diff:
+                                          DiffIterableUtil (diff), Diff (buildChanges),
+                                          Reindexer (discardUnique), MyersLCS
+                                          (executeWithThreshold);
+                                          tests from platform/diff-impl/tests:
+                                          LineComparisonMergeUtilTest,
+                                          ComparisonMergeUtilTestBase, MergeResolveUtilTest,
+                                          DiffTestCase (parseSource, parseLineMatching)
+
+The two-sequence diffs of merge3.rs use the Myers algorithm of the similar library, not
+IntelliJ's diff; where the two alignments tie, the result may differ.
+
+Ported code: merge editor
+-------------------------
+
+  src/merge/model.ts                      platform/diff-impl: MergeThreesideViewer
+                                          (replaceChange, ignoreChange, markChangeResolved,
+                                          canResolveChangeAutomatically,
+                                          resolveChangeAutomatically, processDocumentChange),
+                                          TextMergeChange (state), MergeModelBase
+                                          (replaceChange, appendChange,
+                                          moveChangesAfterInsertion, processDocumentChange),
+                                          DiffUtil (applyModification, getLinesContent,
+                                          updateRangeOnModification, getAffectedLineRange,
+                                          countLinesShift); LineTokenizer (tokenize);
+                                          DocumentImpl (replaceString, trimming of the common part);
+                                          DiffBundle (merge.differences.status.text,
+                                          merge.dialog.apply.partially.resolved.changes.
+                                          confirmation.message); LoadTextUtil
+                                          (convertLineSeparators)
+  src/merge/editors.ts                    platform/diff-impl: MergeThreesideViewer (actions,
+                                          commands, MyDividerPaintable, MyInnerDiffWorker,
+                                          applyNonConflictedChanges,
+                                          applyResolvableConflictedChanges, doRediff),
+                                          ThreesideDiffChangeBase (highlighting)
+  src/merge/gutter.ts                     platform/diff-impl: TextMergeChange
+                                          (installOperations, createApplyRenderer,
+                                          createIgnoreRenderer, createResolveRenderer),
+                                          DiffUtil (createTooltipText, getArrowIcon,
+                                          getArrowDownIcon); icons from platform/icons/src/diff/
+                                          (arrow, arrowRight, arrowLeftDown, arrowRightDown,
+                                          remove, magicResolve, dark version)
+  src/merge/editors.test.ts               tests from platform/diff-impl/tests: MergeTest,
+                                          MergeTestBase (TestBuilder, checkUndo)
+  src/merge/MergeWindow.svelte            platform/diff-impl: MergeRequestProcessor
+                                          (updateBottomActions, showInvalidRequestNotification),
+                                          MergeThreesideViewer (getResolveAction,
+                                          restartMergeResolveIfNeeded, onChangeResolved,
+                                          createToolbarActions), MergeUtil
+                                          (showConfirmDiscardChangesDialog,
+                                          showExitWithoutApplyingChangesDialog),
+                                          TextMergeViewer, BinaryMergeTool (getResolveAction),
+                                          TextMergeRequestImpl (applyResult); platform/vcs-impl:
+                                          MultipleFileMergeDialog (showMergeDialog); DiffBundle and
+                                          VcsBundle (texts)
+  src-tauri/src/commands.rs (merge)       platform/vcs-api: MergeDialogCustomizer
+                                          (getMergeWindowTitle); platform/core-impl:
+                                          LoadTextUtil (ConvertResult.majorLineSeparator)
+
+Ported code: HEAD, staged and local in three panes
+--------------------------------------------------
+
+  src/diff/ThreeVersionsPane.svelte       git4idea: GitStageDiffUtil (compareThreeVersions,
+                                          getTitle), GitStageThreeSideDiffAction;
+                                          platform/diff-impl: SimpleThreesideDiffViewer
+                                          (onBeforeDocumentChange, replaceChange,
+                                          MyDividerPaintable), SimpleThreesideDiffChange
+                                          (installOperations, createAcceptOperation,
+                                          getApplyActionText), ThreesideDiffChangeBase
+                                          (installHighlighters), DiffRequestFactoryImpl
+                                          (getTitle, getContentTitle, getRequestTitle);
+                                          platform/util/diff: MergeRangeUtil
+                                          (getLineLeftToRightThreeSideDiffType); GitBundle and
+                                          DiffBundle (texts)
+  src/merge/editors.ts (ThreePanes)       platform/diff-impl: ThreesideTextDiffViewer (three
+                                          editors, dividers and scrolling)
+  src-tauri/src/worktree_diff.rs          git4idea: GitIndexUtil (write, hashObject,
+  (three_sides, write_index)              updateIndex), GitFileStatus (has, path)
+
+Test data: src-tauri/src/log/testdata/
+--------------------------------------
+
+  testdata/element_generator/*   copied from platform/vcs-log/graph/testData/elementGenerator/
+                                 (the *_in.txt and *_out.txt pairs of PrintElementGeneratorTest)
+  testdata/linear_bek/*.txt      written from the cases in platform/vcs-log/graph/test/
+                                 com/intellij/vcs/log/graph/linearBek/ (BekTest.kt,
+                                 LinearBekTest.kt, LinearBekExpandTest.kt), in the text format
+                                 of those tests
+
+This data keeps its original license (Apache 2.0).
+
+This notice grants no rights over the names or logos of JetBrains or IntelliJ, which rama does
+not use.
