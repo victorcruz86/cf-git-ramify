@@ -670,6 +670,7 @@ describe("merge and rebase from the popup", () => {
 
     expect(invoke).toHaveBeenCalledWith("branch_merge", {
       branch: "side",
+      kind: "local",
       smart: false,
       expectedHead: HASH,
     });

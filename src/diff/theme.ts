@@ -25,6 +25,8 @@ export const diffHighlight = HighlightStyle.define([
 ]);
 
 const FONT = 'ui-monospace, "SF Mono", Menlo, monospace';
+const NUMBER_PADDING_LEFT = 8;
+const NUMBER_PADDING_RIGHT = 4;
 
 const editorStyles = EditorView.theme(
   {
@@ -55,7 +57,10 @@ const editorStyles = EditorView.theme(
     "&.cm-focused .cm-activeLineGutter:not([class*='rm-'])": {
       backgroundColor: "var(--editor-current-line)",
     },
-    ".cm-lineNumbers .cm-gutterElement": { padding: "0 4px 0 8px", minWidth: "20px" },
+    ".cm-lineNumbers .cm-gutterElement": {
+      padding: `0 ${NUMBER_PADDING_RIGHT}px 0 ${NUMBER_PADDING_LEFT}px`,
+      minWidth: "20px",
+    },
     // Change blocks. MergeView, in the diff of a commit, uses its own classes.
     ".rm-inserted": { backgroundColor: "var(--diff-inserted)" },
     ".rm-deleted": { backgroundColor: "var(--diff-deleted)" },
@@ -73,6 +78,8 @@ const editorStyles = EditorView.theme(
       borderTop: "1px solid var(--divider)",
       borderBottom: "1px solid var(--divider)",
     },
+    // What levels unchanged text that wrapped differently: AlignDiffInlayRenderer without a color.
+    ".rm-spacer.rm-spacer-blank": { backgroundColor: "transparent", border: "none" },
     ".rm-fold": {
       display: "flex",
       alignItems: "center",
@@ -86,13 +93,26 @@ const editorStyles = EditorView.theme(
     },
     ".rm-fold:hover": { color: "var(--text)" },
     ".rm-old-line": { whiteSpace: "pre" },
+    // The old lines of the unified view wrap like the document's (`.cm-lineWrapping`).
+    ".cm-lineWrapping .rm-old-line": {
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      overflowWrap: "anywhere",
+    },
     ".rm-checks": { width: "16px" },
+    // A wrapped line is one tall block: its checkbox stays on the first row, like its number.
     ".rm-checks .cm-gutterElement": {
       display: "flex",
-      alignItems: "center",
+      alignItems: "flex-start",
       justifyContent: "center",
     },
-    ".rm-check": { display: "inline-flex", color: "var(--icon)", cursor: "pointer" },
+    ".rm-check": {
+      display: "inline-flex",
+      alignItems: "center",
+      height: `${LINE_HEIGHT}px`,
+      color: "var(--icon)",
+      cursor: "pointer",
+    },
     ".rm-check svg": { display: "block" },
     ".rm-old-numbers .cm-gutterElement": { padding: "0 4px 0 8px", textAlign: "right" },
     // A hunk of another list, without a checkbox: like what is excluded in DiffDrawUtil, with no fill.
@@ -131,13 +151,20 @@ const editorStyles = EditorView.theme(
         ];
       }),
     ),
+    // On the first row of a wrapped line, like the checkboxes.
     ".rm-merge-actions .cm-gutterElement": {
       display: "flex",
-      alignItems: "center",
+      alignItems: "flex-start",
       gap: "2px",
       padding: "0 2px",
     },
-    ".rm-operation": { display: "inline-flex", color: "var(--icon)", cursor: "pointer" },
+    ".rm-operation": {
+      display: "inline-flex",
+      alignItems: "center",
+      height: `${LINE_HEIGHT}px`,
+      color: "var(--icon)",
+      cursor: "pointer",
+    },
     ".rm-operation svg": { display: "block" },
     // Diff of a commit, with MergeView.
     "&.cm-merge-a .cm-changedLine": { backgroundColor: "var(--diff-deleted)" },
@@ -158,3 +185,21 @@ const editorStyles = EditorView.theme(
 );
 
 export const diffTheme: Extension = [editorStyles, syntaxHighlighting(diffHighlight)];
+
+const numberColumns = new Map<number, Extension>();
+
+// A number column as wide as `digits` digits, whatever the editor's own line count. Each number
+// cell is a border box, so the padding is part of its width.
+export function numberColumn(digits: number): Extension {
+  let theme = numberColumns.get(digits);
+  if (!theme) {
+    const padding = NUMBER_PADDING_LEFT + NUMBER_PADDING_RIGHT;
+    theme = EditorView.theme({
+      ".cm-gutters .cm-lineNumbers .cm-gutterElement": {
+        minWidth: `calc(${digits}ch + ${padding}px)`,
+      },
+    });
+    numberColumns.set(digits, theme);
+  }
+  return theme;
+}

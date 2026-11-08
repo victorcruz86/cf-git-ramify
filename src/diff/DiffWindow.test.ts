@@ -6,6 +6,10 @@ import { emit, listen } from "@tauri-apps/api/event";
 import type { Hunk, WorktreeSides } from "../lib/api";
 import DiffWindow from "./DiffWindow.svelte";
 
+// What `EditorView.lineWrapping` puts on the content; `view.lineWrapping` only follows it after a
+// measure, which jsdom does not do.
+const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
+
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
 
@@ -174,6 +178,72 @@ test("the_align_setting_changes_the_option", async () => {
   await fireEvent.click(await screen.findByRole("menuitem", { name: /Align Changes Highlighting/ }));
 
   expect(JSON.parse(localStorage.getItem("diff.options") ?? "{}").align).toBe(true);
+});
+
+// Both sides of the file shown.
+const shownViews = () =>
+  [...document.querySelectorAll<HTMLElement>(".rm-editors .cm-editor")].map(
+    (dom) => EditorView.findFromDOM(dom) as EditorView,
+  );
+
+const menuLabels = (menu: HTMLElement) =>
+  [...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.getAttribute("aria-label"));
+
+const ticked = (name: string) =>
+  screen.getByRole("menuitem", { name }).querySelector(".tick")?.textContent === "✓";
+
+test("the_gear_has_soft_wrap_before_align", async () => {
+  mockCommands();
+  await open();
+  const before = shownViews();
+  expect(before).toHaveLength(2);
+  // The user's place `Default` has it on.
+  expect(before.map(wrapped)).toEqual([true, true]);
+
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const menu = await screen.findByRole("menu");
+  expect(menuLabels(menu)).toEqual(["Soft-Wrap", "Align Changes Highlighting"]);
+  expect(ticked("Soft-Wrap")).toBe(true);
+  await fireEvent.click(screen.getByRole("menuitem", { name: "Soft-Wrap" }));
+
+  expect(shownViews()).toEqual(before);
+  expect(before.map(wrapped)).toEqual([false, false]);
+  expect(localStorage.getItem("diff.wrap.Default")).toBe("false");
+  expect(JSON.parse(localStorage.getItem("diff.options") ?? "{}")).not.toHaveProperty("wrap");
+
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(ticked("Soft-Wrap")).toBe(false);
+  await fireEvent.click(screen.getByRole("menuitem", { name: "Soft-Wrap" }));
+
+  expect(shownViews()).toEqual(before);
+  expect(before.map(wrapped)).toEqual([true, true]);
+  expect(localStorage.getItem("diff.wrap.Default")).toBe("true");
+});
+
+test("right_click_on_the_gutter_offers_soft_wrap", async () => {
+  mockCommands();
+  await open();
+  const before = shownViews();
+
+  const number = document.querySelector<HTMLElement>(".cm-gutters .cm-gutterElement + .cm-gutterElement");
+  await fireEvent.contextMenu(number as HTMLElement);
+
+  const menu = await screen.findByRole("menu");
+  expect(menuLabels(menu)).toEqual(["Soft-Wrap"]);
+  expect(ticked("Soft-Wrap")).toBe(true);
+  await fireEvent.click(screen.getByRole("menuitem", { name: "Soft-Wrap" }));
+
+  expect(shownViews()).toEqual(before);
+  expect(before.map(wrapped)).toEqual([false, false]);
+  expect(localStorage.getItem("diff.wrap.Default")).toBe("false");
+
+  // The text keeps the menu it had.
+  await fireEvent.contextMenu(document.querySelector(".rm-editor .cm-line") as HTMLElement);
+  expect(menuLabels(await screen.findByRole("menu"))).toEqual([
+    "Rollback Lines",
+    "Move Lines to Another Changelist...",
+    "Show Diff for Lines",
+  ]);
 });
 
 test("an_included_file_has_all_its_hunks_checked", async () => {

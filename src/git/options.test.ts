@@ -14,7 +14,15 @@ import {
 
 const MODERN = parseGitVersion("git version 2.39.5 (Apple Git-154)");
 const compatible = (...chosen: MergeOption[]) => [...mergeOptionsCompatible(chosen)].sort();
-const ALL: MergeOption[] = ["ffOnly", "message", "noCommit", "noFf", "noVerify", "squash"];
+const ALL: MergeOption[] = [
+  "allowUnrelatedHistories",
+  "ffOnly",
+  "message",
+  "noCommit",
+  "noFf",
+  "noVerify",
+  "squash",
+];
 
 describe("merge", () => {
   test("the_options_come_out_in_intellijs_order_with_their_description", () => {
@@ -25,6 +33,7 @@ describe("merge", () => {
       ["message", "-m"],
       ["noCommit", "--no-commit"],
       ["noVerify", "--no-verify"],
+      ["allowUnrelatedHistories", "--allow-unrelated-histories"],
     ]);
     expect(MERGE_OPTIONS.map(({ description }) => description)).toEqual([
       "Create a merge commit even if it can be fast-forwarded",
@@ -33,6 +42,7 @@ describe("merge", () => {
       "Specify a message for the merge commit",
       "Do not commit the merge result",
       "Bypass the pre-merge and commit message hooks",
+      "Allow merging histories that do not share a common ancestor.",
     ]);
   });
 
@@ -48,6 +58,8 @@ describe("merge", () => {
     expect(grey("message")).toEqual(["ffOnly", "noCommit", "squash"]);
     expect(grey("noCommit")).toEqual(["message"]);
     expect(grey("noVerify")).toEqual([]);
+    expect(grey("allowUnrelatedHistories")).toEqual([]);
+    expect(grey("noFf", "allowUnrelatedHistories")).toEqual(["ffOnly", "squash"]);
     expect(grey("noFf", "noVerify")).toEqual(["ffOnly", "squash"]);
     expect(grey("message", "noFf")).toEqual(["ffOnly", "noCommit", "squash"]);
   });
@@ -68,8 +80,10 @@ describe("merge", () => {
     expect(ids("3.0.0")).toContain("noVerify");
     // Without knowing the version, an option that git might not know is not risked.
     expect(mergeOptionsAvailable(null).map(({ id }) => id)).not.toContain("noVerify");
-    expect(ids("2.24.0")).toHaveLength(6);
-    expect(ids("2.23.0")).toHaveLength(5);
+    expect(ids("2.24.0")).toHaveLength(7);
+    expect(ids("2.23.0")).toHaveLength(6);
+    expect(ids("2.23.0")).toContain("allowUnrelatedHistories");
+    expect(mergeOptionsAvailable(null).map(({ id }) => id)).toContain("allowUnrelatedHistories");
   });
 
   test("what_is_remembered_loses_no_verify_if_git_does_not_know_it_and_comes_out_in_enum_order", () => {
@@ -106,6 +120,7 @@ describe("rebase", () => {
       "keepEmpty",
       "root",
       "interactive",
+      "updateRefs",
     ]);
     expect(REBASE_OPTIONS.map(({ description }) => description)).toEqual([
       "Select another branch to rebase",
@@ -114,6 +129,7 @@ describe("rebase", () => {
       "Do not remove empty commits during rebase",
       "Rebase all commits in the branch",
       "Edit commits before rebasing",
+      "Auto-update branches pointing to rebased commits",
     ]);
     expect(REBASE_OPTIONS.filter(({ separatorAbove }) => separatorAbove).map(({ id }) => id)).toEqual(
       ["interactive"],
@@ -127,6 +143,8 @@ describe("rebase", () => {
     expect(rebaseFlagText("onto", MODERN)).toBe("--onto");
     expect(rebaseFlagText("switchBranch", MODERN)).toBe("");
     expect(rebaseFlagText("interactive", OLD)).toBe("--interactive");
+    expect(rebaseFlagText("updateRefs", MODERN)).toBe("--update-refs");
+    expect(rebaseFlagText("updateRefs", OLD)).toBe("--update-refs");
   });
 
   test("rebase_merges_and_interactive_exclude_each_other_only_with_git_older_than_2_22", () => {
@@ -135,5 +153,13 @@ describe("rebase", () => {
     expect(grey(["rebaseMerges"], OLD)).toEqual(["interactive"]);
     expect(grey(["keepEmpty", "root", "onto"], OLD)).toEqual([]);
     expect(grey([], OLD)).toEqual([]);
+  });
+
+  test("update_refs_disables_no_other_option_and_nothing_disables_it", () => {
+    expect(grey(["updateRefs"])).toEqual([]);
+    expect(grey(["updateRefs", "interactive", "rebaseMerges"])).toEqual([]);
+    expect(grey(["updateRefs"], OLD)).toEqual([]);
+    expect(grey(["interactive"], OLD)).not.toContain("updateRefs");
+    expect(grey(["rebaseMerges"], OLD)).not.toContain("updateRefs");
   });
 });

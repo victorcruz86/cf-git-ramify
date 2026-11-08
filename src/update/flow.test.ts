@@ -14,6 +14,7 @@ import type {
 import { dismiss, notifications, type Shown } from "../lib/notifications";
 import {
   UPDATE_ACTIONS,
+  fetching,
   updateFlow,
   type PullChoice,
   type TrackedChoice,
@@ -21,6 +22,7 @@ import {
   type UpdateChoice,
   type UpdateRequest,
 } from "./flow";
+import PublishedCommitsDialog from "../branches/PublishedCommitsDialog.svelte";
 import FixTrackedDialog from "./FixTrackedDialog.svelte";
 import RebaseMergesDialog from "./RebaseMergesDialog.svelte";
 import UpdateDialog from "./UpdateDialog.svelte";
@@ -1096,7 +1098,7 @@ describe("when opening a repository", () => {
   test("rebasing_merge_commits_does_not_continue_in_another_repository", async () => {
     const update = vi.fn(async () => result());
     update.mockImplementationOnce(async () =>
-      result({ outcome: { kind: "rebasingMergeCommits" } }),
+      result({ outcome: { kind: "rebasingMergeCommits", reason: { branch: "feature" } } }),
     );
     const backend = api({ update });
     const { updateProject, repositoryChanged, ask } = flow(backend);
@@ -1252,7 +1254,7 @@ describe("tracked branch", () => {
 });
 
 describe("Rebasing Merge Commits", () => {
-  const stopped = () => result({ outcome: { kind: "rebasingMergeCommits" } });
+  const stopped = () => result({ outcome: { kind: "rebasingMergeCommits", reason: { branch: "feature" } } });
   const rebasing = () => ({ ...SETTINGS, updateMethod: "rebase" }) as Settings;
 
   test("the_three_buttons", async () => {
@@ -1286,7 +1288,7 @@ describe("Rebasing Merge Commits", () => {
 
     await flow(backend, ["rebase"]).updateProject();
 
-    expect(update).toHaveBeenLastCalledWith("rebase", { fetched: true, rebaseMerges: true });
+    expect(update).toHaveBeenLastCalledWith("rebase", { fetched: true, rebaseMerges: "feature" });
   });
 
   test("cancel_does_not_update", async () => {
@@ -1297,6 +1299,132 @@ describe("Rebasing Merge Commits", () => {
 
     expect(update).toHaveBeenCalledTimes(1);
     expect(titles()).toEqual(["Update canceled"]);
+  });
+});
+
+// Decision 1: Rust asks before saving, so `Cancel` has nothing to bring back.
+describe("Rebasing Published Commit", () => {
+  const stopped = () =>
+    result({
+      outcome: {
+        kind: "rebasingPublishedCommits",
+        reason: { branch: "feature", protected: "origin/main" },
+      },
+    });
+  const rebasing = () => ({ ...SETTINGS, updateMethod: "rebase" }) as Settings;
+  const stoppingOnce = () => {
+    const update = vi.fn(async (): Promise<UpdateResult> => result());
+    update.mockImplementationOnce(async () => stopped());
+    return update;
+  };
+
+  test("the_outcome_opens_rebasing_published_commit_with_cancel_as_default", async () => {
+    const update = stoppingOnce();
+    const { updateProject, ask } = flow(api({ update, settings: vi.fn(async () => rebasing()) }));
+
+    await updateProject();
+
+    expect(ask).toHaveBeenCalledWith({ kind: "publishedCommits" });
+    const onanswer = vi.fn();
+    render(PublishedCommitsDialog, { onanswer });
+    expect(screen.getByRole("dialog", { name: "Rebasing Published Commit" })).toBeTruthy();
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(document.activeElement).toBe(cancel);
+    expect(screen.getByRole("button", { name: "Rebase Anyway" })).toBeTruthy();
+    await fireEvent.submit(cancel.closest("form") as HTMLFormElement);
+    expect(onanswer).toHaveBeenLastCalledWith(false);
+  });
+
+  test("rebase_anyway_repeats_without_another_fetch_or_question", async () => {
+    const update = stoppingOnce();
+    const backend = api({ update, settings: vi.fn(async () => rebasing()) });
+    const { updateProject, ask } = flow(backend, [true]);
+
+    await updateProject();
+
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenLastCalledWith("rebase", { fetched: true, publishedConfirmed: "feature" });
+    expect(titles()).toEqual(["All files are up to date"]);
+  });
+
+  test("cancel_shows_update_canceled", async () => {
+    const update = vi.fn(async () => stopped());
+    const backend = api({ update, settings: vi.fn(async () => rebasing()) });
+
+    await flow(backend, [false]).updateProject();
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(titles()).toEqual(["Update canceled"]);
+  });
+
+  test("closing_the_dialog_is_cancel", async () => {
+    const update = vi.fn(async () => stopped());
+    const backend = api({ update, settings: vi.fn(async () => rebasing()) });
+
+    await flow(backend, [null]).updateProject();
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(titles()).toEqual(["Update canceled"]);
+  });
+
+  test("update_selected_behaves_the_same", async () => {
+    const update = stoppingOnce();
+    const backend = api({ update, settings: vi.fn(async () => rebasing()) });
+    const { run, ask } = flow(backend, [true]);
+
+    await run("UpdateFiles");
+
+    expect(ask).toHaveBeenCalledWith({ kind: "publishedCommits" });
+    expect(update).toHaveBeenLastCalledWith("rebase", { fetched: true, publishedConfirmed: "feature" });
+  });
+
+  test("after_rebasing_merge_commits_it_keeps_the_first_answer", async () => {
+    const update = vi.fn(async (): Promise<UpdateResult> => result());
+    update.mockImplementationOnce(async () => result({ outcome: { kind: "rebasingMergeCommits", reason: { branch: "feature" } } }));
+    update.mockImplementationOnce(async () => stopped());
+    const backend = api({ update, settings: vi.fn(async () => rebasing()) });
+    const { updateProject, ask } = flow(backend, ["rebase", true]);
+
+    await updateProject();
+
+    expect(ask.mock.calls.map(([request]) => request.kind)).toEqual([
+      "rebaseMerges",
+      "publishedCommits",
+    ]);
+    expect(update).toHaveBeenLastCalledWith("rebase", {
+      fetched: true,
+      rebaseMerges: "feature",
+      publishedConfirmed: "feature",
+    });
+  });
+
+  test("pull_into_with_rebase_asks_and_repeats_towards_the_same_branch", async () => {
+    const update = vi.fn(async () => result());
+    const backend = api({ update, pullInto: vi.fn(async () => stopped()) });
+
+    await flow(backend, [true]).pullInto("origin/other", "rebase");
+
+    expect(update).toHaveBeenCalledWith("rebase", {
+      target: "origin/other",
+      fetched: true,
+      publishedConfirmed: "feature",
+    });
+  });
+
+  test("it_does_not_continue_in_another_repository", async () => {
+    const update = stoppingOnce();
+    const backend = api({ update, settings: vi.fn(async () => rebasing()) });
+    const { updateProject, repositoryChanged, ask } = flow(backend);
+    ask.mockImplementation(async () => {
+      repositoryChanged({ pending: [], state: { operation: null } } as unknown as RepoInfo);
+      return true;
+    });
+
+    await updateProject();
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(titles()).toEqual([]);
   });
 });
 
@@ -1391,5 +1519,83 @@ describe("what another operation saved", () => {
     await update.restoreSaved([REBASE_SAVED], SAVING);
 
     expect(shown()).toEqual([]);
+  });
+});
+
+// Decision 5: Fetch is disabled while any fetch of the app runs, and the whole Update counts.
+describe("fetching flag", () => {
+  const pending = <T>() => {
+    let settle = (_: T) => {};
+    let fail = (_: unknown) => {};
+    const promise = new Promise<T>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    return { promise, settle, fail };
+  };
+  const running = () => get(fetching);
+
+  test("fetch_is_disabled_while_any_fetch_runs", async () => {
+    expect(running()).toBe(false);
+
+    const explicit = pending<{ pruned: string[]; failed: never[] }>();
+    const run = flow(api({ fetch: vi.fn(() => explicit.promise) })).fetch();
+    expect(running()).toBe(true);
+    explicit.settle({ pruned: [], failed: [] });
+    await run;
+    expect(running()).toBe(false);
+
+    const updating = pending<UpdateResult>();
+    const updated = flow(api({ update: vi.fn(() => updating.promise) })).updateProject();
+    await vi.waitFor(() => expect(running()).toBe(true));
+    updating.settle(result());
+    await updated;
+    expect(running()).toBe(false);
+
+    const pulling = pending<UpdateResult>();
+    const pulled = flow(api({ pull: vi.fn(() => pulling.promise) }), [PULL]).pull();
+    await vi.waitFor(() => expect(running()).toBe(true));
+    pulling.settle(result());
+    await pulled;
+    expect(running()).toBe(false);
+  });
+
+  test("it_comes_back_after_a_failed_or_cancelled_fetch", async () => {
+    await flow(
+      api({
+        fetch: vi.fn(async () => {
+          throw { kind: "cancelled", message: "" };
+        }),
+      }),
+    ).fetch();
+    expect(running()).toBe(false);
+
+    await flow(
+      api({
+        update: vi.fn(async () => {
+          throw new Error("boom");
+        }),
+      }),
+    ).updateProject();
+    expect(running()).toBe(false);
+  });
+
+  test("it_is_subscribable_and_stays_on_until_the_last_overlapping_run_ends", async () => {
+    const first = pending<{ pruned: string[]; failed: never[] }>();
+    const second = pending<UpdateResult>();
+    const seen: boolean[] = [];
+    const stop = fetching.subscribe((value) => seen.push(value));
+
+    const one = flow(api({ fetch: vi.fn(() => first.promise) })).fetch();
+    const two = flow(api({ update: vi.fn(() => second.promise) })).updateProject();
+    await vi.waitFor(() => expect(running()).toBe(true));
+    first.settle({ pruned: [], failed: [] });
+    await one;
+    expect(running()).toBe(true);
+    second.settle(result());
+    await two;
+    stop();
+
+    expect(seen).toEqual([false, true, false]);
   });
 });

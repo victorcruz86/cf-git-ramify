@@ -121,6 +121,8 @@ export interface BranchUi {
   rebaseConflicts?: (saved: SavedChanges[]) => Promise<void>;
   // What was tried to bring back and did not come back whole: the Update notices.
   restored?: (kept: KeptChanges[], saving: Saving) => void;
+  // The Conflicts dialog, for the `Resolve conflicts…` of the unstash notice.
+  resolveConflicts?: () => Promise<unknown>;
   // `Update` of a branch: it is the Update Project flow, which lives in `src/update`.
   updateBranch?: (name: string) => Promise<void>;
   // The push dialog, which lives in `src/push`.
@@ -228,15 +230,18 @@ function problemRequest(operation: string, force: string, files: string[]): Dial
 const withFailure = (failure: string | null, text: string) =>
   failure ? `${failure}\n${text}` : text;
 
-function restoredWithConflicts(message: string, failure: string | null): Notification {
+// The stash is not named: `View saved changes…` comes with the Stash tab, and until then `git stash
+// list` shows it.
+function restoredWithConflicts(failure: string | null, resolve?: () => void): Notification {
   return {
     kind: "warning",
     sticky: true,
     title: "Local changes were restored with conflicts",
     body: withFailure(
       failure,
-      `Your uncommitted changes were saved to stash: ${message}. Unstash is not complete. Resolve conflicts and drop the stash.`,
+      "Your uncommitted changes were saved to stash.\nUnstash is not complete, you have unresolved merges in your working tree\nResolve conflicts and drop the stash.",
     ),
+    actions: resolve ? [{ label: "Resolve conflicts…", run: resolve }] : undefined,
   };
 }
 
@@ -320,7 +325,12 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
     if (outcome.kind === "done") {
       if (success) notify({ kind: "info", title: success });
     } else if (outcome.kind === "conflicts") {
-      notify(restoredWithConflicts(outcome.stash.message, outcome.failure));
+      notify(
+        restoredWithConflicts(
+          outcome.failure,
+          ui.resolveConflicts ? () => void ui.resolveConflicts?.() : undefined,
+        ),
+      );
     } else if (outcome.kind === "restoredWithoutIndex") {
       notify(restoredWithoutIndex(outcome.stash.message, outcome.failure));
     } else if (outcome.kind === "notRestored") {
@@ -341,7 +351,7 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
   });
 
   async function checkout(target: string, mode: CheckoutMode = "plain", label = shown(target)) {
-    const outcome = await attempt(`Couldn't checkout ${label}`, () => api.checkout(target, mode));
+    const outcome = await attempt(`Could not checkout ${label}`, () => api.checkout(target, mode));
     if (!outcome) return;
     await finish(
       outcome,
@@ -408,7 +418,7 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
 
   async function checkoutRemote(branch: string, choice: Partial<RemoteChoice> = {}) {
     const chosen = { name: null, dropCommits: false, mode: "plain" as const, ...choice };
-    const outcome = await attempt(`Couldn't checkout ${branch}`, () =>
+    const outcome = await attempt(`Could not checkout ${branch}`, () =>
       api.checkoutRemote(branch, chosen),
     );
     if (!outcome) return;
@@ -437,7 +447,7 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
 
   async function create(branch: NewBranch, label: string) {
     const { name } = branch;
-    const outcome = await attempt(`Couldn't create new branch ${name}`, () => api.create(branch));
+    const outcome = await attempt(`Could not create new branch ${name}`, () => api.create(branch));
     if (!outcome) return;
     if (outcome.kind === "localHasCommits") {
       const question = branch.checkout
@@ -482,14 +492,14 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
   }
 
   async function newBranchAt(hash: string) {
-    const commit = await attempt("Couldn't read the commit", () => api.commit(hash));
+    const commit = await attempt("Could not read the commit", () => api.commit(hash));
     if (commit) await newBranch(hash, shortHash(hash), suggestedName(commit.refs ?? []));
   }
 
   async function rename(branch: string) {
     const name = await ui.ask<string>({ kind: "rename", branch, names: await api.branches() });
     if (!name) return;
-    const done = await attempt(`Couldn't rename ${branch} to ${name}`, async () => {
+    const done = await attempt(`Could not rename ${branch} to ${name}`, async () => {
       await api.rename(branch, name);
       return true;
     });
@@ -497,14 +507,14 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
   }
 
   async function restore(deleted: DeletedBranch) {
-    await attempt(`Couldn't Restore ${deleted.name}`, () => api.restore(deleted));
+    await attempt(`Could not Restore ${deleted.name}`, () => api.restore(deleted));
   }
 
   async function viewCommits(deleted: DeletedBranch) {
     const { name, tip, base } = deleted;
     if (!base) return;
     const started = generation;
-    const commits = await attempt("Couldn't read the commits", () => api.unmerged(base, tip));
+    const commits = await attempt("Could not read the commits", () => api.unmerged(base, tip));
     if (!commits || generation !== started) return;
     const wanted = await ui.ask<boolean>({
       kind: "unmerged",
@@ -566,7 +576,7 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
         actions: [
           {
             label: "Restore",
-            run: () => attempt(`Couldn't Restore ${name}`, () => api.restoreTag(deleted)),
+            run: () => attempt(`Could not Restore ${name}`, () => api.restoreTag(deleted)),
           },
         ],
       },
@@ -628,7 +638,7 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
     const choice = await ui.ask<TagChoice>({ kind: "tag", hash });
     if (!choice) return;
     const { name, target, message, force } = choice;
-    const done = await attempt("Couldn't create tag", async () => {
+    const done = await attempt("Could not create tag", async () => {
       await api.tag(name, target, message, force);
       return true;
     });

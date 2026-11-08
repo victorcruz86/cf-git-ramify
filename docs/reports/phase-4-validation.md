@@ -181,3 +181,171 @@ The tests of phase 3 at its close were 1,574 in the Rust library, 1,637 in the i
 ### Conclusion
 
 The behaviour that can be tested without a screen and without a keyboard is tested, with real git where it matters, and follows what the 241 sources say, except for the differences in section 2. Part 1 is not validated. It ends when you complete the list in section 5 and the points in section 6 that need your machine are settled.
+
+## Part 2: alignment with IntelliJ 2024.1
+
+Date: 2026-11-07. Plan: `docs/superpowers/plans/2026-11-04-phase-4-2-reference-alignment.md`. Starting point: `phase-4-reference-change.md`. The part has 19 commits (`9f4e9c7..12b3aef`) in 12 tasks, each reviewed, plus this report, the code fix of Task 12 (`fix: exact spacer widgets and the MIT notice of the spacer model`) and the fixes of the final review. The commits from this report on are named by subject: their hashes changed when their trailers were corrected.
+
+### Summary
+
+- Part 2 is done in essence: what phases 1 to 3 built against 2023.2 behaves as 2024.1 in the copied texts, the new confirmations and options, the branches popup search, the merge and rebase toolbar widget and soft wraps in the diff.
+- **`done` means tests, not use**, as in part 1. The Rust logic is tested with real git and throwaway repositories; the interface in jsdom with the Tauri API simulated. jsdom lays nothing out, so **no soft wrap was ever seen wrapping**: the wrapping itself, the level of the aligned diff and the jumps when estimated lines are measured are only proven for the pure arithmetic and for the CodeMirror configuration. The part cannot be accepted without the list in section 5.
+- Matrix: 13 rows closed (the 3 of Task 1, `ChangesView.AddUnversioned` and `Git.Add` from `partial` to `done`, the popup's `git.branches.popup.filter.by.action`, `Vcs.ShowMessageHistory`, four new rows of section 2, one new setting row and the toolbar widget row that was listed out of scope), 18 rows got a part 2 note without changing status, and 5 rows stay pending with their reason (decision 11, section 2).
+- The part had 11 rulings during execution that change behaviour or depart from the plan; the ones that change what the user sees are in section 2, each with its cost.
+
+### 1. What was built
+
+- **Copied texts (Task 1).** About 25 texts follow 241: `Could not …` instead of `Couldn't …`, `Dropped N commits`, `Cannot undo drop`, `Could not save uncommitted changes`, `View and reset filters`, `Filter by Commit Message or Hashes` with the placeholder `Text or hash`. The unmerged files and unstash conflict cards use 241's text and offer `Resolve conflicts…`. Rust constants are pinned by tests (Task 1 fix round, and the pinned texts of `5ad5c44`).
+- **Drop Commits asks (Task 2).** `Drop Commits` / `Do you want to drop N commit(s)?` with OK by default and `Don't ask again`; setting `Ask for confirmation to drop commits` in a new `Confirmation` section; the success notification lists up to 10 subjects.
+- **Merge and Rebase options (Task 3).** `--allow-unrelated-histories` in Merge and `--update-refs` in Rebase, last in their option lists.
+- **Edit Commit Message (Task 4).** `Cancel Reword` in the interactive rebase dialog; message history button and ⌃M in the reword and squash dialog; `historyMenu` shared with the commit dialog.
+- **`Rebasing Published Commit` (Task 5).** Update with rebase, `Update Selected`, `Pull into … Using Rebase` and the auto-update of a rejected push ask `Rebase Anyway` / `Cancel`, before anything is saved. `Pull…` does not ask, as in 241.
+- **Popup merge and Push up to Here (Task 6).** The branches popup merges the full ref of the clicked item; `Push All up to Here…` no longer needs a local branch.
+- **Branches popup search (Task 7).** It filters actions too, with `Show Actions in Search Results` in the gear, a matching action selected first, 375×300 minimum size.
+- **Fetch and protected patterns (Task 8).** Fetch is disabled while any fetch of the app runs (menu, popup and Branches panel read one shared flag); protected branch patterns are checked while typing.
+- **Add to VCS (Task 9).** `git add --ignore-errors -A -- <paths>` from Local Changes and from the commit dialog's browser, ⌥⌘A, files land in the active list (the dialog's list in the dialog) and are included in the dialog. The commit pipeline needed no fix: a file added this way stays added and out of the commit of another list.
+- **Small alignments and the widget (Task 10).** `INTELLIJ_GIT_EXECUTABLE=true` in every git command; `hasExternalSSHAgent` for a symlinked launchd path; a row of icon buttons after the branch widget with `Resolve Conflicts…`, `Continue Rebase` and the aborts.
+- **Soft-Wrap (Tasks 11 and 12).** The option `Soft-Wrap` in the gear of the diff window and in the gutter menu of every diff and merge pane, stored per place. **The places are five, not four:** `Default`, `CommitDialog`, `ChangesView`, `Merge`, plus `VcsLogView`, which Task 11's fix round added for the docked diff of the Log and the Push dialog (default off, as in 241). Task 12 replaces the line-count spacers of the aligned diff with spacers measured in pixels when wrap is on (`src/diff/spacers.ts`, a pure function, and a measuring pass in `editor.ts`), and gives both number gutters the same width so equal lines wrap at the same width. `NOTICE` credits the ported algorithm.
+
+### 2. Decisions and rulings that depart from IntelliJ
+
+Each one with what it costs if it turns out to be wrong.
+
+**Decisions of the plan (1 to 11)**
+
+1. **`Rebasing Published Commit` asks before saving.** 241 saves the changes, asks, and Cancel leaves them in the stash with `Local changes were not restored`. rama asks first, as it already does for `Rebasing Merge Commits`. Cost: the order differs from IntelliJ and there is no "not restored" card after Cancel.
+2. **The unstash conflict card has 241's text and no stash message line.** `View saved changes…` comes with the Stash tab in part 3. Cost: until then the card does not name the stash; `git stash list` does.
+3. **Protected patterns are checked while typing, saving is not blocked, and the notification on save is gone.** The cause is the Rust `regex` crate's text, not Java's. Cost: the cause reads differently from IntelliJ's.
+4. **`INTELLIJ_GIT_EXECUTABLE=true` is set for every git command.** The constraint "do not use the name of IntelliJ" was read as covering user-facing text and logos, not an environment variable that only hooks read. Cost: a hook that identifies IntelliJ by this variable takes rama for IntelliJ; one line to remove in `git.rs`.
+5. **Fetch is disabled for the whole Update, Pull included.** 241 disables it only while a fetch request is open. The flag is raised for the `git pull` call, not while the Pull dialog is open. Cost: during the merge or rebase phase of an Update, Fetch stays disabled a few seconds more.
+6. **`Add to VCS` is `git add --ignore-errors -A -- <paths>`, as 241.** Cost: if the pipeline mishandled the added file, the task would fail review; it did not (`committing_another_changelist_leaves_the_added_file_out`).
+7. **The merge and rebase widget is icon buttons after the branch widget,** with 241's tooltips and colours. The stop colour comes from `darcula.theme.json` because `expUI_dark` does not define it; the icons are drawn for rama. Cost: none expected.
+8. **The branches popup is 375×300 at least.** Cost: none.
+9. **Soft wrap is stored per place:** `Default` on, the others off (the user's values for the others were not read). Cost: if the user had wraps on in other places, they turn them on once per place.
+10. **Wrapping details not copied:** no sticky line number inside a wrapped line, no forced wrap over 100000 characters, wrapped rows start at column 0. Cost: small visual differences on long lines.
+11. **Rows that stay out, with their reason in the matrix:** `Git.Stage.ToggleCommitAll` (and `Git.Stage.Configure`, which the matrix has no row for) are non-modal staging only; `Git.Stage.Stash.Files` needs the stash of part 3; `Vcs.Log.OpenAnotherTabInEditor` and `Vcs.Diff.EnableDisableCombinedDiff` need editor tabs; `Vcs.Diff.ToggleSearchInChanges` needs a search in the diff. Cost: those rows stay pending.
+
+**Rulings taken during the part**
+
+- **Cancel Reword fires only on Esc and Reset** (the triggers research item 5 found in 241). Clicking another row applies the edit; the dialog's own Cancel keeps its `Cancel Rebase` question. Cost if wrong: one more confirmation path.
+- **Reset followed by `Keep Editing` keeps editing and does not reset.** 241 resets afterwards. Cost: one line in `reset()`.
+- **`published_confirmed` and `rebase_merges` are the branch that was asked about** (`Option<String>`), not a bool. If the current branch changes while `Rebase Anyway` or `Rebasing Merge Commits` is open, it asks again for the new one. Cost: one field type in Rust and TypeScript each, and the branch in the `RebasingMergeCommits` outcome.
+- **The push that is rejected and updated automatically also asks `Rebasing Published Commit`,** because in 241 it goes through the same updater. Cost: two tests and `askPublished` in `push/model.ts` if it is to be removed.
+- **`Pull…` passes the branch it pulls into as confirmed for both questions** (merge commits and published commits), so it never asks, as in 241. If another branch is current by the time Update checks, `Pull…` shows `Update canceled`.
+- **`Add to VCS` failures are a notification,** `Failed to add files` / `The following problems have occurred when adding the files:`, in Local Changes and in the dialog; 241 shows an error dialog inside the commit dialog. No confirmation for ignored files, because Local Changes does not list them. Cost: a notification where 241 has a dialog.
+- **A partial failure of `Add to VCS` does not move or include the files that were added anyway** (241 moves what was processed). They keep the list they had.
+- **`Resolve Conflicts…` is hidden in the widget during a rebase** (241's `GitResolveConflictsAction.update` for the widget place); the Git menu item is not affected.
+- **Equal number-gutter widths only when the diff is aligned and wrap is on,** not in every aligned diff. With wrap off the DOM is today's. Cost: one line in `equalNumbers`.
+- **`VcsLogView` is a fifth Soft-Wrap place.** Without it the docked diff of the Log and the Push dialog had no way to wrap. Cost: one place and one gutter menu to remove.
+- **`Couldn't read the commit(s)` became `Could not read the commit(s)`,** rama's own text changed for consistency. Cost: one string.
+
+### 3. Known gaps a user could notice
+
+From the items the reviews deferred:
+
+- **Soft wrap of an aligned diff is a first version.** Lines below the viewport are estimated until they are measured, so scrolling to them can jump once (section 5). IntelliJ has no jump because its soft wrap model covers the whole document. The gutter menu has only `Soft-Wrap`, while 241's also splices the align item and other editor settings.
+- **Combined `DiffWindow` placeholders** are measured with the previous wrap value until the file is remounted.
+- **`LogPanel` and `PushDialog` with a docked diff each** would not follow a toggle live from one to the other (only if both are mounted together).
+- **`.rm-old-line` wraps with `pre-wrap`,** CodeMirror lines with `break-spaces`: the wrap point can differ for trailing spaces.
+- **Closing the Drop dialog by a repository change or Esc counts as Cancel;** a failing settings save after OK aborts the drop (IntelliJ remembers the checkbox and still drops).
+- **The unmerged files card is fixed to `merge`** (the `{0}` is never another operation).
+- **The widget's Abort/Continue split is detected by label,** not by action id.
+- **The branches popup:** the highlight snippet is rendered for action rows with the toggle on also when the query is empty; no test filters the ongoing-operation rows by label.
+- **An old invalid-pattern error stays visible** until the debounced check (300 ms) returns; `protected_branches_set` still returns the invalid list and the interface ignores it.
+- **`Fetch` has no re-entry guard** in `fetch()` itself; its entry points are disabled instead.
+- **`editor.ts` grew to 1,273 lines.** The arithmetic is in `spacers.ts`; the glue is three small methods and a listener.
+- **`droppedSubjects` counts code points,** Java counts UTF-16 units (only astral characters differ).
+
+### 4. What was proven with tests
+
+Each feature and the tests that name it. The exact names are in the Result column of `docs/parity-matrix.md`.
+
+- **Texts:** `unmerged_files_text_and_action_follow_241`, `unstash_with_conflicts_says_241s_text_and_offers_resolve`, `the_text_filter_shows_text_or_hash`; in Rust one test per constant (`a_failed_stash_says_could_not_stash`, `a_failed_save_is_titled_could_not_save_uncommitted_changes`, `an_unidentifiable_git_names_git_with_a_capital`, `a_missing_remote_says_could_not_find_it`).
+- **Drop:** `drop_asks_drop_commits_with_ok_and_cancel`, `cancelling_the_drop_question_runs_nothing`, `drop_asks_after_the_check_and_before_reading_the_state`, `dont_ask_again_is_saved_only_on_ok`, `without_the_setting_drop_does_not_ask`, `drop_success_lists_the_subjects`, `the Confirmation section asks to confirm dropping commits and saves it`, and in Rust `show_drop_commit_dialog_defaults_to_true`.
+- **Options:** `update_refs_comes_out_as_a_button_and_travels_in_the_answer`, `update_refs_is_saved_last_and_travels_in_the_params`; in Rust `merge_with_each_option_launches_the_intellij_command`, `merge_with_allow_unrelated_histories_joins_histories_without_a_common_ancestor`, `rebase_with_update_refs_passes_the_flag`, `update_refs_is_remembered_per_repository`.
+- **Edit Commit Message:** `escape_with_a_changed_reword_asks_cancel_reword`, `escape_with_an_unchanged_reword_closes_silently`, `reset_with_a_changed_reword_asks_first`, `the_reword_dialog_has_the_history_button`, `the_history_button_is_disabled_with_an_empty_history`, `a_changed_message_goes_to_history_on_any_close`.
+- **Rebasing Published Commit (Review Focus 1):** in Rust `update_with_rebase_over_a_published_commit_asks_before_saving` (asks, nothing saved, no stash, no snapshot, HEAD and the dirty file untouched), `confirmed_update_rebases_as_before`, `merge_updates_and_pull_do_not_ask`, `a_confirmation_for_another_branch_asks_again`, `a_published_check_that_fails_asks_without_a_branch`; in the interface `the_outcome_opens_rebasing_published_commit_with_cancel_as_default`, `rebase_anyway_repeats_without_another_fetch_or_question`, `cancel_shows_update_canceled`, `it_does_not_continue_in_another_repository`, `pull_into_with_rebase_asks_and_repeats_towards_the_same_branch`, and for the push `rebasing_published_commits_asks_and_rebase_anyway_continues`.
+- **Popup merge (Review Focus 2):** in Rust `popup_merge_of_a_tag_with_a_branchs_name_merges_the_tag`, `popup_merge_of_a_branch_with_a_tags_name_merges_the_branch`, `popup_merge_of_a_remote_branch_uses_refs_remotes`, `an_unknown_ref_kind_is_rejected`; `popup_merge_passes_the_kind_of_the_clicked_item_with_the_short_name`.
+- **Push up to Here:** `push_all_up_to_here_outside_local_branches_opens_the_push_dialog`, `push_all_up_to_here_on_detached_head_targets_a_new_detached_branch`, `push_all_up_to_here_is_enabled_on_detached_head`.
+- **Branches popup (Review Focus 3):** `typing_filters_the_actions_too`, `a_matching_action_is_selected_before_a_matching_branch`, `with_the_toggle_off_actions_stay_and_are_skipped`, `the_gear_starts_with_show_actions_in_search_results`, `the_placeholder_says_branches_and_actions`, `a_separator_sits_between_actions_and_branches_only_when_both_exist`, `the_minimum_width_is_375`, and `filter_actions_*` in `model.test.ts`.
+- **Fetch and protected patterns:** `fetch_is_disabled_while_any_fetch_runs`, `the_git_menu_fetch_is_disabled_while_a_fetch_runs`, `the_popup_fetch_is_disabled_while_another_fetch_runs`, `the_panel_fetch_is_disabled_while_another_fetch_runs`, `an_invalid_pattern_is_shown_while_typing`, `a_bad_pattern_does_not_block_saving_and_leaves_no_notification`, and in Rust `a_bad_pattern_reports_the_first_error`.
+- **Add to VCS (Review Focus 4):** in Rust `add_to_vcs_adds_the_new_file_to_the_index`, `adding_to_vcs_rejects_foreign_paths`, `committing_another_changelist_leaves_the_added_file_out` (HEAD has only the other file; the index still has the added one), and the two counting tests; in the interface the five tests named in the matrix row.
+- **Small alignments and widget:** `a_symlinked_launchd_agent_counts_as_external`, `every_git_command_carries_intellij_git_executable`, the nine tests of `MergeRebaseWidget.test.ts` and three in `App.test.ts`.
+- **Soft-Wrap:** `wrap_is_stored_per_place_with_its_default`, `the_gear_has_soft_wrap_before_align`, `right_click_on_the_gutter_offers_soft_wrap` (five files), `vcs_log_view_wraps_from_its_own_place_default_off`, `soft_wrap_wraps_both_sides_without_rebuilding_the_views`, `wrap_off_keeps_todays_configuration`; for the aligned diff (Review Focus 5) the seven tests of `spacers.test.ts` (including `an_unchanged_line_wrapping_only_on_one_side_gets_a_top_spacer_before_the_next_hunk` and `feeding_its_output_back_changes_nothing`) and `with_wrap_on_spacers_follow_the_measured_heights`, `a_second_measuring_pass_dispatches_nothing`, `the_two_number_gutters_have_the_same_width_when_aligned`, `with_wrap_off_spacers_are_line_counts_times_20`.
+
+**What the process left on record.** Several tasks wrote their tests together with the code and have no RED run of their own (Task 1's Rust constants, Task 2, which got a retroactive RED in a temporary worktree at `5ad5c44`, and the `commands.rs` test of Task 8). A weakened assertion (`cancelling_the_push_in_progress_is_not_a_failure`) was found by the review of Task 6 and restored.
+
+### 5. Checklist to verify by hand
+
+None of this could be checked automatically. Use a test repository first and then a real one. The `.app` was not rebuilt in this part. To build it and open it, the commands of part 1, section 5.
+
+**Soft-Wrap in a real window** (research `research-soft-wraps.md` section 5, "Only in a real window")
+
+- [ ] The actual wrapping and the row alignment in the aligned and embedded diffs: a file with a very long line on one side only, and one with the same long line on both sides.
+- [ ] The jumps when estimated lines come into view: scroll quickly through a long aligned diff and note any jump of the rows below.
+- [ ] Dragging the window width.
+- [ ] Expanding folds.
+- [ ] A vertical scrollbar appearing and disappearing as a spacer grows (non-overlay scrollbars).
+- [ ] Smooth synchronised scrolling across wrapped lines.
+- [ ] The curves between the sides spanning wrapped rows.
+- [ ] Checkbox and merge-arrow positions on wrapped lines (they must stay on the first row).
+- [ ] Performance on large files and on very long lines.
+- [ ] A side-by-side comparison with IntelliJ on the same file.
+- [ ] The five places keep their value apart: toggle it in the diff window, in the `Commit Changes` dialog's `Diff` panel, in the Local Changes preview, in the merge window and in the Log's docked diff; reopen each. `Align Changes Highlighting` stays shared.
+- [ ] The combined `DiffWindow` (several files): the placeholder heights of the files after toggling wrap, with and without remounting.
+- [ ] The residual jumps Task 12 lists: (1) scrolling to estimated hunks below the viewport, in the window and in the embedded panes; (2) a spacer growing until a scrollbar appears; (3) dragging the width, one recompute per frame; (4) expanding a fold; (5) typing in the editable side with a long line, which stays out of level until the draft hunks arrive; (6) the top and bottom spacers against IntelliJ on a file with wraps on one side.
+
+**The merge and rebase widget**
+
+- [ ] During a real rebase that stops: `Continue Rebase` and `Abort Rebase` appear after the branch widget, with no `Resolve Conflicts…`; both do what the Git menu does.
+- [ ] During a real merge with conflicts: `Resolve Conflicts…` and `Abort Merge`; with a conflict-free merge only the abort. The colours against IntelliJ's run widget.
+
+**The branches popup**
+
+- [ ] Typing in the search on a physical keyboard: a word that matches an action and a branch (`push` with a branch `push-fix`) selects the action first, Enter runs it, the arrows go through actions and branches. With `Show Actions in Search Results` off, the popup behaves as before. The popup is at least 375×300.
+- [ ] Fetch is disabled in the Git menu, the popup and the Branches panel while an Update runs.
+
+**`Rebasing Published Commit`**
+
+- [ ] Against a protected branch of a local remote (a bare repository with the branch pushed): Update with rebase over a commit that is already in `origin/main` asks; `Cancel` leaves the working tree as it was, `Rebase Anyway` rebases and restores the changes. Edit a file from outside while the dialog is open.
+- [ ] With the dialog open, check out another branch that has an upstream and press `Rebase Anyway`: it must ask again for that branch.
+- [ ] A push that is rejected with auto-update on asks the same.
+
+**Commit and drop**
+
+- [ ] `Add to VCS` on a new file, then a commit of another changelist: the new file stays added in the index and is not in the commit. ⌥⌘A on a physical keyboard, in Local Changes and in the dialog's browser.
+- [ ] `Drop Commits` with `Don't ask again`: the question appears, the box is remembered only after OK, the next drop does not ask, and the setting in `Confirmation` is off. Undo.
+- [ ] `Cancel Reword` on Esc and on Reset with a changed message; the history button and ⌃M in `Edit Commit Message…`.
+
+**Smaller things**
+
+- [ ] Protected branch patterns: a bad pattern shows its error under the field while typing and Save still works.
+- [ ] A git hook that prints `$INTELLIJ_GIT_EXECUTABLE`: it prints `true`.
+
+### 6. What could not be checked
+
+- **Nothing was seen in a real window.** The widget, the popup, the dialogs and above all soft wrapping were tested in jsdom. CodeMirror's `lineWrapping` getter follows the class only after a measure pass, so the tests check the `cm-lineWrapping` class; the aligned diff's measuring loop was driven with `lineBlockAt` stubbed.
+- **No physical keyboard.** The popup search, ⌥⌘A and ⌃M were driven by simulated key events.
+- **No measurement.** The cost of the measuring pass on a large diff, memory and CPU were not measured.
+- **No comparison with the real IntelliJ.** Texts were copied from the 241 bundles; behaviour comes from its sources. The colours of the widget come from the theme files of the installed IntelliJ, dark values only (rama is dark only).
+- **The user's wrap values for the places other than `Default` were not read** (research: not determined), and it is not known whether IntelliJ's commit dialog shows a gear in its `Diff` panel.
+- **A real remote.** `Rebasing Published Commit` was tested with a local `origin` in throwaway repositories, not over the network or against a protected branch of GitHub.
+- **The real IPC of the new commands** (`changes_add`, `protected_patterns_check`, `branch_merge` with its new argument) has not been exercised through Tauri; the tests call the Rust functions and simulate `invoke`. A failure would be one of registration or argument names; check that no console message says `command … not found`.
+
+### 7. Verification
+
+Run on 2026-11-07, one suite at a time, with the toolchain of `~/.cache/rama-toolchain`, after the fixes of the final review (the confirmation of `Rebasing Merge Commits` tied to its branch, `Pull…` with rebase answering it, the fetching flag of the push-rejected Update, the untracked menu sync).
+
+| Command | Result |
+|---|---|
+| `pnpm exec tsc --noEmit -p .` | no errors (exit 0) |
+| `pnpm exec vitest run --maxWorkers=2` | 83 files, 1,867 tests passed |
+| `cargo test --lib -- --test-threads=4` | 1,637 passed, 0 failed, 5 ignored (on purpose) |
+| `cargo clippy --all-targets -- -D warnings` | no warnings (finished, no output) |
+| `python3 -I -m unittest discover -s scripts` | 65 tests, OK |
+
+Against the close of part 1 (78 files and 1,761 tests in the interface, 1,610 in Rust, 65 in the scripts), part 2 adds 106 tests in the interface and 27 in Rust, and none in the scripts. `cargo fmt --check` was not part of the verification: it reports differences in files this part did not touch (`branch_info.rs`, `update.rs`, `push.rs`, `pull.rs`, `vcs_commands.rs` in older lines); the lines the tasks added were formatted.
+
+### Conclusion
+
+The behaviour that can be tested without a screen and without a keyboard is tested, with real git where it matters, and follows what the 241 sources say, except for the differences in section 2. Part 2 is not validated. It ends when you complete the list in section 5, with soft wrapping in a real window as its main risk, and settle the points in section 6 that need your machine.

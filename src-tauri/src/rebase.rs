@@ -349,7 +349,7 @@ pub struct Process<'a, 'b> {
 const SAVE_TITLE: &str = "rebase";
 // `stash.changes.message` with `rebase.operation.name`.
 const SAVE_MESSAGE: &str = "Uncommitted changes before rebase";
-const STASH_FAILED: &str = "Couldn't stash local uncommitted changes:";
+const STASH_FAILED: &str = "Could not stash local uncommitted changes:";
 const RESTORE_LATER_FIRST: &str =
     "The changes saved after these were not restored: restore them first.";
 const REMOTES: &str = "refs/remotes/";
@@ -684,6 +684,8 @@ pub struct RebaseParams {
     pub rebase_merges: bool,
     pub keep_empty: bool,
     pub root: bool,
+    // `--update-refs`: git 2.38, with no version check, as in 241.
+    pub update_refs: bool,
 }
 
 const REBASE_MERGES: &str = "--rebase-merges";
@@ -730,6 +732,9 @@ fn arguments(params: &RebaseParams, merges_flag: &str) -> Vec<String> {
     }
     if params.interactive {
         args.push("--interactive".to_string());
+    }
+    if params.update_refs {
+        args.push("--update-refs".to_string());
     }
     if let Some(onto) = present(&params.onto) {
         args.extend(["--onto".to_string(), onto.to_string()]);
@@ -819,6 +824,12 @@ pub fn rebase(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_stash_says_could_not_stash() {
+        let text = stash_failed(GitError::Io("boom".into()));
+        assert!(text.starts_with("Could not stash local uncommitted changes:\n"), "{text}");
+    }
+
     use super::*;
     use crate::test_support::RepoHarness;
 
@@ -1102,20 +1113,21 @@ mod tests {
             rebase_merges: true,
             keep_empty: true,
             root: true,
+            update_refs: true,
         };
         let line = |params: &RebaseParams| arguments(params, "--rebase-merges").join(" ");
 
         // With an old base, `--root` does not fit and is omitted, as in `GitRebaseParams`.
         assert_eq!(
             line(&all),
-            "rebase --rebase-merges --keep-empty --interactive --onto main old side"
+            "rebase --rebase-merges --keep-empty --interactive --update-refs --onto main old side"
         );
         assert_eq!(
             line(&RebaseParams {
                 upstream: None,
                 ..all.clone()
             }),
-            "rebase --rebase-merges --keep-empty --interactive --onto main --root side"
+            "rebase --rebase-merges --keep-empty --interactive --update-refs --onto main --root side"
         );
         assert_eq!(line(&params(Some("main"))), "rebase main");
         assert_eq!(
@@ -1155,6 +1167,24 @@ mod tests {
         assert_eq!(merges_flag_of("2.22.0"), "--rebase-merges");
         assert_eq!(merges_flag_of("2.39.5 (Apple Git-154)"), "--rebase-merges");
         assert_eq!(merges_flag_of("weird"), "--rebase-merges");
+    }
+
+    #[test]
+    fn rebase_with_update_refs_passes_the_flag() {
+        let harness = nested();
+        let params = RebaseParams {
+            update_refs: true,
+            ..params(Some("main"))
+        };
+        assert_eq!(
+            arguments(&params, "--rebase-merges").join(" "),
+            "rebase --update-refs main"
+        );
+
+        let outcome = rebase_with(&harness, params);
+
+        assert_eq!(outcome, Ok(Outcome::Done));
+        assert!(harness.ran("rebase --update-refs main"));
     }
 
     #[test]

@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::branches::Repo;
 use crate::commit::{self, CommitRequest, PartialFile, Saved};
 use crate::diff;
-use crate::git;
+use crate::git::{self, GitError};
 use crate::hunks::{self, HunkError, LineSelection, Sides};
 use crate::snapshots::{self, SnapshotId};
 
@@ -116,6 +117,32 @@ pub fn stage(repo: &Path, dir: &Path, paths: &[String]) -> Result<Option<Snapsho
         ..Default::default()
     };
     commit::stage_selection(repo, &request, &commit::read_entries(repo, paths)?)?;
+    Ok(copy)
+}
+
+fn git_error(error: HunkError) -> GitError {
+    match error {
+        HunkError::Git(error) => error,
+        other => GitError::Io(other.to_string()),
+    }
+}
+
+// `ChangesView.AddUnversioned` with changelists: `git add --ignore-errors -A`, as
+// `GitFileUtils.addPathsImpl`. It runs in a write task, so it holds the operations lock; like every
+// other change to the index, it first gives back the stage of an interrupted commit. What is new is
+// looked up with the name `add` reads from disk, as in `commit::stage_selection`.
+pub fn add_to_vcs(repo: &Repo, paths: &[String]) -> Result<Option<SnapshotId>, GitError> {
+    commit::ensure_idle(repo.path, repo.data).map_err(|error| match error {
+        commit::CommitError::Git(error) => error,
+        other => GitError::Io(other.to_string()),
+    })?;
+    check_paths(repo.path, paths).map_err(git_error)?;
+    let copy = copy_at_risk(repo.path, repo.data, paths).map_err(git_error)?;
+    for chunk in paths.chunks(git::PATHS_PER_COMMAND) {
+        let mut args = vec!["--literal-pathspecs", "add", "--ignore-errors", "-A", "--"];
+        args.extend(chunk.iter().map(String::as_str));
+        repo.ctx.git(&args)?;
+    }
     Ok(copy)
 }
 
@@ -246,7 +273,7 @@ pub fn unstage_hunks(
 mod tests {
     use super::*;
     use crate::hunks::{compute, Hunk};
-    use crate::test_support::TempRepo;
+    use crate::test_support::{RepoHarness, TempRepo};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
@@ -1207,5 +1234,67 @@ mod tests {
         revert(repo.path(), dir.path(), &strings(&["a.txt", "sub"])).unwrap();
 
         assert_eq!(fs::read(repo.path().join("a.txt")).unwrap(), b"1\n");
+    }
+
+    // `ChangesView.AddUnversioned` with changelists.
+    #[test]
+    fn add_to_vcs_adds_the_new_file_to_the_index() {
+        let harness = RepoHarness::new();
+        harness.repo.commit("a.txt", b"1\n", "base");
+        harness.write("new.txt", "new\n");
+
+        let copy = harness
+            .run(|repo| add_to_vcs(repo, &strings(&["new.txt"])))
+            .unwrap();
+
+        assert_eq!(copy, None);
+        assert_eq!(
+            harness.git(&["diff", "--cached", "--name-status"]),
+            "A\tnew.txt\n"
+        );
+        assert_eq!(harness.git(&["show", ":new.txt"]), "new\n");
+        assert!(harness.ran("add --ignore-errors -A -- new.txt"));
+    }
+
+    #[test]
+    fn adding_to_vcs_rejects_foreign_paths() {
+        let harness = RepoHarness::new();
+        harness.repo.commit("a.txt", b"1\n", "base");
+
+        let result = harness.run(|repo| add_to_vcs(repo, &strings(&["../a.txt"])));
+
+        assert!(result.is_err());
+        assert!(!harness.ran("add --ignore-errors -A -- ../a.txt"));
+    }
+
+    // Review Focus 4: what `Add to VCS` put in the index is not "pre-staged" content of the commit of
+    // another changelist, and it is still added afterwards.
+    #[test]
+    fn committing_another_changelist_leaves_the_added_file_out() {
+        let harness = RepoHarness::new();
+        harness.repo.commit("a.txt", b"1\n", "base");
+        harness.write("new.txt", "new\n");
+        harness
+            .run(|repo| add_to_vcs(repo, &strings(&["new.txt"])))
+            .unwrap();
+        harness.write("a.txt", "2\n");
+        let request = CommitRequest {
+            added: strings(&["a.txt"]),
+            message: "Other list".to_string(),
+            ..Default::default()
+        };
+
+        commit::commit(harness.path(), harness.data.path(), &request).unwrap();
+
+        assert_eq!(
+            harness.git(&["show", "--name-status", "--format=", "HEAD"]),
+            "M\ta.txt\n"
+        );
+        assert_eq!(
+            harness.git(&["diff", "--cached", "--name-status"]),
+            "A\tnew.txt\n"
+        );
+        assert_eq!(harness.git(&["show", ":new.txt"]), "new\n");
+        assert_eq!(harness.git(&["status", "--porcelain"]), "A  new.txt\n");
     }
 }

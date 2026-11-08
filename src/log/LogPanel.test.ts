@@ -1521,7 +1521,7 @@ test("go_to_filtered_offers_to_view_and_remove_the_filters", async () => {
 
   await waitFor(() => expect(get(notifications)).toHaveLength(1));
   const { actions } = get(notifications)[0];
-  expect(actions?.map(({ label }) => label)).toEqual(["View and Reset Filters", "View in New Tab"]);
+  expect(actions?.map(({ label }) => label)).toEqual(["View and reset filters", "View in new tab"]);
 
   mock({ log_row_of: () => ({ row: 1, hash: HASH_B }) });
   actions?.[0].run();
@@ -1570,15 +1570,16 @@ test("context_menu_keeps_a_selection_of_several", async () => {
   expect(items.find((item) => item.getAttribute("aria-label") === "New Tag…")?.disabled).toBe(true);
 });
 
-test("context_menu_knows_whether_there_is_a_current_branch", async () => {
+test("push_all_up_to_here_is_enabled_on_detached_head", async () => {
   mock({ log_adjacent_rows: () => [], log_current_branch: () => null });
-  await panel();
+  await panel({ onvcs: vi.fn() });
+  await selectRow(0);
 
   await fireEvent.contextMenu(scroller(), { clientX: X, clientY: 2 });
 
   const menu = await screen.findByRole("menu", { name: "Commit" });
   const push = within(menu).getByRole("menuitem", { name: "Push All up to Here…" });
-  expect((push as HTMLButtonElement).disabled).toBe(true);
+  expect((push as HTMLButtonElement).disabled).toBe(false);
 });
 
 test("push_all_up_to_here_reaches_whoever_performs_the_operations", async () => {

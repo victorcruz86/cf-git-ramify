@@ -1,3 +1,4 @@
+import { EditorView } from "@codemirror/view";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -5,9 +6,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Changelists, FileChange, FileState, Hunk, RepoInfo, WorktreeSides } from "../lib/api";
 import { dismiss, notifications } from "../lib/notifications";
+import { trackTasks } from "../lib/tasks";
 import CommitDialog from "./CommitDialog.svelte";
 import { DETAILS_PROPORTION_KEY, DETAILS_SHOWN_KEY, SIZE_KEY, SPLITTER_KEY } from "./dialog";
 import { signOffKey } from "./options";
+
+// What `EditorView.lineWrapping` puts on the content; `view.lineWrapping` only follows it after a
+// measure, which jsdom does not do.
+const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
@@ -201,8 +207,11 @@ test("the tree has no changelist nodes, has checkboxes per file and shows Unvers
   expect(items.map((item) => item.textContent?.replace(/[⌘⌥⇧]+\w?$/, "").trim())).toEqual([
     "Show Diff",
     "Refresh",
+    "Add to VCS",
     "Rollback…",
   ]);
+  // `Unversioned.Files.Dialog.Popup` is not `ChangesViewPopupMenu`: the item stays, disabled.
+  expect((items[2] as HTMLButtonElement).disabled).toBe(true);
 });
 
 test("the legend counts included files only, with a thousands separator", async () => {
@@ -709,6 +718,45 @@ test("the Diff panel shows line checkboxes and toggling them changes what is com
   });
 });
 
+const menuLabels = (menu: HTMLElement) =>
+  within(menu)
+    .getAllByRole("menuitem")
+    .map((item) => item.getAttribute("aria-label"));
+
+const diffViews = (region: HTMLElement) =>
+  [...region.querySelectorAll<HTMLElement>(".cm-editor")].map(
+    (dom) => EditorView.findFromDOM(dom) as EditorView,
+  );
+
+test("right_click_on_the_gutter_offers_soft_wrap", async () => {
+  mockCommands();
+  await open();
+  await fireEvent.click(row("a.txt"));
+  const diff = screen.getByRole("region", { name: "Diff" });
+  await waitFor(() => expect(diff.querySelectorAll(".cm-gutters")).toHaveLength(2));
+  const before = diffViews(diff);
+  // The place `CommitDialog` starts off, as in IntelliJ.
+  expect(before.map(wrapped)).toEqual([false, false]);
+
+  await fireEvent.contextMenu(diff.querySelector(".cm-gutters .cm-gutterElement") as HTMLElement);
+  const menu = await screen.findByRole("menu");
+  expect(menuLabels(menu)).toEqual(["Soft-Wrap"]);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Soft-Wrap" }));
+
+  expect(diffViews(diff)).toEqual(before);
+  expect(before.map(wrapped)).toEqual([true, true]);
+  expect(localStorage.getItem("diff.wrap.CommitDialog")).toBe("true");
+  expect(localStorage.getItem("diff.wrap.Default")).toBeNull();
+
+  // The text keeps the menu it had.
+  await fireEvent.contextMenu(diff.querySelector(".cm-line") as HTMLElement);
+  expect(menuLabels(await screen.findByRole("menu"))).toEqual([
+    "Rollback Lines",
+    "Move Lines to Another Changelist...",
+    "Show Diff for Lines",
+  ]);
+});
+
 test("the Diff panel, the size and the splitters are remembered", async () => {
   mockCommands();
   const first = await open();
@@ -873,4 +921,72 @@ test("the chooser cuts long names as shortenTextWithEllipsis(name, 35, 0) does",
 
   expect(shown).toBe(`${long.slice(0, 32)}...`);
   expect(shown).toHaveLength(35);
+});
+
+// The end of a task arrives through `task-changed`.
+let deliverTask: (id: number) => void = () => {};
+let nextTask = 800;
+
+function task() {
+  const id = nextTask++;
+  setTimeout(() => deliverTask(id));
+  return id;
+}
+
+async function listenToTasks() {
+  vi.mocked(listen).mockImplementation(async (event, handler) => {
+    if (event === "task-changed") {
+      deliverTask = (id) =>
+        handler({
+          event: "task-changed",
+          id: 0,
+          payload: { id, title: "", text: "", fraction: null, state: "done", kind: null, value: null },
+        } as never);
+    }
+    return () => {};
+  });
+  await trackTasks();
+}
+
+test("Add to VCS of the browser menu moves the file to the dialog's list and includes it in the commit", async () => {
+  await listenToTasks();
+  let status = STATUS;
+  let assignments: Record<string, string> = { ...LISTS.assignments };
+  mockCommands({
+    repo_status: () => status,
+    changelists_get: () => ({ ...LISTS, assignments: { ...assignments } }),
+    changes_add: () => {
+      status = [...STATUS.slice(0, 3), change("new.txt", "added")];
+      return task();
+    },
+    changelists_move: ({ paths, id }: { paths: string[]; id: string }) => {
+      for (const path of paths) assignments = { ...assignments, [path]: id };
+      return { ...LISTS, assignments };
+    },
+  });
+  await open();
+  await fireEvent.click(screen.getByRole("combobox", { name: "Changelist:" }));
+  await fireEvent.click(screen.getAllByRole("option")[1]);
+  expect(row("c.txt")).toBeTruthy();
+
+  await fireEvent.click(row(/^Unversioned Files/));
+  await fireEvent.contextMenu(row(/^Unversioned Files/));
+  const menu = screen.getByRole("menu", { name: "Changes" });
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Add to VCS" }));
+
+  await waitFor(() => expect(checkOf("new.txt").getAttribute("aria-checked")).toBe("true"));
+  expect(calls("changes_add").map(([, args]) => args)).toEqual([
+    { repo: "/repo", paths: ["new.txt"] },
+  ]);
+  expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+    { paths: ["new.txt"], id: "other" },
+  ]);
+  expect(screen.queryByRole("treeitem", { name: /^Unversioned Files/ })).toBeNull();
+
+  await type("Message");
+  await fireEvent.click(commitButton());
+
+  await waitFor(() => expect(calls("commit_changes")).toHaveLength(1));
+  const sent = calls("commit_changes")[0][1] as unknown as { request: { added: string[] } };
+  expect(sent.request.added).toEqual(["new.txt"]);
 });

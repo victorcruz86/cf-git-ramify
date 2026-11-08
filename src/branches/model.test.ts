@@ -5,10 +5,12 @@ import {
   autoExpanded,
   branchActions,
   buildTree,
+  filterActions,
   findBranch,
   nextLeaf,
   preferredId,
   visibleRows,
+  type ActionRow,
   type BranchNode,
   type TreeNode,
   type TreeOptions,
@@ -394,4 +396,38 @@ test("a_long_name_is_shortened", () => {
   const [first] = shown(branchActions(NODE(name, "remote"), STATE)).slice(1);
 
   expect(first).toBe(`New Branch from '${"x".repeat(39)}…'…`);
+});
+
+const action = (id: string, label: string): ActionRow => ({ id, label, run: undefined });
+const ACTIONS = [
+  action("update", "Update Project"),
+  action("commit", "Commit…"),
+  action("push", "Push…"),
+  action("branch", "New Branch…"),
+  action("ref", "Checkout Tag or Revision…"),
+];
+
+test("filter_actions_keeps_the_matching_ones_in_display_order", () => {
+  const { rows } = filterActions(ACTIONS, "pus");
+
+  expect(rows.map((row) => row.id)).toEqual(["push"]);
+});
+
+test("filter_actions_best_is_the_highest_degree_and_the_first_on_a_tie", () => {
+  const rows = [action("a", "Reset Commit"), action("b", "Commit…"), action("c", "Commit…")];
+
+  const { best } = filterActions(rows, "commit");
+
+  // Starting at the beginning of the text beats starting at a later word.
+  expect(best?.id).toBe("b");
+});
+
+test("filter_actions_without_a_match_has_no_best", () => {
+  expect(filterActions(ACTIONS, "zzz")).toEqual({ rows: [], best: null });
+});
+
+test("filter_actions_trims_and_a_lone_slash_filters_nothing", () => {
+  expect(filterActions(ACTIONS, "push ").rows.map((row) => row.id)).toEqual(["push"]);
+  expect(filterActions(ACTIONS, "/")).toEqual({ rows: ACTIONS, best: null });
+  expect(filterActions(ACTIONS, "")).toEqual({ rows: ACTIONS, best: null });
 });

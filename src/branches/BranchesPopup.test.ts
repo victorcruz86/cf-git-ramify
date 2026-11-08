@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { BranchList } from "../lib/api";
 import BranchesPopup from "./BranchesPopup.svelte";
+import { whileFetching } from "../update/flow";
 import { ongoingActions } from "../operation/operation";
 import { branchOptions, defaultBranchOptions, favorites } from "./state";
 
@@ -201,6 +202,24 @@ test("after_a_popup_fetch_the_local_data_is_read_again_without_asking_the_remote
   expect(calls("branch_check_remotes")).toEqual([]);
 });
 
+// Decision 5: the button reads the flag shared by the whole app, not its own.
+test("the_popup_fetch_is_disabled_while_another_fetch_runs", async () => {
+  const onfetch = vi.fn(async () => {});
+  await popup({ onfetch });
+  const button = () => screen.getByRole("button", { name: /^Fetch/ }) as HTMLButtonElement;
+  expect(button().disabled).toBe(false);
+
+  let finish = () => {};
+  const running = whileFetching(() => new Promise<void>((resolve) => (finish = resolve)));
+  await waitFor(() => expect(button().disabled).toBe(true));
+  await fireEvent.click(button());
+  expect(onfetch).not.toHaveBeenCalled();
+
+  finish();
+  await running;
+  await waitFor(() => expect(button().disabled).toBe(false));
+});
+
 test("opens_without_waiting_for_incoming_and_outgoing_and_fills_them_in_afterwards", async () => {
   let finish = (_: unknown) => {};
   incoming = new Promise((resolve) => (finish = resolve));
@@ -333,13 +352,133 @@ test("the_tracked_branch_shows_on_the_right", async () => {
   expect(within(row("main")).getByText("origin/main")).toBeTruthy();
 });
 
-test("without_results_shows_branch_not_found", async () => {
+test("without_results_says_not_found", async () => {
+  await popup();
+
+  await type("zzz");
+
+  expect(await screen.findByText("'zzz' not found")).toBeTruthy();
+  expect(screen.queryAllByRole("treeitem")).toEqual([]);
+});
+
+test("without_results_and_the_toggle_off_says_branch_not_found", async () => {
+  branchOptions.set({ ...defaultBranchOptions(), filterByAction: false });
   await popup();
 
   await type("zzz");
 
   expect(await screen.findByText("Branch 'zzz' not found")).toBeTruthy();
-  expect(screen.queryAllByRole("treeitem")).toEqual([]);
+});
+
+test("the_placeholder_says_branches_and_actions", async () => {
+  await popup();
+  expect(field().getAttribute("placeholder")).toBe("Search for branches and actions");
+
+  cleanup();
+  branchOptions.set({ ...defaultBranchOptions(), filterByAction: false });
+  await popup();
+  expect(field().getAttribute("placeholder")).toBe("Search for branches");
+});
+
+test("the_gear_starts_with_show_actions_in_search_results", async () => {
+  await popup();
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  const items = within(screen.getByRole("menu", { name: "Settings" })).getAllByRole("menuitem");
+  expect(items.map((item) => item.getAttribute("aria-label") ?? item.textContent)).toEqual([
+    "Show Actions in Search Results",
+    "Group by Prefix",
+    "Show Recent Branches",
+    "Restore Popup Size",
+  ]);
+  const toggle = screen.getByRole("menuitem", { name: "Show Actions in Search Results" });
+  expect(within(toggle).getByText("✓")).toBeTruthy();
+  expect(
+    within(screen.getByRole("menu", { name: "Settings" })).getAllByRole("separator"),
+  ).toHaveLength(1);
+
+  await fireEvent.click(toggle);
+
+  expect(get(branchOptions).filterByAction).toBe(false);
+  expect(calls("branch_options_set")).toHaveLength(1);
+  expect((calls("branch_options_set")[0][1] as { options: { filterByAction: boolean } }).options)
+    .toMatchObject({ filterByAction: false });
+  await waitFor(() => expect(field().getAttribute("placeholder")).toBe("Search for branches"));
+});
+
+test("typing_filters_the_actions_too", async () => {
+  list = { ...LIST, local: [...LIST.local, { name: "pushy", tracked: null }] };
+  await popup();
+
+  await type("pus");
+
+  await waitFor(() => expect(rows()).toEqual(["Push…", "Local", "pushy"]));
+  const hits = [...row("Push…").querySelectorAll(".hit")].map((hit) => hit.textContent);
+  expect(hits).toEqual(["Pus"]);
+});
+
+test("a_separator_sits_between_actions_and_branches_only_when_both_exist", async () => {
+  list = { ...LIST, local: [...LIST.local, { name: "pushy", tracked: null }] };
+  await popup();
+
+  await type("pus");
+  await waitFor(() => expect(rows()).toEqual(["Push…", "Local", "pushy"]));
+  expect(screen.getAllByRole("separator")).toHaveLength(1);
+
+  await type("Checkout");
+  await waitFor(() => expect(rows()).toEqual(["Checkout Tag or Revision…"]));
+  expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  expect(screen.queryByText(/not found/)).toBeNull();
+});
+
+test("a_matching_action_is_selected_before_a_matching_branch", async () => {
+  list = { ...LIST, local: [...LIST.local, { name: "push-fix", tracked: null }] };
+  const onpush = vi.fn();
+  const { onclose } = await popup({ onpush });
+
+  await type("push");
+
+  await waitFor(() => expect(selectedRow()).toBe("Push…"));
+  await press("ArrowDown");
+  expect(selectedRow()).toBe("push-fix");
+  await press("ArrowDown");
+  expect(selectedRow()).toBe("Push…");
+  await press("ArrowUp");
+  expect(selectedRow()).toBe("push-fix");
+  await press("Home");
+  expect(selectedRow()).toBe("Push…");
+  await press("End");
+  expect(selectedRow()).toBe("push-fix");
+  await press("Home");
+  await press("Enter");
+  expect(onclose).toHaveBeenCalled();
+  await waitFor(() => expect(onpush).toHaveBeenCalled());
+});
+
+test("with_the_toggle_off_actions_stay_and_are_skipped", async () => {
+  branchOptions.set({ ...defaultBranchOptions(), filterByAction: false });
+  list = { ...LIST, local: [...LIST.local, { name: "push-fix", tracked: null }] };
+  await popup();
+
+  await type("push");
+
+  await waitFor(() => expect(selectedRow()).toBe("push-fix"));
+  expect(rows().slice(0, 5)).toEqual([
+    "Update Project",
+    "Commit…",
+    "Push…",
+    "New Branch…",
+    "Checkout Tag or Revision…",
+  ]);
+  expect(row("Push…").querySelector(".hit")).toBeNull();
+  await press("ArrowDown");
+  expect(selectedRow()).toBe("push-fix");
+});
+
+test("the_minimum_width_is_375", async () => {
+  await popup();
+
+  expect((document.querySelector(".popup") as HTMLElement).style.minWidth).toBe("375px");
 });
 
 test("filtering_selects_the_best_and_enter_opens_its_submenu", async () => {

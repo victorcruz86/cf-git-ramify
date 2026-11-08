@@ -31,7 +31,7 @@ const CANNOT_UPDATE: &str = "Cannot update";
 pub(crate) const UPDATE_FAILED: &str = "Update failed";
 const NO_CURRENT_BRANCH: &str = "Cannot Update: No Current Branch";
 const UPSTREAM_FAILED: &str = "Cannot set an upstream branch";
-const SAVE_FAILED: &str = "Couldn't save uncommitted changes";
+const SAVE_FAILED: &str = "Could not save uncommitted changes";
 const MERGE_ABORT_FAILED: &str = "Failed to abort the merge operation";
 const REBASE_ABORT_FAILED: &str = "Abort rebase failed";
 const UNFINISHED_REBASE: &str =
@@ -54,8 +54,11 @@ pub enum Outcome {
     NoTrackedBranch { branch: String },
     Error(String),
     Cancelled,
-    // It stops before saving anything: the answer to `Rebasing Merge Commits` is needed.
-    RebasingMergeCommits,
+    // It stops before saving anything: the answer to `Rebasing Merge Commits` is needed, for `branch`.
+    RebasingMergeCommits { branch: String },
+    // Decision 1: it also stops before saving, while IntelliJ asks with the changes already in the
+    // stash. `protected` is the protected remote branch that has them, empty if it could not be read.
+    RebasingPublishedCommits { branch: String, protected: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -99,7 +102,11 @@ pub struct UpdateOptions {
     pub set_upstream: bool,
     // To repeat after `Rebasing Merge Commits`: the fetch is already done.
     pub fetched: bool,
-    pub rebase_merges: bool,
+    // The branch for which `Rebase` was answered to `Rebasing Merge Commits`, as `published_confirmed`.
+    pub rebase_merges: Option<String>,
+    // The branch for which `Rebase Anyway` was answered to `Rebasing Published Commit`, and the
+    // one `Pull…` pulls into. Another current branch is checked, and asked about, again.
+    pub published_confirmed: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -173,6 +180,13 @@ pub(crate) fn failed(title: &str, text: impl Into<String>) -> UpdateResult {
         title: Some(title.to_string()),
         ..Outcome::Error(text.into()).into()
     }
+}
+
+fn save_failed(reason: &str) -> UpdateResult {
+    let text = format!(
+        "Tried to save uncommitted changes in stash before Update, but failed with an error.\n{reason}"
+    );
+    failed(SAVE_FAILED, text)
 }
 
 fn upstream_of(path: &Path, branch: &str) -> Result<Option<Upstream>, GitError> {
@@ -293,6 +307,16 @@ fn merge_touches_changes(
 // is what had to be resolved by hand and would have to be resolved again. If it fails, it does not ask.
 fn rebases_resolved_merges(ctx: &TaskContext, tracked: &Tracked) -> Result<bool, GitError> {
     has_resolved_merges(ctx, &tracked.target, &tracked.branch)
+}
+
+// `GitRebaseUpdater.checkForRebasingPublishedCommits`: the protected remote branch that already has
+// some commit to rebase. If it cannot be read, it is asked, as in IntelliJ, with no branch.
+fn rebases_published(repo: &Repo, tracked: &Tracked) -> Result<Option<String>, GitError> {
+    match rebase::published(repo, Some(&tracked.target), &tracked.branch) {
+        Err(GitError::Cancelled) => Err(GitError::Cancelled),
+        Err(_) => Ok(Some(String::new())),
+        Ok(found) => Ok(found),
+    }
 }
 
 // `GitRebaseOverMergeProblem.hasProblem`.
@@ -555,8 +579,16 @@ fn with_lock(
         return Ok(with_counts(ctx, Outcome::Success.into(), &tracked, before));
     }
     ctx.check_cancelled()?;
-    if rebase && !options.rebase_merges && rebases_resolved_merges(ctx, &tracked)? {
-        return Ok(Outcome::RebasingMergeCommits.into());
+    let merges_answered = options.rebase_merges.as_deref() == Some(tracked.branch.as_str());
+    if rebase && !merges_answered && rebases_resolved_merges(ctx, &tracked)? {
+        let branch = tracked.branch;
+        return Ok(Outcome::RebasingMergeCommits { branch }.into());
+    }
+    if rebase && options.published_confirmed.as_deref() != Some(tracked.branch.as_str()) {
+        if let Some(protected) = rebases_published(repo, &tracked)? {
+            let branch = tracked.branch;
+            return Ok(Outcome::RebasingPublishedCommits { branch, protected }.into());
+        }
     }
     let save = if rebase {
         !changed.is_empty()
@@ -568,11 +600,7 @@ fn with_lock(
             Ok(saved) => saved,
             Err(GitError::Cancelled) => return Err(GitError::Cancelled),
             Err(error) => {
-                let reason = branches::text_of(error);
-                let text = format!(
-                    "Tried to save uncommitted changes in stash before Update, but failed with an error.\n{reason}"
-                );
-                return Ok(failed(SAVE_FAILED, text));
+                return Ok(save_failed(&branches::text_of(error)));
             }
         }
     } else {
@@ -674,6 +702,13 @@ pub fn with_matching(ctx: &TaskContext, result: UpdateResult, paths: &[String]) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_save_is_titled_could_not_save_uncommitted_changes() {
+        let result = save_failed("boom");
+        assert_eq!(result.title.as_deref(), Some("Could not save uncommitted changes"));
+        assert!(format!("{result:?}").contains("Tried to save uncommitted changes in stash"));
+    }
+
     use super::*;
     use crate::commands::RepoLocks;
     use crate::console::Console;
@@ -896,6 +931,53 @@ mod tests {
                 .any(|line| line.command && line.text.ends_with(command))
         }
 
+        fn saved_anything(&self) -> bool {
+            let stashed = self
+                .console
+                .lines()
+                .iter()
+                .any(|line| line.command && line.text.contains("stash save"));
+            stashed || self.stash_count() > 0 || !snapshots::list(self.data.path()).is_empty()
+        }
+
+        // `feature` with a commit of its own that is already in `origin/main`, protected by default,
+        // a commit from outside in `origin/feature` and an uncommitted change.
+        fn rebasing_a_published_commit(&self) {
+            self.git(&["checkout", "-q", "-b", "feature"]);
+            self.git(&["push", "-q", "-u", "origin", "feature"]);
+            self.repo.commit("p.txt", b"p\n", "published");
+            self.git(&["push", "-q", "origin", "feature:main"]);
+            self.colleague.git(&["fetch", "-q", "origin"]);
+            self.colleague
+                .git(&["checkout", "-q", "-B", "feature", "origin/feature"]);
+            self.colleague.commit("c.txt", b"c\n", "from outside");
+            self.colleague.git(&["push", "-q", "origin", "feature"]);
+            self.write("b.txt", "local\n");
+        }
+
+        // After `rebasing_a_published_commit`: `other`, tracking `origin/other`, with the same
+        // published commit of its own and a commit from outside, and the same uncommitted change.
+        fn the_same_on_other(&self) {
+            self.git(&["checkout", "-q", "-b", "other"]);
+            self.git(&["push", "-q", "origin", "HEAD~1:refs/heads/other"]);
+            self.git(&["branch", "-q", "--set-upstream-to=origin/other"]);
+            self.colleague.git(&["fetch", "-q", "origin"]);
+            self.colleague
+                .git(&["checkout", "-q", "-B", "other", "origin/other"]);
+            self.colleague.commit("o.txt", b"o\n", "from outside");
+            self.colleague.git(&["push", "-q", "origin", "other"]);
+        }
+
+        // `main` with a merge whose conflict was resolved by hand, which `git log -c` lists.
+        fn resolved_merge_on_main(&self) {
+            self.git(&["checkout", "-q", "-b", "side"]);
+            self.repo.commit("a.txt", b"side\n2\n3\n", "side");
+            self.git(&["checkout", "-q", "main"]);
+            self.repo.commit("a.txt", b"mine\n2\n3\n", "own");
+            git_may_fail(self.repo.path(), &["merge", "side"]);
+            self.repo.commit("a.txt", b"resolved\n2\n3\n", "merge");
+        }
+
         fn in_git_dir(&self, name: &str) -> bool {
             self.repo.path().join(".git").join(name).exists()
         }
@@ -1076,31 +1158,81 @@ mod tests {
     #[test]
     fn rebase_over_a_merge_with_conflicts_asks_before_saving() {
         let harness = Harness::new();
-        harness.git(&["checkout", "-q", "-b", "side"]);
-        harness.repo.commit("a.txt", b"side\n2\n3\n", "side");
-        harness.git(&["checkout", "-q", "main"]);
-        harness.repo.commit("a.txt", b"mine\n2\n3\n", "own");
-        git_may_fail(harness.repo.path(), &["merge", "side"]);
-        harness.repo.commit("a.txt", b"resolved\n2\n3\n", "merge");
+        harness.resolved_merge_on_main();
         harness.incoming("c.txt", "c\n");
         harness.write("b.txt", "local\n");
         let head = harness.head();
 
         let result = harness.update(UpdateMethod::Rebase);
 
-        assert_eq!(result.outcome, Outcome::RebasingMergeCommits);
+        assert_eq!(result.outcome, rebasing_merge_commits("main"));
         assert_eq!(result.saved, None);
         assert_eq!(harness.head(), head);
         assert_eq!(harness.read("b.txt"), "local\n");
 
         let options = UpdateOptions {
             fetched: true,
-            rebase_merges: true,
+            rebase_merges: Some("main".to_string()),
             ..Default::default()
         };
         assert_ne!(
             harness.update_with(UpdateMethod::Rebase, options).outcome,
-            Outcome::RebasingMergeCommits
+            rebasing_merge_commits("main")
+        );
+    }
+
+    fn rebasing_merge_commits(branch: &str) -> Outcome {
+        Outcome::RebasingMergeCommits {
+            branch: branch.to_string(),
+        }
+    }
+
+    // The answer to `Rebasing Merge Commits` was for the branch that was asked about: if another one
+    // is current now, it is checked, and asked, again, with nothing saved.
+    #[test]
+    fn a_rebase_merges_answer_for_another_branch_asks_again() {
+        let harness = Harness::new();
+        harness.resolved_merge_on_main();
+        harness.git(&["checkout", "-q", "-b", "other"]);
+        harness.git(&["push", "-q", "origin", "origin/main:refs/heads/other"]);
+        harness.git(&["branch", "-q", "--set-upstream-to=origin/other"]);
+        harness.colleague.git(&["fetch", "-q", "origin"]);
+        harness
+            .colleague
+            .git(&["checkout", "-q", "-B", "other", "origin/other"]);
+        harness.colleague.commit("o.txt", b"o\n", "from outside");
+        harness.colleague.git(&["push", "-q", "origin", "other"]);
+        harness.write("b.txt", "local\n");
+        let head = harness.head();
+        let answered = |branch: &str| UpdateOptions {
+            rebase_merges: Some(branch.to_string()),
+            ..Default::default()
+        };
+
+        let result = harness.update_with(UpdateMethod::Rebase, answered("main"));
+
+        assert_eq!(result.outcome, rebasing_merge_commits("other"));
+        assert_eq!(result.saved, None);
+        assert_eq!(result.restore, None);
+        assert!(!harness.saved_anything());
+        assert!(!harness.ran("rebase origin/other"));
+        assert_eq!(harness.head(), head);
+        assert_eq!(harness.read("b.txt"), "local\n");
+
+        let result = harness.update_with(UpdateMethod::Rebase, answered("other"));
+
+        assert_ne!(result.outcome, rebasing_merge_commits("other"));
+        assert!(harness.ran("rebase origin/other"));
+    }
+
+    #[test]
+    fn the_rebase_merges_outcome_carries_the_branch() {
+        assert_eq!(
+            serde_json::to_value(rebasing_merge_commits("feature")).unwrap(),
+            serde_json::json!({
+                "kind": "rebasingMergeCommits",
+                "reason": { "branch": "feature" },
+            })
         );
     }
 
@@ -1117,6 +1249,175 @@ mod tests {
         let result = harness.update(UpdateMethod::Rebase);
 
         assert_eq!(result.outcome, Outcome::Success);
+    }
+
+    // Decision 1: before saving, unlike IntelliJ, so that `Cancel` leaves the tree as it was.
+    #[test]
+    fn update_with_rebase_over_a_published_commit_asks_before_saving() {
+        let harness = Harness::new();
+        harness.rebasing_a_published_commit();
+        let head = harness.head();
+
+        let result = harness.update(UpdateMethod::Rebase);
+
+        assert_eq!(
+            result.outcome,
+            Outcome::RebasingPublishedCommits {
+                branch: "feature".to_string(),
+                protected: "origin/main".to_string(),
+            }
+        );
+        assert_eq!(result.saved, None);
+        assert_eq!(result.restore, None);
+        assert!(!harness.saved_anything());
+        assert!(!harness.ran("rebase origin/feature"));
+        assert_eq!(harness.head(), head);
+        assert_eq!(harness.read("b.txt"), "local\n");
+    }
+
+    // `GitRebaseProcess.isRebasingPublishedCommit`: commits that cannot be read count as published.
+    #[test]
+    fn a_published_check_that_fails_asks_without_a_branch() {
+        let harness = Harness::new();
+
+        let found = harness.in_repo(|repo| {
+            let tracked = Tracked {
+                branch: "main".to_string(),
+                remote: Some("origin".to_string()),
+                target: "origin/missing".to_string(),
+            };
+            rebases_published(repo, &tracked)
+        });
+
+        assert_eq!(found, Ok(Some(String::new())));
+    }
+
+    #[test]
+    fn the_published_outcome_serialises_as_the_other_outcomes() {
+        let outcome = Outcome::RebasingPublishedCommits {
+            branch: "feature".to_string(),
+            protected: "origin/main".to_string(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(outcome).unwrap(),
+            serde_json::json!({
+                "kind": "rebasingPublishedCommits",
+                "reason": { "branch": "feature", "protected": "origin/main" },
+            })
+        );
+    }
+
+    #[test]
+    fn confirmed_update_rebases_as_before() {
+        let harness = Harness::new();
+        harness.rebasing_a_published_commit();
+        harness.update(UpdateMethod::Rebase);
+        let options = UpdateOptions {
+            fetched: true,
+            published_confirmed: Some("feature".to_string()),
+            ..Default::default()
+        };
+
+        let result = harness.update_with(UpdateMethod::Rebase, options);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert!(harness.ran("rebase origin/feature"));
+        assert!(result.saved.is_some());
+        assert_eq!(result.restore, Some(RestoreOutcome::Restored));
+        assert_eq!(harness.stash_count(), 0);
+        assert_eq!(harness.read("b.txt"), "local\n");
+        assert_eq!(
+            harness.git(&["log", "--format=%s", "-3"]),
+            "published\nfrom outside\ntwo\n"
+        );
+    }
+
+    // The answer was for the branch that was asked about: if another one is current now, it is
+    // checked, and asked, again.
+    #[test]
+    fn a_confirmation_for_another_branch_asks_again() {
+        let harness = Harness::new();
+        harness.rebasing_a_published_commit();
+        harness.the_same_on_other();
+        let head = harness.head();
+        let confirmed = |branch: &str| UpdateOptions {
+            published_confirmed: Some(branch.to_string()),
+            ..Default::default()
+        };
+
+        let result = harness.update_with(UpdateMethod::Rebase, confirmed("feature"));
+
+        assert_eq!(
+            result.outcome,
+            Outcome::RebasingPublishedCommits {
+                branch: "other".to_string(),
+                protected: "origin/main".to_string(),
+            }
+        );
+        assert_eq!(result.saved, None);
+        assert!(!harness.saved_anything());
+        assert_eq!(harness.head(), head);
+        assert_eq!(harness.read("b.txt"), "local\n");
+
+        let result = harness.update_with(UpdateMethod::Rebase, confirmed("other"));
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert!(harness.ran("rebase origin/other"));
+        assert_eq!(harness.read("b.txt"), "local\n");
+    }
+
+    // Merge does not rewrite anything, and `Pull…` is a `git pull` in IntelliJ.
+    #[test]
+    fn merge_updates_and_pull_do_not_ask() {
+        let merging = Harness::new();
+        merging.rebasing_a_published_commit();
+
+        let result = merging.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+
+        let pulling = Harness::new();
+        pulling.rebasing_a_published_commit();
+        let sync = pulling.sync.clone();
+
+        let result = pulling.in_repo_unlocked(move |repo| {
+            crate::pull::pull(
+                repo,
+                &sync,
+                "origin",
+                "feature",
+                &[crate::pull::PullOption::Rebase],
+                || Ok(()),
+            )
+        });
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert!(pulling.ran("rebase origin/feature"));
+        assert_eq!(pulling.read("b.txt"), "local\n");
+    }
+
+    // `Pull…` with rebase is a `git pull --rebase` in IntelliJ, which does not ask about merges either.
+    #[test]
+    fn pull_with_rebase_over_resolved_merges_does_not_ask() {
+        let harness = Harness::new();
+        harness.resolved_merge_on_main();
+        harness.incoming("c.txt", "c\n");
+        let sync = harness.sync.clone();
+
+        let result = harness.in_repo_unlocked(move |repo| {
+            crate::pull::pull(
+                repo,
+                &sync,
+                "origin",
+                "main",
+                &[crate::pull::PullOption::Rebase],
+                || Ok(()),
+            )
+        });
+
+        assert_ne!(result.outcome, rebasing_merge_commits("main"));
+        assert!(harness.ran("rebase origin/main"));
     }
 
     #[test]

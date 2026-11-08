@@ -80,6 +80,14 @@ export const TOKENS = {
   "notification-border": GREY[4],
   "notification-text": GREY[13],
   error: RED[6],
+  // RunWidget.* : the merge and rebase widget. `runningBackground` is Green6 of expUI_dark, the icon is
+  // Grey12 (`iconColor`), `stopBackground` is the one of darcula.theme.json (expUI has none), and
+  // the hover and pressed overlays are `hoverBackground` and `pressedBackground`.
+  "run-running": "#57965C",
+  "run-stop": "#C94F4F",
+  "run-icon": GREY[12],
+  "run-hover": "#00000019",
+  "run-pressed": "#00000028",
   // WARNING_ATTRIBUTES and ERRORS_ATTRIBUTES of the editor.
   "editor-warning": YELLOW[7],
   // Diff editor: colors from expUI_darkScheme.xml.

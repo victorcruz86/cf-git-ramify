@@ -78,9 +78,18 @@ test("bar_in_order", async () => {
     "View Options",
     "Go to Hash/Branch/Tag",
   ]);
-  const field = screen.getByRole("searchbox", { name: "Text or Hash Filter" }) as HTMLInputElement;
-  expect(field.placeholder).toBe("");
-  expect(field.title).toBe("Text or Hash Filter");
+  const field = screen.getByRole("searchbox", { name: "Filter by Commit Message or Hashes" }) as HTMLInputElement;
+  expect(field.placeholder).toBe("Text or hash");
+  expect(field.title).toBe("Filter by Commit Message or Hashes");
+});
+
+test("the_text_filter_shows_text_or_hash", async () => {
+  await bar();
+  const field = screen.getByRole("searchbox", {
+    name: "Filter by Commit Message or Hashes",
+  }) as HTMLInputElement;
+  expect(field.placeholder).toBe("Text or hash");
+  expect(field.title).toBe("Filter by Commit Message or Hashes");
 });
 
 test("branch_popup_shows_select_head_recent_favorites_local_and_remotes", async () => {

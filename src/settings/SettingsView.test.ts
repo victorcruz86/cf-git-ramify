@@ -32,6 +32,7 @@ const SETTINGS: Settings = {
   cherryPickSuffix: true,
   nonModalCommit: false,
   clearInitialCommitMessage: false,
+  showDropCommitDialog: true,
 };
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
@@ -137,6 +138,23 @@ test("the Commit section shows Use non-modal commit interface with its comment a
   const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
   expect(saved.nonModalCommit).toBe(true);
   expect(saved.clearInitialCommitMessage).toBe(true);
+});
+
+test("the Confirmation section asks to confirm dropping commits and saves it", async () => {
+  mockCommands();
+  open();
+  const headings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent);
+  expect(headings.indexOf("Confirmation")).toBeGreaterThan(headings.lastIndexOf("Update"));
+  const drop = checkbox("Ask for confirmation to drop commits");
+  expect(drop.checked).toBe(true);
+  expect(screen.getByText("Applicable to Git")).toBeTruthy();
+
+  await fireEvent.click(drop);
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
+  expect(saved.showDropCommitDialog).toBe(false);
 });
 
 test("Enable staging area is greyed out while the commit interface is modal", async () => {
@@ -392,6 +410,7 @@ const openReady = async () => {
 const repoCommands = {
   repo_settings_get: () => ({ protectedBranches: ["master", "main"], forcePushTargets: [] }),
   protected_branches_set: () => [],
+  protected_patterns_check: () => null,
 };
 
 test("push_and_update_rows_with_their_texts", async () => {
@@ -479,18 +498,52 @@ test("protected_branches_belong_to_the_repository_separated_by_semicolons", asyn
   expect(get(protectedBranches)).toEqual(["release.*", "main"]);
 });
 
-test("an_invalid_pattern_is_reported_when_saving", async () => {
-  mockCommands({ ...repoCommands, protected_branches_set: () => ["("] });
+const BAD = "Skipped invalid protected branch pattern '(': unclosed group";
+const check = (text: string) => (text.split(";").map((part) => part.trim()).includes("(") ? BAD : null);
+
+test("an_invalid_pattern_is_shown_while_typing", async () => {
+  mockCommands({
+    ...repoCommands,
+    protected_patterns_check: (args) => check((args as unknown as { text: string }).text),
+  });
+  open();
+
+  const field = await screen.findByLabelText("Protected branches:");
+  expect(screen.queryByText(BAD)).toBeNull();
+  await fireEvent.input(field, { target: { value: "main;(" } });
+
+  expect(await screen.findByText(BAD)).toBeTruthy();
+  await fireEvent.input(field, { target: { value: "main" } });
+  await waitFor(() => expect(screen.queryByText(BAD)).toBeNull());
+});
+
+test("a_bad_saved_value_is_shown_on_opening", async () => {
+  mockCommands({
+    ...repoCommands,
+    repo_settings_get: () => ({ protectedBranches: ["main", "("], forcePushTargets: [] }),
+    protected_patterns_check: (args) => check((args as unknown as { text: string }).text),
+  });
+  open();
+
+  expect(await screen.findByText(BAD)).toBeTruthy();
+});
+
+test("a_bad_pattern_does_not_block_saving_and_leaves_no_notification", async () => {
+  mockCommands({
+    ...repoCommands,
+    protected_branches_set: () => ["("],
+    protected_patterns_check: (args) => check((args as unknown as { text: string }).text),
+  });
   const onclose = open();
 
   const field = await screen.findByLabelText("Protected branches:");
   await fireEvent.input(field, { target: { value: "(;main" } });
+  await screen.findByText(BAD);
   await fireEvent.click(ok());
 
   await waitFor(() => expect(onclose).toHaveBeenCalled());
-  expect(get(notifications)).toMatchObject([
-    { kind: "warning", title: "Invalid protected branch pattern", body: "(" },
-  ]);
+  expect(calls("protected_branches_set")[0][1]).toEqual({ patterns: ["(", "main"] });
+  expect(get(notifications)).toEqual([]);
 });
 
 test("without_a_repository_there_is_no_protected_row", async () => {

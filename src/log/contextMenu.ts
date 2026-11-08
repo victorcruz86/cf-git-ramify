@@ -318,8 +318,8 @@ export function contextMenu(
     ...uncommitItem(applied, vcs, handlers.editing),
     SEPARATOR,
     ...editingItems(applied, vcs, handlers.editing),
-    // `GitPushUpToCommitAction.isEnabled`.
-    onCommit("Push All up to Here…", "pushUpTo", repo.currentBranch !== null),
+    // `GitPushUpToCommitAction` needs no current branch and no local branch that contains the commit.
+    onCommit("Push All up to Here…", "pushUpTo"),
     SEPARATOR,
     ...refGroup(branches, "Branches", "Branch", MAX_BRANCH_GROUPS, repo, handlers),
     ...refGroup(tags, "Tags", "Tag", MAX_TAG_GROUPS, repo, handlers),

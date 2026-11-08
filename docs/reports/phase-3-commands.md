@@ -30,9 +30,9 @@ Real output. The prefix `-c core.quotepath=false -c log.showSignature=false`, wh
 ### merge without conflict
 
 ```text
-git merge-base HEAD side
-git merge side
-git merge-base HEAD side
+git merge-base HEAD refs/heads/side
+git merge refs/heads/side
+git merge-base HEAD refs/heads/side
 git rev-list --count 69f08d1..3349730
 git diff --name-only --diff-filter=ADMRUX --no-renames 1ededb0..HEAD
 ```
@@ -42,8 +42,8 @@ git diff --name-only --diff-filter=ADMRUX --no-renames 1ededb0..HEAD
 ### merge with conflict
 
 ```text
-git merge-base HEAD side
-git merge side
+git merge-base HEAD refs/heads/side
+git merge refs/heads/side
 ```
 
 6 state reads are omitted (see above).
@@ -110,9 +110,9 @@ git merge --abort
 
 ```text
 git stash save Uncommitted\ changes\ before\ Merge\ at\ <date>
-git merge-base HEAD side
-git merge side
-git merge-base HEAD side
+git merge-base HEAD refs/heads/side
+git merge refs/heads/side
+git merge-base HEAD refs/heads/side
 git rev-list --count bf89771..bba870e
 git diff --name-only --diff-filter=ADMRUX --no-renames e9ea410..HEAD
 git stash list --format=%H

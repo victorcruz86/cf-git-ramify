@@ -152,6 +152,35 @@ const patternOf = (query: string) => {
   return pattern === SLASH ? "" : pattern;
 };
 
+// A row of the popup that runs something: the top actions and those of the ongoing operation.
+export interface ActionRow {
+  id: string;
+  label: string;
+  shortcut?: string;
+  run: (() => void) | undefined;
+}
+
+// `ActionItem` filtering of `GitBranchesTreeModelUtil.match`: the same matcher as the branches, and the
+// best one is the highest degree (the first on a tie).
+export function filterActions(
+  rows: ActionRow[],
+  query: string,
+): { rows: ActionRow[]; best: ActionRow | null } {
+  const pattern = patternOf(query);
+  if (!pattern) return { rows, best: null };
+  let best: ActionRow | null = null;
+  let top = -Infinity;
+  const matching = rows.filter((row) => {
+    const match = speedMatch(row.label, pattern);
+    if (match && match.degree > top) {
+      top = match.degree;
+      best = row;
+    }
+    return match !== null;
+  });
+  return { rows: matching, best };
+}
+
 export function buildTree(list: BranchList, query: string, options: TreeOptions): TreeNode[] {
   const { favorites, grouping, recent, panel = false } = options;
   const pattern = patternOf(query);

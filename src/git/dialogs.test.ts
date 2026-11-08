@@ -151,7 +151,15 @@ describe("MergeDialog", () => {
   test("merge_incompatible_ones_are_seen_greyed_out", async () => {
     open();
     await fireEvent.click(modify());
-    for (const flag of ["--no-ff", "--ff-only", "--squash", "-m", "--no-commit", "--no-verify"]) {
+    for (const flag of [
+      "--no-ff",
+      "--ff-only",
+      "--squash",
+      "-m",
+      "--no-commit",
+      "--no-verify",
+      "--allow-unrelated-histories",
+    ]) {
       expect(option(flag).disabled).toBe(false);
     }
     expect(screen.getByText("Do not commit the merge result")).toBeTruthy();
@@ -165,6 +173,7 @@ describe("MergeDialog", () => {
     expect(option("-m").disabled).toBe(true);
     expect(option("--no-commit").disabled).toBe(false);
     expect(option("--no-verify").disabled).toBe(false);
+    expect(option("--allow-unrelated-histories").disabled).toBe(false);
 
     await fireEvent.click(option("--squash"));
     expect(option("--no-ff").disabled).toBe(false);
@@ -255,6 +264,7 @@ describe("RebaseDialog", () => {
     rebaseMerges: false,
     keepEmpty: false,
     root: false,
+    updateRefs: false,
     ...overrides,
   });
 
@@ -413,6 +423,19 @@ describe("RebaseDialog", () => {
     });
   });
 
+  test("update_refs_comes_out_as_a_button_and_travels_in_the_answer", async () => {
+    const { onanswer } = open({ upstream: "main", options: ["updateRefs"] });
+    expect(screen.getByText("--update-refs")).toBeTruthy();
+
+    await fireEvent.click(rebase());
+
+    await waitFor(() => expect(onanswer).toHaveBeenCalled());
+    expect(onanswer).toHaveBeenCalledWith({
+      params: params({ upstream: "main", updateRefs: true }),
+      newBase: "main",
+    });
+  });
+
   test("with_git_older_than_2_22_the_flag_is_preserve_merges_and_it_does_not_go_with_interactive", async () => {
     open({ upstream: "main", version: parseGitVersion("2.21.0"), options: ["interactive"] });
     await fireEvent.click(modify());
@@ -436,6 +459,7 @@ describe("RebaseDialog", () => {
       "--keep-empty",
       "--root",
       "--interactive",
+      "--update-refs",
     ]);
   });
 
@@ -865,6 +889,7 @@ describe("Rebase…", () => {
       rebaseMerges: false,
       keepEmpty: false,
       root: false,
+      updateRefs: false,
       ...overrides,
     },
     newBase,
@@ -937,6 +962,21 @@ describe("Rebase…", () => {
     expect(backend.saveRebase).toHaveBeenCalledWith(
       ["rebaseMerges", "keepEmpty", "interactive"],
       "main",
+    );
+  });
+
+  test("update_refs_is_saved_last_and_travels_in_the_params", async () => {
+    const backend = api();
+
+    await gitFlow(
+      ui([choice({ interactive: true, updateRefs: true })]).parts,
+      backend,
+    ).rebase();
+
+    expect(backend.saveRebase).toHaveBeenCalledWith(["interactive", "updateRefs"], "main");
+    expect(backend.rebase).toHaveBeenCalledWith(
+      expect.objectContaining({ updateRefs: true }),
+      expect.anything(),
     );
   });
 

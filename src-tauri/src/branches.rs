@@ -222,7 +222,7 @@ fn check_revision(revision: &str) -> Result<(), GitError> {
     check_argument(revision, "The target")
 }
 
-fn ref_is_valid(ctx: &TaskContext, full: &str) -> Result<bool, GitError> {
+pub(crate) fn ref_is_valid(ctx: &TaskContext, full: &str) -> Result<bool, GitError> {
     match ctx.git(&["check-ref-format", full]) {
         Ok(_) => Ok(true),
         Err(GitError::Failed { .. }) => Ok(false),

@@ -4,6 +4,7 @@
   import {
     gitVersion,
     protectedBranchesSet,
+    protectedPatternsCheck,
     repoSettingsGet,
     settingsSave,
     type ApiError,
@@ -11,7 +12,6 @@
   } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
   import { errorText } from "../lib/errors";
-  import { notify } from "../lib/notifications";
 
   interface Props {
     settings: Settings;
@@ -29,6 +29,10 @@
   // Of the open repository, separated by `;` as in `ParametersListUtil.COLON_LINE_PARSER`. `null`:
   // there is no repository, or they could not be read, and then they are left untouched.
   let protectedText = $state<string | null>(null);
+  // The error of the first pattern that does not compile, while it is typed. It does not block Save.
+  let protectedError = $state<string | null>(null);
+  let checkRun = 0;
+  let checkTimer: ReturnType<typeof setTimeout> | undefined;
   let tested = $state<{ ok: boolean; text: string } | null>(null);
   let problem = $state<string | null>(null);
   let saving = $state(false);
@@ -67,10 +71,27 @@
       .map((pattern) => pattern.trim())
       .filter(Boolean);
 
+  async function checkProtected(text: string) {
+    const run = ++checkRun;
+    try {
+      const error = await protectedPatternsCheck(text);
+      if (run === checkRun) protectedError = error;
+    } catch {
+      if (run === checkRun) protectedError = null;
+    }
+  }
+
+  // The same pause for typing as the rest of the app uses for text fields: none, so 300 ms.
+  function protectedEdited() {
+    clearTimeout(checkTimer);
+    checkTimer = setTimeout(() => void checkProtected(protectedText ?? ""), 300);
+  }
+
   async function loadProtected() {
     try {
       const { protectedBranches: stored } = await repoSettingsGet();
       protectedText = stored.join(";");
+      await checkProtected(protectedText);
     } catch {
       protectedText = null;
     }
@@ -79,15 +100,8 @@
   async function saveProtected() {
     if (protectedText === null) return;
     const list = patterns(protectedText);
-    const invalid = await protectedBranchesSet(list);
+    await protectedBranchesSet(list);
     protectedBranches.set(list);
-    if (invalid.length > 0) {
-      notify({
-        kind: "warning",
-        title: "Invalid protected branch pattern",
-        body: invalid.join("\n"),
-      });
-    }
   }
 
   // The spinner of IntelliJ keeps the value inside its range; an empty field goes back to what was saved.
@@ -123,6 +137,7 @@
   onMount(() => {
     testPath();
     loadProtected();
+    return () => clearTimeout(checkTimer);
   });
 </script>
 
@@ -274,8 +289,12 @@
           class="input"
           spellcheck="false"
           bind:value={protectedText}
+          oninput={protectedEdited}
         />
       </div>
+      {#if protectedError}
+        <p class="field-error" role="alert">{protectedError}</p>
+      {/if}
     {/if}
   </div>
 
@@ -310,6 +329,17 @@
         bind:value={updatePaths}
       ></textarea>
     </div>
+  </div>
+
+  <!-- VcsGeneralSettingsConfigurable: the Confirmation group, with `GitLogCommitEditingConfigurable`. -->
+  <h3>Confirmation</h3>
+  <div class="options">
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.showDropCommitDialog} />
+      <span class="check" data-state={draft.showDropCommitDialog ? "on" : "off"}></span>
+      Ask for confirmation to drop commits
+    </label>
+    <p class="comment nested">Applicable to Git</p>
   </div>
 
   <!-- DiffSettingsConfigurable: the Merge group of Diff & Merge. -->

@@ -21,7 +21,7 @@ test("matrix_shortcuts", () => {
   expect(press({ key: "0", code: "Digit0", metaKey: true })).toBe("ActivateCommitToolWindow");
   expect(press({ key: "z", code: "KeyZ", metaKey: true, altKey: true })).toBe("ChangesView.Revert");
   expect(press({ key: "Ω", code: "KeyZ", ctrlKey: true, altKey: true })).toBeNull();
-  expect(press({ key: "å", code: "KeyA", metaKey: true, altKey: true })).toBe("Git.Stage.Add");
+  expect(press({ key: "å", code: "KeyA", metaKey: true, altKey: true })).toBe("ChangesView.AddUnversioned");
   expect(press({ key: "M", code: "KeyM", metaKey: true, shiftKey: true })).toBe("ChangesView.Move");
   expect(press({ key: "m", code: "KeyM", ctrlKey: true })).toBe("Vcs.ShowMessageHistory");
   expect(press({ key: "µ", code: "KeyM", ctrlKey: true, altKey: true })).toBe(

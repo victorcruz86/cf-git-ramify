@@ -126,7 +126,7 @@ test("without_other_branches_checkout_is_a_single_row", () => {
   expect(vcs).toHaveBeenLastCalledWith({ kind: "checkout", target: HASH });
 });
 
-test("push_all_up_to_here_only_on_the_current_branch", () => {
+test("push_all_up_to_here_is_enabled_on_detached_head", () => {
   const vcs = vi.fn();
 
   const onBranch = find(contextMenu(selection(), ON_MAIN, handlers({ vcs })), "Push All up to Here…");
@@ -134,8 +134,13 @@ test("push_all_up_to_here_only_on_the_current_branch", () => {
   onBranch.run?.();
   expect(vcs).toHaveBeenLastCalledWith({ kind: "pushUpTo", hash: HASH });
 
-  const detached = contextMenu(selection(), { currentBranch: null }, handlers({ vcs }));
-  expect(find(detached, "Push All up to Here…").disabled).toBe(true);
+  const detached = find(
+    contextMenu(selection(), { currentBranch: null }, handlers({ vcs })),
+    "Push All up to Here…",
+  );
+  expect(detached.disabled).toBeFalsy();
+  detached.run?.();
+  expect(vcs).toHaveBeenLastCalledWith({ kind: "pushUpTo", hash: HASH });
 });
 
 test("commit_actions_call_the_injected_function", () => {

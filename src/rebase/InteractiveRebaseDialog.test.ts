@@ -96,6 +96,73 @@ test("start_rebasing_disabled_while_a_message_is_edited", async () => {
   expect(start().disabled).toBe(false);
 });
 
+const editorField = () => screen.getByRole("textbox", { name: "Commit message" }) as HTMLTextAreaElement;
+const confirmation = () => screen.getByRole("dialog", { name: "Cancel Reword" });
+
+async function typeIntoReword() {
+  await fireEvent.click(rows()[1]);
+  await fireEvent.click(button("Reword"));
+  await fireEvent.input(editorField(), { target: { value: "typed" } });
+}
+
+test("escape_with_a_changed_reword_asks_cancel_reword", async () => {
+  open();
+  await typeIntoReword();
+  await fireEvent.keyDown(editorField(), { key: "Escape" });
+
+  const asking = confirmation();
+  expect(within(asking).getByText("Entered commit message will be lost")).toBeTruthy();
+  expect(within(asking).getByRole("button", { name: "Cancel Reword" }).className).toContain("default");
+  expect(within(asking).getByRole("button", { name: "Keep Editing" })).toBeTruthy();
+
+  // Esc inside the confirmation keeps editing.
+  await fireEvent.keyDown(asking, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Cancel Reword" })).toBeNull();
+  expect(editorField().value).toBe("typed");
+  expect(document.activeElement).toBe(editorField());
+
+  // Keep Editing keeps the typed text, with the focus in the editor.
+  await fireEvent.keyDown(editorField(), { key: "Escape" });
+  await fireEvent.click(within(confirmation()).getByRole("button", { name: "Keep Editing" }));
+  expect(editorField().value).toBe("typed");
+  expect(document.activeElement).toBe(editorField());
+
+  // Cancel Reword restores the old message.
+  await fireEvent.keyDown(editorField(), { key: "Escape" });
+  await fireEvent.click(within(confirmation()).getByRole("button", { name: "Cancel Reword" }));
+  expect(screen.queryByRole("textbox", { name: "Commit message" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Rebasing Commits" })).toBeTruthy();
+  expect(rows()[1].textContent?.trim()).toBe("B");
+});
+
+test("escape_with_an_unchanged_reword_closes_silently", async () => {
+  open();
+  await fireEvent.click(rows()[1]);
+  await fireEvent.click(button("Reword"));
+  await fireEvent.keyDown(editorField(), { key: "Escape" });
+
+  expect(screen.queryByRole("dialog", { name: "Cancel Reword" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Commit message" })).toBeNull();
+});
+
+test("reset_with_a_changed_reword_asks_first", async () => {
+  open();
+  await typeIntoReword();
+  await fireEvent.click(button("Reset"));
+
+  const asking = confirmation();
+  // Keep Editing leaves everything as it was.
+  await fireEvent.click(within(asking).getByRole("button", { name: "Keep Editing" }));
+  expect(editorField().value).toBe("typed");
+  expect(screen.getByRole("button", { name: "Reset" })).toBeTruthy();
+
+  await fireEvent.click(button("Reset"));
+  await fireEvent.click(within(confirmation()).getByRole("button", { name: "Cancel Reword" }));
+  expect(screen.queryByRole("textbox", { name: "Commit message" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
+  expect(rows()[1].textContent?.trim()).toBe("B");
+});
+
 test("editing_inline_with_cmd_enter_applies", async () => {
   const { onanswer } = open();
   await fireEvent.click(rows()[1]);

@@ -283,9 +283,15 @@ pub fn pull(
     if let Err(error) = checked {
         return update::failed(PULL_FAILED, fetch::error_text(error));
     }
+    // `Pull…` runs `git pull` in IntelliJ, which never asks about merge commits or published
+    // commits: both are answered for the branch it pulls into. Without one, Update stops at the
+    // detached HEAD. If another branch is current by then, Update asks for it and `Pull…` cancels.
     if options.contains(&PullOption::Rebase) {
+        let current = branches::current_name(repo.path).ok().flatten();
         let options = UpdateOptions {
             target: Some(format!("{remote}/{branch}")),
+            rebase_merges: current.clone(),
+            published_confirmed: current,
             ..Default::default()
         };
         return update::update_project(repo, sync, UpdateMethod::Rebase, options, before_changes);

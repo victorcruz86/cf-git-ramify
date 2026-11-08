@@ -60,7 +60,7 @@ const ABORT_IDS: Record<string, Operation> = {
   "Git.Revert.Abort": "reverting",
 };
 const REBASE_GROUP = "Git.MainMenu.RebaseActions";
-const RESOLVE_ID = "Git.ResolveConflicts";
+export const RESOLVE_ID = "Git.ResolveConflicts";
 
 export type OngoingAction =
   | { do: "abort"; operation: Operation }

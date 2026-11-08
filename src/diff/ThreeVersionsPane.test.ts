@@ -4,8 +4,12 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { MergeBlock, ThreeSides } from "../lib/api";
-import { loadOptions } from "./options";
+import { loadOptions, type DiffOptions } from "./options";
 import ThreeVersionsPane from "./ThreeVersionsPane.svelte";
+
+// What `EditorView.lineWrapping` puts on the content; `view.lineWrapping` only follows it after a
+// measure, which jsdom does not do.
+const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
@@ -70,15 +74,18 @@ function calls(command: string) {
 const notices: { kind: string; text: string; action?: { label: string; run: () => void } }[] = [];
 let fallbacks = 0;
 
-function show(props: { path?: string; oldPath?: string | null } = {}) {
+const wraps: boolean[] = [];
+
+function show(props: { path?: string; oldPath?: string | null; options?: DiffOptions } = {}) {
   return render(ThreeVersionsPane, {
     path: props.path ?? "a.txt",
     oldPath: props.oldPath ?? null,
     version: 0,
-    options: loadOptions(),
+    options: props.options ?? loadOptions(),
     onnotice: (kind: string, text: string, action?: { label: string; run: () => void }) =>
       notices.push({ kind, text, action }),
     onfallback: () => fallbacks++,
+    onwrap: (on: boolean) => wraps.push(on),
   });
 }
 
@@ -104,6 +111,8 @@ async function opened() {
 }
 
 beforeEach(() => {
+  localStorage.clear();
+  wraps.length = 0;
   notices.length = 0;
   fallbacks = 0;
   vi.mocked(invoke).mockReset();
@@ -339,4 +348,31 @@ test("without_three_versions_and_nothing_typed_it_switches_to_two_panes_without_
   await waitFor(() => expect(fallbacks).toBe(1));
   expect(screen.queryByRole("alert")).toBeNull();
   expect(notices).toHaveLength(0);
+});
+
+test("the_three_versions_wrap_together", async () => {
+  mockCommands();
+  const options = loadOptions();
+  const { rerender } = show({ options });
+  await opened();
+  const panes = ["left", "base", "right"] as const;
+  const views = panes.map(view);
+  // The diff window's place, `Default`, has it on.
+  expect(views.map(wrapped)).toEqual([true, true, true]);
+
+  await rerender({ options: { ...options, wrap: false } });
+
+  expect(panes.map(view)).toEqual(views);
+  expect(views.map(wrapped)).toEqual([false, false, false]);
+
+  await fireEvent.contextMenu(
+    document.querySelector('[data-pane="base"] .cm-gutters .cm-gutterElement') as HTMLElement,
+  );
+  const menu = await screen.findByRole("menu");
+  expect([...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.getAttribute("aria-label"))).toEqual([
+    "Soft-Wrap",
+  ]);
+  await fireEvent.click(screen.getByRole("menuitem", { name: "Soft-Wrap" }));
+
+  expect(wraps).toEqual([true]);
 });

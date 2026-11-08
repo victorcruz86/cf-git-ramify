@@ -4,7 +4,7 @@
   import { matchShortcut } from "../lib/keymap";
   import { store, stored } from "../lib/storage";
   import FilePane from "../diff/FilePane.svelte";
-  import { loadOptions } from "../diff/options";
+  import { loadOptions, storeWrap } from "../diff/options";
   import ChangesPanel from "./ChangesPanel.svelte";
   import type { CheckinRequest } from "./checkin";
 
@@ -40,7 +40,12 @@
   // Goes up with each refresh: the file shown may have changed on disk.
   let version = $state(0);
   let root: HTMLElement;
-  const options = loadOptions();
+  let options = $state.raw(loadOptions("ChangesView"));
+
+  function setWrap(wrap: boolean) {
+    options = { ...options, wrap };
+    storeWrap("ChangesView", wrap);
+  }
 
   export function focusTree() {
     panel?.focusTree();
@@ -172,6 +177,7 @@
             readonly
             onselection={() => {}}
             onnotice={(kind, text, action) => panel?.notify(kind, text, action)}
+            onwrap={setWrap}
           />
         {/key}
       {/if}

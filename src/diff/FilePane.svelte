@@ -42,7 +42,7 @@
   import checkOff from "./icons/gutterCheckBox.svg?raw";
   import checkPartial from "./icons/gutterCheckBoxIndeterminate.svg?raw";
   import checkOn from "./icons/gutterCheckBoxSelected.svg?raw";
-  import type { DiffOptions } from "./options";
+  import { inGutter, softWrapItem, type DiffOptions } from "./options";
   import { sameSides, sideMessage, sideText, unchangedText } from "./sides";
 
   const PREVIEW_DELAY_MS = 150;
@@ -66,6 +66,8 @@
     checkboxes?: boolean;
     onselection: (change: SelectionChange) => void;
     onnotice: (kind: NoticeKind, text: string, action?: { label: string; run: () => void }) => void;
+    // `Soft-Wrap` of the gutter menu: whoever owns the options stores it for its place.
+    onwrap: (on: boolean) => void;
     onactive?: () => void;
     // Only in measurement mode: timings of the first time the editors are created.
     ondrawn?: (timing: { sidesMs: number; buildMs: number; builtAtEpochMs: number }) => void;
@@ -84,6 +86,7 @@
     checkboxes = true,
     onselection,
     onnotice,
+    onwrap,
     onactive,
     ondrawn,
   }: Props = $props();
@@ -477,6 +480,12 @@
   }
 
   function contextmenu(event: MouseEvent) {
+    // The gutter popup of SetEditorSettingsActionGroup; the text keeps its own menu.
+    if (editors && inGutter(event)) {
+      event.preventDefault();
+      menu = { x: event.clientX, y: event.clientY, items: [softWrapItem(options.wrap, onwrap)] };
+      return;
+    }
     const lines = range(event);
     if (!lines) return;
     event.preventDefault();

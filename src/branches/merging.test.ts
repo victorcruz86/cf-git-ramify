@@ -200,8 +200,8 @@ describe("merge", () => {
         files: ["a.txt"],
       },
     ]);
-    expect(merge).toHaveBeenNthCalledWith(1, "side", false, HEAD);
-    expect(merge).toHaveBeenNthCalledWith(2, "side", true, HEAD);
+    expect(merge).toHaveBeenNthCalledWith(1, "side", "local", false, HEAD);
+    expect(merge).toHaveBeenNthCalledWith(2, "side", "local", true, HEAD);
     expect(dialogs.restored).toHaveBeenCalledWith(
       [{ saved: MERGE_SAVED, restore: { kind: "restored" } }],
       { operation: "merge", from: "side" },
@@ -218,6 +218,19 @@ describe("merge", () => {
     await run(mergingFlow(ui(), api({ merge: once })), "merge", local("side"));
     expect(once).toHaveBeenCalledTimes(1);
     expect(shown()).toEqual([]);
+  });
+
+  test("popup_merge_passes_the_kind_of_the_clicked_item_with_the_short_name", async () => {
+    const merge = vi.fn(async () => MERGED);
+    const backend = api({ merge });
+    await run(mergingFlow(ui(), backend), "merge", { name: "x", kind: "tag" });
+    await run(mergingFlow(ui(), backend), "merge", remote("origin/x"));
+    await run(mergingFlow(ui(), backend), "merge", local("x"));
+
+    expect(merge).toHaveBeenNthCalledWith(1, "x", "tag", false, HEAD);
+    expect(merge).toHaveBeenNthCalledWith(2, "origin/x", "remote", false, HEAD);
+    expect(merge).toHaveBeenNthCalledWith(3, "x", "local", false, HEAD);
+    expect(last()).toMatchObject({ title: "Merged x to main" });
   });
 
   test("the_smart_merge_dialog_has_no_force", async () => {
@@ -359,7 +372,7 @@ describe("merge", () => {
     expect(last().title).toBe("Merged side to main");
   });
 
-  test("unmerged_files_gives_cannot_merge_because_of_unmerged_files", async () => {
+  test("unmerged_files_text_and_action_follow_241", async () => {
     const merge = vi.fn(async () => ({ outcome: { kind: "unmerged" }, saved: null, restore: null }));
     const dialogs = ui();
     await run(mergingFlow(dialogs, api({ merge } as never)), "merge", local("side"));
@@ -367,8 +380,9 @@ describe("merge", () => {
     expect(last()).toMatchObject({
       kind: "error",
       title: "Cannot merge because of unmerged files",
-      body: "You have to resolve all merge conflicts before merge.\nAfter resolving conflicts you also probably would want to commit your files to the current branch.",
+      body: "You need to resolve all merge conflicts before merge.\nAfter resolving conflicts do not forget to commit your files to the current branch before switching to another branch.",
     });
+    expect(last().actions?.map(({ label }) => label)).toEqual(["Resolve conflicts…"]);
     last().actions?.[0].run();
     expect(dialogs.resolveConflicts).toHaveBeenCalled();
   });

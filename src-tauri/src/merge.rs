@@ -22,6 +22,7 @@ pub enum MergeOption {
     Message,
     NoCommit,
     NoVerify,
+    AllowUnrelatedHistories,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -54,6 +55,7 @@ impl MergeOption {
             Self::Message => "-m",
             Self::NoCommit => "--no-commit",
             Self::NoVerify => "--no-verify",
+            Self::AllowUnrelatedHistories => "--allow-unrelated-histories",
         }
     }
 }
@@ -67,6 +69,7 @@ const UP_TO_DATE: [&str; 2] = ["Already up-to-date", "Already up to date"];
 const UNMERGED_BRANCHES: [&str; 4] = ["branch", "--format=%(refname)", "--no-color", "--all"];
 const HEADS: &str = "refs/heads/";
 const REMOTES: &str = "refs/remotes/";
+const TAGS: &str = "refs/tags/";
 const HEAD: &str = "HEAD";
 
 // `GitMerge.getHandlerProvider`: the options in the chosen order, and `-m` with its text where the
@@ -205,20 +208,47 @@ pub struct BranchMerge {
 
 const MERGE_TITLE: &str = "Merge";
 
-// `GitMergeBranchAction` and `GitMergeOperation`: `git merge <branch>` without options. With `smart`, the
+// The reference a popup item stands for. Anything but `local | remote | tag` is rejected before the name is
+// looked at; the name goes through the same checks as every other reference of the UI.
+fn full_ref(repo: &Repo, name: &str, kind: &str) -> Result<String, GitError> {
+    let prefix = match kind {
+        "local" => HEADS,
+        "remote" => REMOTES,
+        "tag" => TAGS,
+        other => {
+            return Err(branches::invalid(format!(
+                "The kind of reference '{other}' is not valid"
+            )))
+        }
+    };
+    branches::check_argument(name, "The branch")?;
+    let full = format!("{prefix}{name}");
+    if !branches::ref_is_valid(repo.ctx, &full)? {
+        return Err(branches::invalid(format!("The branch '{name}' is not valid")));
+    }
+    Ok(full)
+}
+
+// `GitMergeBranchAction` and `GitMergeOperation`: `git merge <full ref>` without options. With `smart`, the
 // Smart Merge that is offered when local changes would be overwritten.
+//
+// `GitMergeOperation` merges `branch.getFullName()`: the popup merges the item that was clicked, so a tag
+// and a branch with the same name are not mixed up. `kind` is `local`, `remote` or `tag`; `name` is the short
+// name (a remote branch includes its remote).
 pub fn merge_into(
     repo: &Repo,
-    branch: &str,
+    name: &str,
+    kind: &str,
     smart: bool,
     expected_head: &str,
 ) -> Result<BranchMerge, GitError> {
+    let full = full_ref(repo, name, kind)?;
     if smart {
-        return smart_merge(repo, branch, expected_head);
+        return smart_merge(repo, &full, expected_head);
     }
     operation::check_head(repo.path, expected_head)?;
     Ok(BranchMerge {
-        outcome: run_merge(repo, branch, &[], None)?,
+        outcome: run_merge(repo, &full, &[], None)?,
         saved: None,
         restore: None,
     })
@@ -406,13 +436,19 @@ mod tests {
     fn merge_with_each_option_launches_the_intellij_command() {
         use MergeOption::*;
         // The order of the options is the dialog's, and `-m` carries its text right behind it.
-        let cases: [(bool, &[MergeOption], Option<&str>, &str); 8] = [
+        let cases: [(bool, &[MergeOption], Option<&str>, &str); 9] = [
             (true, &[NoFf], None, "merge --no-ff side"),
             (true, &[FfOnly], None, "merge --ff-only side"),
             (false, &[Squash], None, "merge --squash side"),
             (false, &[Message], Some("hello"), "merge -m hello side"),
             (false, &[NoCommit], None, "merge --no-commit side"),
             (false, &[NoVerify], None, "merge --no-verify side"),
+            (
+                false,
+                &[AllowUnrelatedHistories],
+                None,
+                "merge --allow-unrelated-histories side",
+            ),
             (
                 false,
                 &[NoVerify, NoFf, Message],
@@ -432,6 +468,29 @@ mod tests {
             );
             assert!(harness.ran(expected), "{expected}");
         }
+    }
+
+    #[test]
+    fn merge_with_allow_unrelated_histories_joins_histories_without_a_common_ancestor() {
+        let harness = RepoHarness::new();
+        harness.repo.commit("a.txt", b"base\n", "base");
+        harness.git(&["checkout", "-q", "--orphan", "side"]);
+        harness.git(&["rm", "-rf", "-q", "."]);
+        harness.repo.commit("o.txt", b"o\n", "orphan");
+        harness.git(&["checkout", "-q", "main"]);
+
+        let refused = merge_side(&harness, &[], None);
+        assert!(
+            !matches!(refused, Ok(MergeOutcome::Merged { .. })),
+            "{refused:?}"
+        );
+
+        let joined = merge_side(&harness, &[MergeOption::AllowUnrelatedHistories], None);
+        assert!(
+            matches!(joined, Ok(MergeOutcome::Merged { .. })),
+            "{joined:?}"
+        );
+        assert!(harness.ran("merge --allow-unrelated-histories side"));
     }
 
     #[test]
@@ -723,7 +782,7 @@ mod tests {
 
     fn merge_into_side(harness: &RepoHarness, smart: bool) -> Result<BranchMerge, GitError> {
         let head = harness.head();
-        harness.run(move |repo| merge_into(repo, "side", smart, &head))
+        harness.run(move |repo| merge_into(repo, "side", "local", smart, &head))
     }
 
     fn stash_count(harness: &RepoHarness) -> usize {
@@ -744,7 +803,7 @@ mod tests {
             "{merged:?}"
         );
         assert_eq!(merged.saved, None);
-        assert!(harness.ran(" merge side"));
+        assert!(harness.ran(" merge refs/heads/side"));
         assert_eq!(
             harness
                 .git(&["rev-list", "--parents", "-1", "HEAD"])
@@ -752,6 +811,89 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    // A branch `x` one commit ahead of `base`, and a tag `x` on another commit.
+    fn branch_and_tag_named_x() -> (RepoHarness, String, String) {
+        let harness = RepoHarness::new();
+        harness.repo.commit("a.txt", b"base\n", "base");
+        harness.git(&["checkout", "-q", "-b", "x"]);
+        harness.repo.commit("branch.txt", b"b\n", "on the branch");
+        let branch = harness.head();
+        harness.git(&["checkout", "-q", "main"]);
+        harness.git(&["checkout", "-q", "-b", "elsewhere"]);
+        harness.repo.commit("tag.txt", b"t\n", "on the tag");
+        let tag = harness.head();
+        harness.git(&["tag", "x"]);
+        harness.git(&["checkout", "-q", "main"]);
+        (harness, branch, tag)
+    }
+
+    fn merge_x(harness: &RepoHarness, kind: &'static str) -> Result<BranchMerge, GitError> {
+        let head = harness.head();
+        harness.run(move |repo| merge_into(repo, "x", kind, false, &head))
+    }
+
+    #[test]
+    fn popup_merge_of_a_tag_with_a_branchs_name_merges_the_tag() {
+        let (harness, branch, tag) = branch_and_tag_named_x();
+
+        let merged = merge_x(&harness, "tag").unwrap();
+
+        assert!(
+            matches!(merged.outcome, MergeOutcome::Merged { .. }),
+            "{merged:?}"
+        );
+        assert!(harness.ran(" merge refs/tags/x"));
+        assert_eq!(harness.head(), tag);
+        assert_ne!(harness.head(), branch);
+    }
+
+    #[test]
+    fn popup_merge_of_a_branch_with_a_tags_name_merges_the_branch() {
+        let (harness, branch, tag) = branch_and_tag_named_x();
+
+        merge_x(&harness, "local").unwrap();
+
+        assert!(harness.ran(" merge refs/heads/x"));
+        assert_eq!(harness.head(), branch);
+        assert_ne!(harness.head(), tag);
+    }
+
+    #[test]
+    fn popup_merge_of_a_remote_branch_uses_refs_remotes() {
+        let harness = diverging();
+        let side = harness.git(&["rev-parse", "side"]).trim().to_string();
+        harness.git(&["update-ref", "refs/remotes/origin/side", &side]);
+        harness.git(&["branch", "-q", "-D", "side"]);
+        let head = harness.head();
+
+        let merged = harness
+            .run(move |repo| merge_into(repo, "origin/side", "remote", false, &head))
+            .unwrap();
+
+        assert!(
+            matches!(merged.outcome, MergeOutcome::Merged { .. }),
+            "{merged:?}"
+        );
+        assert!(harness.ran(" merge refs/remotes/origin/side"));
+    }
+
+    #[test]
+    fn an_unknown_ref_kind_is_rejected() {
+        let harness = diverging();
+        let before = harness.head();
+
+        for kind in ["", "head", "refs/heads/", "--abort", "Local"] {
+            let head = harness.head();
+            let rejected = harness.run(move |repo| merge_into(repo, "side", kind, false, &head));
+            assert!(matches!(rejected, Err(GitError::Io(_))), "{kind}: {rejected:?}");
+        }
+        let head = harness.head();
+        let smart = harness.run(move |repo| merge_into(repo, "side", "bogus", true, &head));
+        assert!(matches!(smart, Err(GitError::Io(_))), "{smart:?}");
+        assert_eq!(harness.head(), before);
+        assert!(!harness.ran(" merge refs/heads/side"));
     }
 
     #[test]
@@ -927,7 +1069,7 @@ mod tests {
 
     fn merge_into_other(harness: &RepoHarness, smart: bool) -> Result<BranchMerge, GitError> {
         let head = harness.head();
-        harness.run(move |repo| merge_into(repo, "other", smart, &head))
+        harness.run(move |repo| merge_into(repo, "other", "local", smart, &head))
     }
 
     // `fatalUnmergedFilesError`: `Cannot merge because of unmerged files`, not `Repository has already
@@ -1186,13 +1328,15 @@ mod tests {
             serde_json::json!({ "kind": "failed", "reason": "bad" })
         );
         let options: Vec<MergeOption> =
-            serde_json::from_str(r#"["noFf","ffOnly","noVerify"]"#).unwrap();
+            serde_json::from_str(r#"["noFf","ffOnly","noVerify","allowUnrelatedHistories"]"#)
+                .unwrap();
         assert_eq!(
             options,
             [
                 MergeOption::NoFf,
                 MergeOption::FfOnly,
-                MergeOption::NoVerify
+                MergeOption::NoVerify,
+                MergeOption::AllowUnrelatedHistories
             ]
         );
     }

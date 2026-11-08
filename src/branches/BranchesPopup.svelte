@@ -9,6 +9,7 @@
     type BranchSync,
   } from "../lib/api";
   import { errorText } from "../lib/errors";
+  import { fetching } from "../update/flow";
   import Icon from "../lib/Icon.svelte";
   import { matchShortcut } from "../lib/keymap";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
@@ -18,6 +19,7 @@
     autoExpanded,
     branchActions,
     buildTree,
+    filterActions,
     findBranch,
     highlighted,
     nextLeaf,
@@ -26,6 +28,7 @@
     refOf,
     syncTooltip,
     visibleRows,
+    type ActionRow,
     type BranchNode,
     type GroupNode,
     type TreeNode,
@@ -77,7 +80,8 @@
 
   const ROW_HEIGHT = 24;
   const MAX_VISIBLE_ROWS = 20;
-  const MIN_WIDTH = 350;
+  // `GitBranchesTreePopup.minimumSize` of the New UI.
+  const MIN_WIDTH = 375;
   const MIN_HEIGHT = 300;
   const MARGIN = 8;
   // The menu padding: the first row of the submenu lines up with its own.
@@ -87,13 +91,6 @@
   // `applySearchPattern` and the `ide.popup.auto.delay` registry key.
   const SEARCH_DELAY = 100;
   const HOVER_DELAY = 500;
-
-  interface ActionRow {
-    id: string;
-    label: string;
-    shortcut?: string;
-    run: (() => void) | undefined;
-  }
 
   type Row = ActionRow | "separator" | { node: TreeNode; depth: number };
 
@@ -113,7 +110,6 @@
     focused: boolean;
   } | null>(null);
   let settings = $state.raw<{ x: number; y: number } | null>(null);
-  let fetching = $state(false);
   let shift = false;
   let placed = $state(false);
   let left = $state(0);
@@ -160,21 +156,45 @@
     ),
   );
   const filtering = $derived(query.trim() !== "" && query.trim() !== "/");
-  const noResults = $derived(list !== null && filtering && tree.length === 0);
+  const filterByAction = $derived($branchOptions.filterByAction);
+  // `GitBranchesTreePopupFilterByAction`: with it on, the actions are searched like the branches.
+  const searchingActions = $derived(filtering && filterByAction);
+  const found = $derived(
+    searchingActions
+      ? filterActions([...ongoingRows, ...actions[0], ...actions[1]], query)
+      : { rows: [] as ActionRow[], best: null },
+  );
+  const branchRows = $derived(visibleRows(tree, expanded));
+  // `notHaveFilteredNodes`: the text is for when neither an action nor a branch is left.
+  const noResults = $derived(
+    list !== null && filtering && tree.length === 0 && (!searchingActions || found.rows.length === 0),
+  );
   const rows = $derived<Row[]>(
     noResults || !list
       ? []
-      : [
-          ...ongoingRows,
-          ...(ongoingRows.length > 0 ? (["separator"] as const) : []),
-          ...actions[0],
-          "separator",
-          ...actions[1],
-          "separator",
-          ...visibleRows(tree, expanded),
-        ],
+      : searchingActions
+        ? [
+            ...found.rows,
+            ...(found.rows.length > 0 && branchRows.length > 0 ? (["separator"] as const) : []),
+            ...branchRows,
+          ]
+        : [
+            ...ongoingRows,
+            ...(ongoingRows.length > 0 ? (["separator"] as const) : []),
+            ...actions[0],
+            "separator",
+            ...actions[1],
+            "separator",
+            ...branchRows,
+          ],
   );
   const selectable = $derived(rows.filter((row) => row !== "separator"));
+  // The arrows while filtering go through the leaves and, if they are searched, the actions.
+  const navigable = $derived(
+    filtering
+      ? selectable.filter((row) => ("node" in row ? row.node.kind === "branch" : searchingActions))
+      : selectable,
+  );
 
   const rowId = (row: Exclude<Row, "separator">) => ("node" in row ? row.node.id : row.id);
   const selectedRow = $derived(selectable.find((row) => rowId(row) === selected));
@@ -200,7 +220,7 @@
   function applyTree() {
     if (!list) return;
     expanded = new Set([...expanded, ...autoExpanded(tree, list, query)]);
-    reveal(preferredId(tree, list, query) ?? nextLeaf(tree, null, 1)?.id ?? null);
+    reveal(found.best?.id ?? preferredId(tree, list, query) ?? nextLeaf(tree, null, 1)?.id ?? null);
   }
 
   // With large repositories it takes a while: the list does not wait for it, like IntelliJ's cached
@@ -331,22 +351,14 @@
   }
 
   function move(step: number) {
-    if (filtering) {
-      reveal(nextLeaf(tree, selected, step)?.id ?? null);
-      return;
-    }
-    if (selectable.length === 0) return;
-    const position = selectable.findIndex((row) => rowId(row) === selected);
-    const next = position < 0 && step < 0 ? selectable.length - 1 : position + step;
-    reveal(rowId(selectable[(next + selectable.length) % selectable.length]));
+    if (navigable.length === 0) return;
+    const position = navigable.findIndex((row) => rowId(row) === selected);
+    const next = position < 0 && step < 0 ? navigable.length - 1 : position + step;
+    reveal(rowId(navigable[(next + navigable.length) % navigable.length]));
   }
 
   function moveTo(end: "first" | "last") {
-    const step = end === "first" ? 1 : -1;
-    if (filtering) reveal(nextLeaf(tree, null, step)?.id ?? null);
-    else if (selectable.length > 0) {
-      reveal(rowId(selectable[end === "first" ? 0 : selectable.length - 1]));
-    }
+    if (navigable.length > 0) reveal(rowId(navigable[end === "first" ? 0 : navigable.length - 1]));
   }
 
   function right() {
@@ -415,15 +427,11 @@
   }
 
   async function fetchRemotes() {
-    if (!onfetch || fetching) return;
-    fetching = true;
-    try {
-      await onfetch();
-      // `forceUpdateBranches` with `updateBranchesWithIncoming(false)`: it does not ask the remotes.
-      await read();
-    } finally {
-      fetching = false;
-    }
+    if (!onfetch || $fetching) return;
+    // The shared flag is raised by the fetch itself (`src/update/flow.ts`).
+    await onfetch();
+    // `forceUpdateBranches` with `updateBranchesWithIncoming(false)`: it does not ask the remotes.
+    await read();
   }
 
   function showSettings(event: MouseEvent) {
@@ -436,6 +444,12 @@
   }
 
   const settingsItems = (): MenuItem[] => [
+    {
+      label: "Show Actions in Search Results",
+      checked: $branchOptions.filterByAction,
+      run: () => setBranchOptions({ filterByAction: !$branchOptions.filterByAction }),
+    },
+    null,
     {
       label: "Group by Prefix",
       checked: $branchOptions.grouping,
@@ -518,16 +532,16 @@
       bind:value={text}
       class="search"
       aria-label="Search"
-      placeholder="Search"
+      placeholder={filterByAction ? "Search for branches and actions" : "Search for branches"}
       spellcheck="false"
       oninput={search}
     />
     <button
       type="button"
       class="action"
-      aria-label={fetching ? "Fetching…" : "Fetch"}
-      title={fetching ? "Fetching…" : "Fetch"}
-      disabled={!onfetch || fetching}
+      aria-label={$fetching ? "Fetching…" : "Fetch"}
+      title={$fetching ? "Fetching…" : "Fetch"}
+      disabled={!onfetch || $fetching}
       onclick={fetchRemotes}
     >
       <Icon name="fetch" />
@@ -544,7 +558,7 @@
     style:height={$branchOptions.popupSize ? null : `${visibleCount * ROW_HEIGHT}px`}
   >
     {#if noResults}
-      <p class="empty">Branch '{query}' not found</p>
+      <p class="empty">{filterByAction ? "" : "Branch "}'{query}' not found</p>
     {/if}
     {#each rows as row, index (row === "separator" ? `separator${index}` : rowId(row))}
       {#if row === "separator"}
@@ -618,7 +632,9 @@
             runAction(row);
           }}
         >
-          <span class="label">{row.label}</span>
+          <span class="label">
+            {#if filterByAction}{@render branchText(row.label)}{:else}{row.label}{/if}
+          </span>
           {#if row.shortcut}<span class="secondary">{row.shortcut}</span>{/if}
         </div>
       {/if}

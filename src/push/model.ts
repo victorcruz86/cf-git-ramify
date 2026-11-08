@@ -25,7 +25,9 @@ import { errorText } from "../lib/errors";
 import { dismiss, notify, type Notification } from "../lib/notifications";
 import { taskResult } from "../lib/tasks";
 import { shortHash } from "../log/draw";
+import type { PublishedRequest } from "../branches/merging";
 import { isValidRefName } from "../branches/refName";
+import { whileFetching } from "../update/flow";
 import { branchesOf } from "../update/pullOptions";
 import { shouldPreview } from "./commitAndPush";
 import { isProtectedBranch } from "./force";
@@ -77,7 +79,9 @@ export interface PushRequest {
 export type PushDialogRequest =
   | PushRequest
   | { kind: "pushRejected"; branch: string; method: UpdateMethod; merges: boolean }
-  | { kind: "rebaseMerges" };
+  | { kind: "rebaseMerges" }
+  // `true` is `Rebase Anyway`.
+  | PublishedRequest;
 
 // What it shares with `src/update/flow.ts`: updating after a rejection is one more Update.
 export interface PushUpdates {
@@ -190,6 +194,7 @@ function rejectedAfter(update: UpdateResult | null, destination: string): string
       return "Push was canceled, because not all conflicts were resolved during the update.\nResolve the conflicts and try pushing again";
     case "cancelled":
     case "rebasingMergeCommits":
+    case "rebasingPublishedCommits":
       return "Push was rejected, and update was canceled";
     default:
       return "Push was rejected, and update failed with an error";
@@ -295,10 +300,12 @@ export function pushFlow(ui: PushUi, api: PushApi = backend) {
   }
 
   // `GitUpdateProcess` with `checkForRebaseOverMergeProblem`: if it was not asked before, it is asked now.
+  // The answer is for `branch`, the one that was asked about.
   async function askRebaseOrMerge(
     spec: PushSpec,
     done: UpdatedPush,
     update: UpdateResult,
+    branch: string,
     started: number,
   ) {
     const asking = generation === started;
@@ -309,7 +316,29 @@ export function pushFlow(ui: PushUi, api: PushApi = backend) {
     } else if (decision === "merge") {
       await retry(spec, "merge", { fetched: true }, done.attempts, started);
     } else {
-      await retry(spec, "rebase", { fetched: true, rebaseMerges: true }, done.attempts, started);
+      const answered = { fetched: true, rebaseMerges: branch };
+      await retry(spec, "rebase", answered, done.attempts, started);
+    }
+  }
+
+  // `GitRebaseUpdater.checkForRebasingPublishedCommits`, which also runs in this Update. Closing it is
+  // `Cancel`. The answer is for the branch that was asked about, as in `src/update/flow.ts`.
+  async function askPublished(
+    spec: PushSpec,
+    done: UpdatedPush,
+    update: UpdateResult,
+    branch: string,
+    options: UpdateOptions,
+    started: number,
+  ) {
+    const asking = generation === started;
+    const anyway = asking ? await ui.ask<boolean>({ kind: "publishedCommits" }) : null;
+    if (generation !== started || anyway !== true) {
+      const cancelled: UpdateResult = { ...update, outcome: { kind: "cancelled" } };
+      announce(spec, done.push, cancelled, started);
+    } else {
+      const confirmed = { ...options, fetched: true, publishedConfirmed: branch };
+      await retry(spec, "rebase", confirmed, done.attempts, started);
     }
   }
 
@@ -320,15 +349,20 @@ export function pushFlow(ui: PushUi, api: PushApi = backend) {
     attempts: number,
     started: number,
   ) {
+    // Only the Rust call fetches, as in Update: not while `askRebaseOrMerge` or `askPublished` wait.
     const done = await attempt(PUSH_FAILED, () =>
-      api.updateAndPush(spec, method, options, attempts),
+      whileFetching(() => api.updateAndPush(spec, method, options, attempts)),
     );
     if (!done) return;
     const { update, push: result } = done;
     // Before asking: what an earlier Update left behind does not come back with the next one.
     if (update) ui.updates.report(update, generation === started);
     if (update?.outcome.kind === "rebasingMergeCommits") {
-      await askRebaseOrMerge(spec, done, update, started);
+      await askRebaseOrMerge(spec, done, update, update.outcome.reason.branch, started);
+      return;
+    }
+    if (update?.outcome.kind === "rebasingPublishedCommits") {
+      await askPublished(spec, done, update, update.outcome.reason.branch, options, started);
       return;
     }
     announce(spec, result, update, started);
@@ -360,7 +394,8 @@ export function pushFlow(ui: PushUi, api: PushApi = backend) {
       }
       await saveChoice(answer, merges).catch(() => {});
       method = answer.method;
-      options = { rebaseMerges: true };
+      // The dialog already told about the merges of `branch`.
+      options = { rebaseMerges: branch };
     }
     // It would update whichever repository is open now.
     if (generation !== started) {
@@ -472,18 +507,12 @@ export function pushFlow(ui: PushUi, api: PushApi = backend) {
   // `GitPushBranchAction`.
   const pushBranch = (name: string) => open(name);
 
-  // `GitPushUpToCommitAction`.
+  // `GitPushUpToCommitAction`: the commit is pushed from its local branch if it has one; otherwise from
+  // the commit itself (`GitPushSource.createDetached`), towards the target of the current branch or, on
+  // a detached HEAD, a new `detached` branch.
   async function pushUpTo(hash: string) {
     const found = await attempt(LOAD_FAILED, async () => ({ branch: await api.branchOf(hash) }));
     if (!found) return;
-    if (found.branch === null) {
-      notify({
-        kind: "error",
-        title: "Push failed to start",
-        body: "'Push All up to Here' is supported for commit contained in a local branch only",
-      });
-      return;
-    }
     await open(found.branch, hash);
   }
 

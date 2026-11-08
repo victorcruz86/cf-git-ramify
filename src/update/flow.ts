@@ -1,3 +1,4 @@
+import { derived, writable } from "svelte/store";
 import {
   branchCurrent,
   branchList,
@@ -32,7 +33,7 @@ import {
   type UpdateResult,
 } from "../lib/api";
 import { restoredWithoutIndex } from "../branches/actions";
-import type { Saving } from "../branches/merging";
+import type { PublishedRequest, Saving } from "../branches/merging";
 import { ABORTED } from "../operation/operation";
 import { errorText } from "../lib/errors";
 import { dismiss, notify, type Notification } from "../lib/notifications";
@@ -40,6 +41,22 @@ import { taskResult } from "../lib/tasks";
 
 export const UPDATE_ACTIONS = ["Vcs.UpdateProject", "UpdateFiles", "Git.Fetch", "Git.Pull"] as const;
 export type UpdateAction = (typeof UPDATE_ACTIONS)[number];
+
+// Decision 5: Fetch is disabled while any fetch of the app runs, whether it is an explicit Fetch or the
+// one inside an Update or a Pull. A count, because they can overlap; the menu and the branches popup
+// read it.
+const runs = writable(0);
+export const fetching = derived(runs, (count) => count > 0);
+
+// Cleared in a `finally`: a failed or cancelled fetch gives Fetch back as well.
+export async function whileFetching<T>(work: () => Promise<T>): Promise<T> {
+  runs.update((count) => count + 1);
+  try {
+    return await work();
+  } finally {
+    runs.update((count) => count - 1);
+  }
+}
 
 const UPDATE_CANCELED = "Update canceled";
 const PULL_FAILED = "Git Pull failed";
@@ -57,6 +74,8 @@ export type UpdateRequest =
   | { kind: "updateProject"; method: UpdateMethod; hidden: boolean }
   | { kind: "fixTracked"; branch: string; remoteBranches: string[]; method: UpdateMethod }
   | { kind: "rebaseMerges" }
+  // `true` is `Rebase Anyway`.
+  | PublishedRequest
   | {
       kind: "pull";
       info: PullInfo;
@@ -423,19 +442,40 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
 
   async function execute(method: UpdateMethod, options: UpdateOptions): Promise<void> {
     const started = generation;
-    const update = await attempt("Update failed", () => api.update(method, options));
+    const update = await attempt("Update failed", () =>
+      whileFetching(() => api.update(method, options)),
+    );
     if (!update) return;
-    if (generation !== started) notifyElsewhere(update);
-    else if (update.outcome.kind !== "rebasingMergeCommits") show(update);
-    else await chooseRebaseOrMerge(options, started);
+    await answered(update, options, started);
   }
 
-  async function chooseRebaseOrMerge(options: UpdateOptions, started: number) {
+  // What Rust stopped to ask before saving anything; the rest, with its notices. The repeat goes
+  // through the same checks as the first Update, without its fetch.
+  async function answered(update: UpdateResult, options: UpdateOptions, started: number) {
+    if (generation !== started) notifyElsewhere(update);
+    else if (update.outcome.kind === "rebasingMergeCommits") {
+      await chooseRebaseOrMerge(update.outcome.reason.branch, options, started);
+    } else if (update.outcome.kind === "rebasingPublishedCommits") {
+      await confirmPublished(update.outcome.reason.branch, options, started);
+    } else show(update);
+  }
+
+  // `GitRebaseProcess.askIfShouldRebasePublishedCommit`: closing it is `Cancel`. The answer is for
+  // `branch`: if another one is current by the repeat, Rust checks it and asks again.
+  async function confirmPublished(branch: string, options: UpdateOptions, started: number) {
+    const anyway = await ui.ask<boolean>({ kind: "publishedCommits" });
+    if (generation !== started) return;
+    if (anyway !== true) notifyCanceled();
+    else await execute("rebase", { ...options, fetched: true, publishedConfirmed: branch });
+  }
+
+  // `GitRebaseOverMergeProblem.Decision`. `Rebase` is for `branch`, as `confirmPublished`.
+  async function chooseRebaseOrMerge(branch: string, options: UpdateOptions, started: number) {
     const decision = await ui.ask<UpdateMethod>({ kind: "rebaseMerges" });
     if (generation !== started) return;
     if (!decision) notifyCanceled();
     else if (decision === "merge") await execute("merge", { ...options, fetched: true });
-    else await execute("rebase", { ...options, fetched: true, rebaseMerges: true });
+    else await execute("rebase", { ...options, fetched: true, rebaseMerges: branch });
   }
 
   // The Update of a rejected push. What was received is reported by the push notification.
@@ -457,7 +497,8 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
     }
   }
 
-  // `false`: there was another one and `work` was not launched.
+  // `false`: there was another one and `work` was not launched. The push wraps its own Rust call
+  // in `whileFetching`, so that Fetch is enabled again while its questions wait on the user.
   async function exclusiveForPush(work: () => Promise<void>): Promise<boolean> {
     if (running) return false;
     await exclusive(work);
@@ -509,7 +550,7 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
         return;
       }
       const done = await attempt("Update Failed", async () => {
-        await api.updateBranch(name);
+        await whileFetching(() => api.updateBranch(name));
         return true;
       });
       if (done) notify({ kind: "info", title: "Updated branch:", body: name });
@@ -518,7 +559,9 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
 
   // The branches of a remote, after a fetch of only that remote: what `GitPullDialog` does with ⌘R.
   async function reloadBranches(remote: string): Promise<PullInfo | null> {
-    const pruned = await attempt("Fetch Failed", () => api.fetchRemote(remote));
+    const pruned = await attempt("Fetch Failed", () =>
+      whileFetching(() => api.fetchRemote(remote)),
+    );
     if (!pruned) return null;
     notify({ kind: "info", title: "Fetch Successful", body: pruned.join("\n") || undefined });
     return attempt("Cannot load remote branches", api.pullInfo);
@@ -542,7 +585,9 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
       await api.savePullOptions(choice.options).catch(() => {});
       const { remote, branch, options } = choice;
       const started = generation;
-      const update = await attempt(PULL_FAILED, () => api.pull(remote, branch, options));
+      const update = await attempt(PULL_FAILED, () =>
+        whileFetching(() => api.pull(remote, branch, options)),
+      );
       if (!update) return;
       // With `--rebase` there is no `git pull`: it is Update, and its notices.
       if (generation !== started) notifyElsewhere(update);
@@ -555,17 +600,17 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
   function pullInto(remoteBranch: string, method: UpdateMethod) {
     return exclusive(async () => {
       const started = generation;
-      const update = await attempt("Update failed", () => api.pullInto(remoteBranch, method));
+      const update = await attempt("Update failed", () =>
+        whileFetching(() => api.pullInto(remoteBranch, method)),
+      );
       if (!update) return;
-      if (generation !== started) notifyElsewhere(update);
-      else if (update.outcome.kind !== "rebasingMergeCommits") show(update);
-      else await chooseRebaseOrMerge({ target: remoteBranch }, started);
+      await answered(update, { target: remoteBranch }, started);
     });
   }
 
   // `GitFetchSupportImpl.buildMessage`.
   async function fetch() {
-    const fetched = await attempt("Fetch Failed", api.fetch);
+    const fetched = await whileFetching(() => attempt("Fetch Failed", api.fetch));
     if (!fetched) return;
     const { pruned, failed } = fetched;
     const errors = failed.map(({ remote, error }) =>

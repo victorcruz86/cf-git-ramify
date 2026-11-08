@@ -22,6 +22,11 @@ export const MERGE_OPTIONS: { id: MergeOption; flag: string; description: string
     flag: "--no-verify",
     description: "Bypass the pre-merge and commit message hooks",
   },
+  {
+    id: "allowUnrelatedHistories",
+    flag: "--allow-unrelated-histories",
+    description: "Allow merging histories that do not share a common ancestor.",
+  },
 ];
 
 // `GitMergeOption.isOptionSuitable`: with each one chosen, the ones that cannot go with it.
@@ -32,6 +37,7 @@ const MERGE_CLASHES: Record<MergeOption, MergeOption[]> = {
   message: ["ffOnly", "squash", "noCommit"],
   noCommit: ["message"],
   noVerify: [],
+  allowUnrelatedHistories: [],
 };
 
 // The ones that can be chosen given what is already chosen (`isOptionEnabled`). What is chosen never clashes
@@ -81,7 +87,8 @@ export type RebaseOption =
   | "rebaseMerges"
   | "keepEmpty"
   | "root"
-  | "interactive";
+  | "interactive"
+  | "updateRefs";
 
 export const REBASE_OPTIONS: {
   id: RebaseOption;
@@ -95,6 +102,7 @@ export const REBASE_OPTIONS: {
   { id: "keepEmpty", description: "Do not remove empty commits during rebase" },
   { id: "root", description: "Rebase all commits in the branch" },
   { id: "interactive", description: "Edit commits before rebasing", separatorAbove: true },
+  { id: "updateRefs", description: "Auto-update branches pointing to rebased commits" },
 ];
 
 // `GitRebaseOption.getOption`: `--rebase-merges` replaced `--preserve-merges` in git 2.22.
@@ -112,6 +120,8 @@ export function rebaseFlagText(option: RebaseOption, version: GitVersion | null)
       return "--root";
     case "interactive":
       return "--interactive";
+    case "updateRefs":
+      return "--update-refs";
   }
 }
 

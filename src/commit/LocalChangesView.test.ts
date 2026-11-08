@@ -1,10 +1,18 @@
+import { EditorView } from "@codemirror/view";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { get } from "svelte/store";
 import type { Changelists, FileChange, FileState, RepoInfo, WorktreeSides } from "../lib/api";
+import { dismiss, notifications } from "../lib/notifications";
+import { trackTasks } from "../lib/tasks";
 import { checkinFilesText } from "./checkin";
 import LocalChangesView from "./LocalChangesView.svelte";
+
+// What `EditorView.lineWrapping` puts on the content; `view.lineWrapping` only follows it after a
+// measure, which jsdom does not do.
+const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -75,6 +83,7 @@ beforeEach(() => {
   vi.mocked(listen).mockReset();
   vi.mocked(listen).mockImplementation(async () => () => {});
   localStorage.clear();
+  get(notifications).forEach((shown) => dismiss(shown.id));
 });
 
 afterEach(cleanup);
@@ -225,4 +234,170 @@ test("Commit… with nothing selected asks for the whole list and Commit File…
   await fireEvent.click(within(menu).getByRole("menuitem", { name: "Commit File…" }));
   expect(oncheckin).toHaveBeenLastCalledWith({ kind: "files", paths: ["b.txt"], lists: [] });
   expect(oncheckin).toHaveBeenCalledTimes(3);
+});
+
+// A task whose end arrives through `task-changed`.
+let deliverTask: (id: number, failure?: string) => void = () => {};
+let nextTask = 700;
+
+function task(failure?: string) {
+  const id = nextTask++;
+  setTimeout(() => deliverTask(id, failure));
+  return id;
+}
+
+async function listenToTasks() {
+  vi.mocked(listen).mockImplementation(async (event, handler) => {
+    if (event === "task-changed") {
+      deliverTask = (id, failure) =>
+        handler({
+          event: "task-changed",
+          id: 0,
+          payload: {
+            id,
+            title: "Adding Files to VCS…",
+            text: failure ?? "",
+            fraction: null,
+            state: failure ? "failed" : "done",
+            kind: failure ? "failed" : null,
+            value: null,
+          },
+        } as never);
+    }
+    return () => {};
+  });
+  await trackTasks();
+}
+
+const WITH_NEW = [change("a.txt"), change("b.txt"), change("c.txt"), change("new.txt", "untracked")];
+
+// The status changes to `added` once `changes_add` ran.
+function addingCommands(failure?: string) {
+  let status = WITH_NEW;
+  mockCommands({
+    repo_status: () => status,
+    changes_add: () => {
+      if (!failure) status = [...WITH_NEW.slice(0, 3), change("new.txt", "added")];
+      return task(failure);
+    },
+    changelists_move: () => LISTS,
+  });
+}
+
+test("Add to VCS is offered only for unversioned files, after Show Diff and before the changelists", async () => {
+  await listenToTasks();
+  addingCommands();
+  await open();
+
+  const versioned = await contextMenu("a.txt");
+  expect(labels(versioned)).not.toContain("Add to VCS");
+  await fireEvent.keyDown(versioned, { key: "Escape" });
+
+  await fireEvent.click(row(/^Unversioned Files/));
+  const menu = await contextMenu(/^Unversioned Files/);
+  expect(labels(menu)).toEqual([
+    "Commit File…",
+    "Rollback…",
+    "Show Diff",
+    "Add to VCS",
+    "New Changelist...",
+    "Import Changelists from .idea",
+    "Restore Snapshot…",
+    "Refresh",
+  ]);
+  const item = within(menu).getByRole("menuitem", { name: "Add to VCS" });
+  expect(item.textContent).toContain("⌥⌘A");
+  // The group of `$Delete`, `ChangesView.AddUnversioned` and `ChangesView.RemoveDeleted`, between two
+  // separators: rama has neither Delete nor Remove from VCS, so the group is only this item.
+  expect(item.previousElementSibling?.getAttribute("role")).toBe("separator");
+  expect(item.nextElementSibling?.getAttribute("role")).toBe("separator");
+});
+
+test("Add to VCS adds the selected unversioned files and they show in the active list", async () => {
+  await listenToTasks();
+  addingCommands();
+  await open();
+  expect(row(/^Changes/).textContent).toContain("2 files");
+
+  await fireEvent.click(row(/^Unversioned Files/));
+  const menu = await contextMenu(/^Unversioned Files/);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Add to VCS" }));
+
+  await waitFor(() => expect(row(/^Changes/).textContent).toContain("3 files"));
+  expect(calls("changes_add").map(([, args]) => args)).toEqual([
+    { repo: "/repo", paths: ["new.txt"] },
+  ]);
+  expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+    { paths: ["new.txt"], id: "default" },
+  ]);
+  expect(screen.queryByRole("treeitem", { name: /^Unversioned Files/ })).toBeNull();
+});
+
+test("⌥⌘A adds the unversioned files of the selection and does nothing without them", async () => {
+  await listenToTasks();
+  addingCommands();
+  await open();
+  const press = () => fireEvent.keyDown(window, { key: "å", code: "KeyA", metaKey: true, altKey: true });
+
+  await fireEvent.click(row("a.txt"));
+  await press();
+  expect(calls("changes_add")).toHaveLength(0);
+
+  await fireEvent.click(row(/^Unversioned Files/));
+  await press();
+
+  await waitFor(() => expect(row(/^Changes/).textContent).toContain("3 files"));
+  expect(calls("changes_add").map(([, args]) => args)).toEqual([
+    { repo: "/repo", paths: ["new.txt"] },
+  ]);
+});
+
+test("a failed Add to VCS is notified as Failed to add files", async () => {
+  await listenToTasks();
+  addingCommands("fatal: pathspec did not match");
+  await open();
+
+  await fireEvent.click(row(/^Unversioned Files/));
+  const menu = await contextMenu(/^Unversioned Files/);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Add to VCS" }));
+
+  await waitFor(() => expect(get(notifications)).toHaveLength(1));
+  expect(get(notifications)[0]).toMatchObject({
+    kind: "error",
+    title: "Failed to add files",
+    body: "The following problems have occurred when adding the files:\nfatal: pathspec did not match",
+  });
+});
+
+test("right_click_on_the_gutter_offers_soft_wrap", async () => {
+  mockCommands();
+  await open();
+  await fireEvent.click(row("a.txt"));
+  const preview = await screen.findByRole("region", { name: "Diff Preview" });
+  await waitFor(() => expect(preview.querySelectorAll(".cm-gutters")).toHaveLength(2));
+  const views = () =>
+    [...preview.querySelectorAll<HTMLElement>(".cm-editor")].map(
+      (dom) => EditorView.findFromDOM(dom) as EditorView,
+    );
+  const before = views();
+  // The place `ChangesView` starts off, as in IntelliJ.
+  expect(before.map(wrapped)).toEqual([false, false]);
+
+  await fireEvent.contextMenu(preview.querySelector(".cm-gutters .cm-gutterElement") as HTMLElement);
+  const menu = await screen.findByRole("menu");
+  expect(labels(menu)).toEqual(["Soft-Wrap"]);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Soft-Wrap" }));
+
+  expect(views()).toEqual(before);
+  expect(before.map(wrapped)).toEqual([true, true]);
+  expect(localStorage.getItem("diff.wrap.ChangesView")).toBe("true");
+  expect(localStorage.getItem("diff.wrap.CommitDialog")).toBeNull();
+
+  // The text keeps the menu it had.
+  await fireEvent.contextMenu(preview.querySelector(".cm-line") as HTMLElement);
+  expect(labels(await screen.findByRole("menu"))).toEqual([
+    "Rollback Lines",
+    "Move Lines to Another Changelist...",
+    "Show Diff for Lines",
+  ]);
 });

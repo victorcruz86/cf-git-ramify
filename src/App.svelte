@@ -67,9 +67,10 @@
   import BranchDialogs from "./branches/BranchDialogs.svelte";
   import BranchesPopup from "./branches/BranchesPopup.svelte";
   import { loadBranchState } from "./branches/state";
+  import MergeRebaseWidget from "./operation/MergeRebaseWidget.svelte";
   import { gitMenuEnabled, ongoingActionFor, ongoingActions } from "./operation/operation";
   import RemotesHost from "./remotes/RemotesHost.svelte";
-  import { UPDATE_ACTIONS, type UpdateAction } from "./update/flow";
+  import { UPDATE_ACTIONS, fetching, type UpdateAction } from "./update/flow";
   import { framesRunning, runPerf } from "./perf/run";
   import SettingsView from "./settings/SettingsView.svelte";
   import VersionControlWindow from "./vcs/VersionControlWindow.svelte";
@@ -113,7 +114,7 @@
   // A rebase leaves HEAD detached: `branch` comes from `head-name` and is the one being rebased, which already exists.
   const suggestedBranch = $derived(repoNow?.operation === "rebasing" ? "" : (branch ?? ""));
   // There are conflicted files in the changes list: turns on `Resolve Conflicts…`.
-  let hasConflicts = false;
+  let hasConflicts = $state(false);
   let perfStarted = false;
   let diffWindow = false;
   // What the Commit view and the open dialog last published: only the owner's reaches the diff window.
@@ -450,9 +451,23 @@
   });
 
   // The Git menu turns on what belongs to the operation in progress; if it cannot, the menu stays as it was.
+  // `Git.Fetch` goes off while any fetch of the app runs (`GitFetch.update`).
   function syncMenu(state: RepoState) {
-    gitMenuEnable(gitMenuEnabled(state, hasConflicts)).catch(() => {});
+    const ids = gitMenuEnabled(state, hasConflicts);
+    gitMenuEnable(fetchRunning ? ids : [...ids, "Git.Fetch"]).catch(() => {});
   }
+
+  // `subscribe` runs the callback at once, inside the effect: untracked, so that neither `repoNow` nor
+  // `hasConflicts` (read by `syncMenu`) makes the effect subscribe again.
+  let fetchRunning = false;
+  $effect(() =>
+    fetching.subscribe((running) => {
+      fetchRunning = running;
+      untrack(() => {
+        if (repoNow) syncMenu(repoNow);
+      });
+    }),
+  );
 
   function conflictsChanged(conflicts: boolean) {
     if (conflicts === hasConflicts) return;
@@ -514,6 +529,14 @@
         <Icon name="vcs" />
         {branchLabel}
       </button>
+      {#if repoNow}
+        <MergeRebaseWidget
+          state={repoNow}
+          conflicts={hasConflicts}
+          handlers={ongoingHandlers}
+          onresolve={() => void branchDialogs?.resolveConflicts()}
+        />
+      {/if}
     {/if}
     <input
       class="input path"

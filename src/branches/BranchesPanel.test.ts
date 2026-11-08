@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { BranchList } from "../lib/api";
 import BranchesPanel from "./BranchesPanel.svelte";
+import { whileFetching } from "../update/flow";
 import { branchOptions, defaultBranchOptions, favorites } from "./state";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -216,6 +217,21 @@ test("the_panel_fetch_does_not_ask_the_remotes", async () => {
   await waitFor(() => expect(onfetch).toHaveBeenCalled());
   await new Promise((resolve) => setTimeout(resolve));
   expect(calls("branch_check_remotes")).toEqual([]);
+});
+
+// 241: `FetchAction : GitFetch()` is disabled while any fetch runs (an Update, a Pull, the menu Fetch).
+test("the_panel_fetch_is_disabled_while_another_fetch_runs", async () => {
+  const onfetch = vi.fn(async () => {});
+  await panel({ onfetch });
+  expect(button("Fetch All Remotes").disabled).toBe(false);
+
+  let finish = () => {};
+  const running = whileFetching(() => new Promise<void>((resolve) => (finish = resolve)));
+  await waitFor(() => expect(button("Fetch All Remotes").disabled).toBe(true));
+
+  finish();
+  await running;
+  await waitFor(() => expect(button("Fetch All Remotes").disabled).toBe(false));
 });
 
 test("the_list_comes_out_without_waiting_for_incoming_and_outgoing", async () => {

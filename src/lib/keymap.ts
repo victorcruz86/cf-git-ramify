@@ -1,6 +1,7 @@
 export type ActionId =
   | "ActivateCommitToolWindow"
   | "ActivateVersionControlToolWindow"
+  | "ChangesView.AddUnversioned"
   | "ChangesView.GroupBy.Directory"
   | "ChangesView.Move"
   | "ChangesView.Rename"
@@ -13,7 +14,6 @@ export type ActionId =
   | "ExpandAll"
   | "Git.Branches"
   | "Git.Commit.And.Push.Executor"
-  | "Git.Stage.Add"
   | "ShowSettings"
   | "Vcs.CopyRevisionNumberAction"
   | "Vcs.Log.FocusTextFilter"
@@ -35,7 +35,8 @@ const BINDINGS: Record<string, ActionId> = {
   "Meta+0": "ActivateCommitToolWindow",
   "Meta+9": "ActivateVersionControlToolWindow",
   "Alt+Meta+Z": "ChangesView.Revert",
-  "Alt+Meta+A": "Git.Stage.Add",
+  // `Git.Stage.Add` uses the shortcut of `ChangesView.AddUnversioned`.
+  "Alt+Meta+A": "ChangesView.AddUnversioned",
   "Meta+Shift+M": "ChangesView.Move",
   "Ctrl+M": "Vcs.ShowMessageHistory",
   "Ctrl+Alt+M": "Vcs.ToggleAmendCommitMode",

@@ -48,8 +48,9 @@ pub struct Settings {
     pub warn_bad_file_names: bool,
     pub sign_commits: bool,
     pub signing_key: Option<String>,
-    // IntelliJ turns it off by default because it stores in Password Safe. Here the credentials
-    // stay in the system: without the helper, git would ask for them on every command.
+    // IntelliJ turns it off by default because it stores in Password Safe, although the user's
+    // configuration has it on. Here the credentials stay in the system: without the helper, git
+    // would ask for them on every command.
     pub use_credential_helper: bool,
     pub incoming_check: IncomingCheck,
     pub update_method: UpdateMethod,
@@ -73,6 +74,9 @@ pub struct Settings {
     pub non_modal_commit: bool,
     // `Clear initial commit message` (`CLEAR_INITIAL_COMMIT_MESSAGE`).
     pub clear_initial_commit_message: bool,
+    // `SHOW_DROP_COMMIT_DIALOG`: `Ask for confirmation to drop commits`, and the `Don't ask again` of
+    // the Drop Commits question.
+    pub show_drop_commit_dialog: bool,
 }
 
 impl Settings {
@@ -108,6 +112,7 @@ impl Default for Settings {
             cherry_pick_suffix: true,
             non_modal_commit: false,
             clear_initial_commit_message: false,
+            show_drop_commit_dialog: true,
         }
     }
 }
@@ -145,7 +150,13 @@ pub struct MergeSettings {
 
 // The flags of `GitRebaseSettings`, with the name the interface gives them. `--onto` and the branch to rebase
 // are not remembered, as in `REBASE_FLAGS`.
-pub const REBASE_FLAGS: [&str; 4] = ["rebaseMerges", "keepEmpty", "root", "interactive"];
+pub const REBASE_FLAGS: [&str; 5] = [
+    "rebaseMerges",
+    "keepEmpty",
+    "root",
+    "interactive",
+    "updateRefs",
+];
 
 // `GitRebaseSettings`: the flags and the base (the new one if there was `--onto`, otherwise the upstream).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +332,20 @@ mod tests {
     }
 
     #[test]
+    fn show_drop_commit_dialog_defaults_to_true() {
+        // `GitVcsApplicationSettings.SHOW_DROP_COMMIT_DIALOG = true`.
+        assert!(Settings::default().show_drop_commit_dialog);
+
+        // Also when an older `settings.json` does not have the field.
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(FILE_NAME), r#"{"stagingArea": true}"#).unwrap();
+        assert!(load(dir.path()).show_drop_commit_dialog);
+
+        fs::write(dir.path().join(FILE_NAME), r#"{"showDropCommitDialog": false}"#).unwrap();
+        assert!(!load(dir.path()).show_drop_commit_dialog);
+    }
+
+    #[test]
     fn a_settings_file_without_the_new_fields_reads_modal() {
         let dir = TempDir::new().unwrap();
         fs::write(
@@ -386,6 +411,7 @@ mod tests {
             cherry_pick_suffix: false,
             non_modal_commit: true,
             clear_initial_commit_message: true,
+            show_drop_commit_dialog: false,
         };
 
         save(dir.path(), &settings).unwrap();
@@ -626,6 +652,26 @@ mod tests {
         assert_eq!(settings.rebase.new_base.as_deref(), Some("origin/main"));
         assert_eq!(settings.protected_branches, ["release"]);
         assert_eq!(settings.force_push_targets, ["origin:feature"]);
+    }
+
+    #[test]
+    fn update_refs_is_remembered_per_repository() {
+        let dir = TempDir::new().unwrap();
+
+        save_rebase(
+            dir.path(),
+            ["updateRefs", "interactive", "updateRefs"]
+                .map(String::from)
+                .to_vec(),
+            None,
+        )
+        .unwrap();
+
+        // It comes last, after `interactive`, as in `GitRebaseOption`.
+        assert_eq!(
+            load_repo(dir.path()).rebase.options,
+            ["interactive", "updateRefs"]
+        );
     }
 
     #[test]

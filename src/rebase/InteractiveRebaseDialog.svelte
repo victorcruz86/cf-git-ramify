@@ -53,6 +53,9 @@
   let squashMenu = $state.raw<{ x: number; y: number } | null>(null);
   let commands = $state(false);
   let confirming = $state(false);
+  // `rebase.interactive.dialog.cancel.reword.warning.*`: what the confirmation will do if the typed
+  // text is given up.
+  let rewordLost = $state<"cancel" | "reset" | null>(null);
   let options = $state.raw<LogOptions>(defaultOptions());
   let table = $state<HTMLDivElement>();
   let editor = $state<HTMLTextAreaElement>();
@@ -100,9 +103,29 @@
     table?.focus();
   }
 
+  // `GitRebaseCommitsTableView.removeEditor`: giving up a text that differs from the model's asks first.
+  const rewordChanged = () => editing !== null && draft !== model.message(editing.row);
+
   function cancelEdit() {
+    if (rewordChanged()) {
+      rewordLost = "cancel";
+      return;
+    }
     editing = null;
     table?.focus();
+  }
+
+  function keepEditing() {
+    rewordLost = null;
+    void tick().then(() => editor?.focus());
+  }
+
+  function giveUpReword() {
+    const then = rewordLost;
+    rewordLost = null;
+    editing = null;
+    if (then === "reset") performReset();
+    else table?.focus();
   }
 
   function perform(action: ShortcutAction) {
@@ -215,6 +238,14 @@
   }
 
   function reset() {
+    if (rewordChanged()) {
+      rewordLost = "reset";
+      return;
+    }
+    performReset();
+  }
+
+  function performReset() {
     editing = null;
     model.reset();
     version += 1;
@@ -486,6 +517,16 @@
 {/if}
 {#if commands}
   <GitCommandsDialog entries={model.entries().entries} onclose={() => (commands = false)} />
+{/if}
+{#if rewordLost}
+  <!-- Cancel Reword is the default button; Esc keeps editing. -->
+  <Dialog title="Cancel Reword" width={380} onclose={keepEditing} onsubmit={giveUpReword}>
+    <p class="question">Entered commit message will be lost</p>
+    {#snippet footer()}
+      <button type="button" class="button" onclick={keepEditing}>Keep Editing</button>
+      <button class="button default" data-autofocus>Cancel Reword</button>
+    {/snippet}
+  </Dialog>
 {/if}
 {#if confirming}
   <!-- `rebase.interactive.dialog.discard.modifications.*`: Discard is the default button. -->

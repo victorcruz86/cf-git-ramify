@@ -28,7 +28,16 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { mapLine } from "../diff/blocks";
-import { WORD_DIFF_MAX_CHARS, connectScroll, drawDivider, followScroll, type Band } from "../diff/editor";
+import {
+  WORD_DIFF_MAX_CHARS,
+  connectScroll,
+  drawDivider,
+  followScroll,
+  setWrap,
+  softWrap,
+  wrapping,
+  type Band,
+} from "../diff/editor";
 import { languageFor } from "../diff/language";
 import { diffTheme } from "../diff/theme";
 import type { Hunk, MergeBlock, Whitespace } from "../lib/api";
@@ -68,6 +77,8 @@ export interface MergeData {
   titles: [string, string, string];
   // Only for syntax highlighting.
   path?: string;
+  // `Soft-Wrap` of the `Merge` place.
+  wrap?: boolean;
 }
 
 export interface MergeHandlers {
@@ -270,6 +281,8 @@ export interface ThreePanesConfig {
   bands: (side: MergeSide) => Band[];
   // Whether scrolling one scrolls the others.
   synced?: () => boolean;
+  // `Soft-Wrap`, for the three at once.
+  wrap?: boolean;
 }
 
 const PANES: MergePane[] = ["left", "base", "right"];
@@ -324,6 +337,7 @@ export class ThreePanes {
               EditorView.updateListener.of((update) => {
                 if (update.geometryChanged) this.drawDividers();
               }),
+              wrapping.of(softWrap(config.wrap ?? false)),
               config.extensions[index],
             ],
           }),
@@ -347,6 +361,11 @@ export class ThreePanes {
 
   view(pane: MergePane): EditorView {
     return this.views[PANES.indexOf(pane)];
+  }
+
+  // The three wrap together, without being rebuilt.
+  setWrap(on: boolean) {
+    setWrap(this.views, on);
   }
 
   setTitle(pane: MergePane, title: string) {
@@ -407,6 +426,7 @@ export class MergeEditors {
       ],
       mapLine: (from, to, line) => this.mapLine(from, to, line),
       bands: (side) => this.bands(side),
+      wrap: data.wrap,
     });
     this.dom = this.panes.dom;
     [this.left, this.centre, this.right] = this.panes.views;
@@ -610,6 +630,10 @@ export class MergeEditors {
     });
     this.centre.dispatch({ effects: this.historySlot.reconfigure(history()) });
     this.changed = false;
+  }
+
+  setWrap(on: boolean) {
+    this.panes.setWrap(on);
   }
 
   destroy() {

@@ -1,16 +1,29 @@
-import { EditorView } from "@codemirror/view";
+import { EditorView, type BlockInfo } from "@codemirror/view";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Hunk } from "../lib/api";
-import { DiffEditors, type DiffData, type Handlers } from "./editor";
+import { DiffEditors, type DiffData, type EditorOptions, type Handlers } from "./editor";
 
-const OPTIONS = { highlight: "words", collapse: false, align: true, sync: true } as const;
+// What `EditorView.lineWrapping` puts on the content; `view.lineWrapping` only follows it after a
+// measure, which jsdom does not do.
+const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
+
+const OPTIONS = {
+  highlight: "words",
+  collapse: false,
+  align: true,
+  sync: true,
+  wrap: false,
+} as const satisfies EditorOptions;
 
 let editors: DiffEditors | null = null;
 
 // jsdom does no layout: CodeMirror measures with this.
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 
-function open(data: DiffData, extra: { unified?: boolean; editable?: boolean } = {}) {
+function open(
+  data: DiffData,
+  extra: { unified?: boolean; editable?: boolean; options?: EditorOptions } = {},
+) {
   const handlers: Handlers = { ontoggle: vi.fn(), onedit: vi.fn(), onfocus: vi.fn() };
   const parent = document.body.appendChild(document.createElement("div"));
   editors = new DiffEditors(parent, {
@@ -20,7 +33,7 @@ function open(data: DiffData, extra: { unified?: boolean; editable?: boolean } =
     editable: extra.editable ?? true,
     unified: extra.unified ?? false,
     embedded: false,
-    options: OPTIONS,
+    options: extra.options ?? OPTIONS,
     handlers,
   });
   return { parent, handlers };
@@ -30,6 +43,7 @@ afterEach(() => {
   editors?.destroy();
   editors = null;
   document.body.textContent = "";
+  vi.useRealTimers();
 });
 
 const hunk = (oldStart: number, oldLines: number, newStart: number, newLines: number): Hunk => ({
@@ -258,4 +272,221 @@ test("folding_leaves_the_changes_in_view", () => {
 
   expect(folds).toContain("16 unchanged lines");
   expect(lineTexts(parent, ".cm-line.rm-modified")).toEqual(["l20", "change"]);
+});
+
+const views = (parent: HTMLElement) =>
+  [...parent.querySelectorAll<HTMLElement>(".cm-editor")].map(
+    (dom) => EditorView.findFromDOM(dom) as EditorView,
+  );
+
+test("wrap_off_keeps_todays_configuration", () => {
+  const { parent } = open(data("a\nb\n", "a\nc\n", [hunk(1, 1, 1, 1)]));
+
+  expect(parent.querySelector(".cm-lineWrapping")).toBeNull();
+  expect(views(parent).map(wrapped)).toEqual([false, false]);
+  expect(parent.querySelectorAll<HTMLElement>(".rm-spacer")).toHaveLength(0);
+});
+
+test("soft_wrap_wraps_both_sides_without_rebuilding_the_views", () => {
+  const { parent } = open(data("a\nb\n", "a\nnew\nother\nb\n", [hunk(1, 0, 1, 2)]));
+  const before = views(parent);
+  const contents = [...parent.querySelectorAll(".cm-content")];
+
+  editors?.setOptions({ ...OPTIONS, wrap: true });
+
+  expect(views(parent)).toEqual(before);
+  expect(before.map(wrapped)).toEqual([true, true]);
+  expect([...parent.querySelectorAll(".cm-content")]).toEqual(contents);
+  expect(contents.every((content) => content.classList.contains("cm-lineWrapping"))).toBe(true);
+  // The aligned diff keeps its line-count spacers here.
+  const spacers = [...parent.querySelectorAll<HTMLElement>(".rm-spacer")];
+  expect(spacers.map((spacer) => spacer.style.height)).toEqual(["40px"]);
+
+  editors?.setOptions({ ...OPTIONS, wrap: false });
+
+  expect(before.map(wrapped)).toEqual([false, false]);
+  expect(parent.querySelector(".cm-lineWrapping")).toBeNull();
+});
+
+test("a_diff_opened_with_wrap_on_wraps_from_the_start", () => {
+  const { parent } = open(data("a\nb\n", "a\nc\n", [hunk(1, 1, 1, 1)]), {
+    options: { ...OPTIONS, wrap: true },
+  });
+
+  expect(views(parent).map(wrapped)).toEqual([true, true]);
+});
+
+test("unified_old_lines_wrap_too", () => {
+  const { parent } = open(data("a\nb\n", "a\nc\n", [hunk(1, 1, 1, 1)]), { unified: true });
+  const old = () => parent.querySelector<HTMLElement>(".rm-old-line") as HTMLElement;
+  expect(getComputedStyle(old()).whiteSpace).toBe("pre");
+
+  editors?.setOptions({ ...OPTIONS, wrap: true });
+
+  expect(getComputedStyle(old()).whiteSpace).toBe("pre-wrap");
+});
+
+test("the_checkbox_stays_on_the_first_row_of_a_wrapped_line", () => {
+  const { parent } = open(data("a\nb\n", "a\nc\n", [hunk(1, 1, 1, 1)]), {
+    options: { ...OPTIONS, wrap: true },
+  });
+  const check = parent.querySelector<HTMLElement>(".rm-check") as HTMLElement;
+  const cell = check.closest<HTMLElement>(".cm-gutterElement") as HTMLElement;
+
+  expect(getComputedStyle(cell).alignItems).toBe("flex-start");
+  expect(getComputedStyle(check).height).toBe("20px");
+});
+
+const WRAPPED = { ...OPTIONS, wrap: true } as const satisfies EditorOptions;
+
+// The measuring pass waits for an animation frame; the tests move the frames by hand.
+const fakeFrames = () =>
+  vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+
+// jsdom lays nothing out: this makes each line of `extras` (0-based, mutable) take that many px
+// more, as wrapped rows would.
+function wrapLines(view: EditorView, extras: Record<number, number>) {
+  const real = view.lineBlockAt.bind(view);
+  return vi.spyOn(view, "lineBlockAt").mockImplementation((pos) => {
+    const block = real(pos);
+    const line = view.state.doc.lineAt(pos).number - 1;
+    let above = 0;
+    for (const [wrapped, extra] of Object.entries(extras)) {
+      if (Number(wrapped) < line) above += extra;
+    }
+    const own = extras[line] ?? 0;
+    return {
+      from: block.from,
+      to: block.to,
+      length: block.length,
+      type: block.type,
+      widget: block.widget,
+      widgetLineBreaks: block.widgetLineBreaks,
+      top: block.top + above,
+      height: block.height + own,
+      bottom: block.bottom + above + own,
+    } as BlockInfo;
+  });
+}
+
+const wrapLine = (view: EditorView, line: number, extra: number) =>
+  wrapLines(view, { [line]: extra });
+
+const spacerHeights = (parent: HTMLElement, editor: "first" | "last") =>
+  [...parent.querySelectorAll<HTMLElement>(`.rm-editor:${editor}-child .rm-spacer`)].map(
+    (spacer) => spacer.style.height,
+  );
+
+test("with_wrap_off_spacers_are_line_counts_times_20", () => {
+  fakeFrames();
+  const { parent } = open(data("a\nb\n", "a\nnew\nother\nb\n", [hunk(1, 0, 1, 2)]));
+  const [left] = views(parent);
+  wrapLine(left, 0, 20);
+
+  vi.advanceTimersToNextFrame();
+  vi.advanceTimersToNextFrame();
+
+  expect(spacerHeights(parent, "first")).toEqual(["40px"]);
+  expect(spacerHeights(parent, "last")).toEqual([]);
+});
+
+test("with_wrap_on_spacers_follow_the_measured_heights", () => {
+  fakeFrames();
+  // "long" is unchanged and wraps in two rows on the left only: the right one waits above the hunk.
+  const { parent } = open(data("a\nlong\nc\n", "a\nlong\nC\n", [hunk(2, 1, 2, 1)]), {
+    options: WRAPPED,
+  });
+  const [left] = views(parent);
+  wrapLine(left, 1, 20);
+  expect(parent.querySelectorAll(".rm-spacer")).toHaveLength(0);
+
+  vi.advanceTimersToNextFrame();
+
+  expect(spacerHeights(parent, "first")).toEqual([]);
+  expect(spacerHeights(parent, "last")).toEqual(["20px"]);
+  const spacer = parent.querySelector<HTMLElement>(".rm-editor:last-child .rm-spacer");
+  expect(spacer?.nextElementSibling?.textContent).toBe("C");
+  // It levels unchanged text, like the top inlay: nothing is painted.
+  expect(spacer?.classList.contains("rm-spacer-blank")).toBe(true);
+});
+
+test("a_second_measuring_pass_dispatches_nothing", () => {
+  fakeFrames();
+  const { parent } = open(data("a\nlong\nc\n", "a\nlong\nC\n", [hunk(2, 1, 2, 1)]), {
+    options: WRAPPED,
+  });
+  const [left, right] = views(parent);
+  const measured = wrapLine(left, 1, 20);
+  vi.advanceTimersToNextFrame();
+  expect(spacerHeights(parent, "last")).toEqual(["20px"]);
+
+  editors?.setOptions({ ...WRAPPED, sync: false });
+  measured.mockClear();
+  const dispatches = [vi.spyOn(left, "dispatch"), vi.spyOn(right, "dispatch")];
+  vi.advanceTimersToNextFrame();
+
+  expect(measured).toHaveBeenCalled();
+  for (const dispatch of dispatches) expect(dispatch).not.toHaveBeenCalled();
+  expect(spacerHeights(parent, "last")).toEqual(["20px"]);
+});
+
+test("the_two_number_gutters_have_the_same_width_when_aligned", () => {
+  const lines = Array.from({ length: 120 }, (_, index) => `l${index}`).join("\n");
+  const { parent } = open(data("a\nb\n", `${lines}\n`, [hunk(0, 2, 0, 120)]), {
+    options: WRAPPED,
+  });
+
+  const widths = () =>
+    [...parent.querySelectorAll<HTMLElement>(".rm-editor")].map((editor) => {
+      const cell = editor.querySelector<HTMLElement>(".cm-lineNumbers .cm-gutterElement");
+      return getComputedStyle(cell as HTMLElement).minWidth;
+    });
+
+  expect(widths()).toEqual(["calc(3ch + 12px)", "calc(3ch + 12px)"]);
+
+  editors?.setOptions({ ...WRAPPED, align: false });
+
+  expect(widths()).toEqual(["20px", "20px"]);
+});
+
+test("a_change_within_a_pixel_dispatches_nothing", () => {
+  fakeFrames();
+  const { parent } = open(data("a\nlong\nc\n", "a\nlong\nC\n", [hunk(2, 1, 2, 1)]), {
+    options: WRAPPED,
+  });
+  const [left, right] = views(parent);
+  const extras = { 1: 20 };
+  wrapLines(left, extras);
+  vi.advanceTimersToNextFrame();
+
+  extras[1] = 20.5;
+  editors?.setOptions({ ...WRAPPED, sync: false });
+  const dispatches = [vi.spyOn(left, "dispatch"), vi.spyOn(right, "dispatch")];
+  vi.advanceTimersToNextFrame();
+
+  for (const dispatch of dispatches) expect(dispatch).not.toHaveBeenCalled();
+  expect(spacerHeights(parent, "last")).toEqual(["20px"]);
+});
+
+// When another spacer moves, the whole list is sent: a spacer half a pixel off must not keep its
+// old DOM, or what is shown would no longer be what is subtracted.
+test("a_spacer_sent_again_shows_its_exact_height", () => {
+  fakeFrames();
+  const before = "a\nlong\nc\nd\nlong\nf\n";
+  const after = "a\nlong\nC\nd\nlong\nF\n";
+  const { parent } = open(data(before, after, [hunk(2, 1, 2, 1), hunk(5, 1, 5, 1)]), {
+    options: WRAPPED,
+  });
+  const [left] = views(parent);
+  const extras: Record<number, number> = { 1: 20, 4: 30 };
+  wrapLines(left, extras);
+  vi.advanceTimersToNextFrame();
+  expect(spacerHeights(parent, "last")).toEqual(["20px", "30px"]);
+
+  extras[1] = 20.5;
+  extras[4] = 35;
+  editors?.setOptions({ ...WRAPPED, sync: false });
+  vi.advanceTimersToNextFrame();
+
+  expect(spacerHeights(parent, "last")).toEqual(["20.5px", "35px"]);
 });

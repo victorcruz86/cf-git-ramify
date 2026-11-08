@@ -247,7 +247,7 @@ fn phase_3_trace() {
     let repo = Scratch::apart();
     let head = repo.head();
     let merged = trace.of("merge without conflict", &fixture, &repo, move |r| {
-        merge::merge_into(r, "side", false, &head)
+        merge::merge_into(r, "side", "local", false, &head)
     });
     checked("merge without conflict", merged.is_ok());
 
@@ -255,7 +255,7 @@ fn phase_3_trace() {
     let repo = Scratch::diverged();
     let head = repo.head();
     let merged = trace.of("merge with conflict", &fixture, &repo, move |r| {
-        merge::merge_into(r, "side", false, &head)
+        merge::merge_into(r, "side", "local", false, &head)
     });
     checked("merge with conflict", merged.is_ok());
     let sides = trace.of(
@@ -284,7 +284,7 @@ fn phase_3_trace() {
     let repo = Scratch::diverged();
     let head = repo.head();
     fixture
-        .run(&repo, move |r| merge::merge_into(r, "side", false, &head))
+        .run(&repo, move |r| merge::merge_into(r, "side", "local", false, &head))
         .unwrap();
     let accepted = trace.of("Accept Yours in a merge", &fixture, &repo, |r| {
         conflicts::accept(r, &["a.txt".to_string()], Side::Yours)
@@ -302,7 +302,7 @@ fn phase_3_trace() {
     let repo = Scratch::diverged();
     let head = repo.head();
     fixture
-        .run(&repo, move |r| merge::merge_into(r, "side", false, &head))
+        .run(&repo, move |r| merge::merge_into(r, "side", "local", false, &head))
         .unwrap();
     let accepted = trace.of("Accept Theirs in a merge", &fixture, &repo, |r| {
         conflicts::accept(r, &["a.txt".to_string()], Side::Theirs)
@@ -313,7 +313,7 @@ fn phase_3_trace() {
     let repo = Scratch::diverged();
     let head = repo.head();
     fixture
-        .run(&repo, move |r| merge::merge_into(r, "side", false, &head))
+        .run(&repo, move |r| merge::merge_into(r, "side", "local", false, &head))
         .unwrap();
     let aborted = trace.of("Abort Merge", &fixture, &repo, |r| {
         operation::abort(r, Operation::Merging)
@@ -333,7 +333,7 @@ fn phase_3_trace() {
         "Smart Merge with overlapping local changes",
         &fixture,
         &repo,
-        move |r| merge::smart_merge(r, "side", &head),
+        move |r| merge::merge_into(r, "side", "local", true, &head),
     );
     checked("smart merge", smart.is_ok());
 

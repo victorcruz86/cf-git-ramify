@@ -42,7 +42,7 @@ const CHECKOUT_AND_REBASE_FAILED = "Checkout and Rebase failed";
 const UP_TO_DATE = "Already up to date";
 // `branch.ui.handler.unmerged.files.error.notification`, with `merge.operation.name`.
 const UNMERGED_FILES =
-  "You have to resolve all merge conflicts before merge.\nAfter resolving conflicts you also probably would want to commit your files to the current branch.";
+  "You need to resolve all merge conflicts before merge.\nAfter resolving conflicts do not forget to commit your files to the current branch before switching to another branch.";
 
 // The `RefOperation` operations that lead to this flow.
 export const MERGING_OPERATIONS: RefOperation[] = [
@@ -52,6 +52,9 @@ export const MERGING_OPERATIONS: RefOperation[] = [
   "pullMerge",
   "pullRebase",
 ];
+
+// The kind of the popup item that is merged: Rust builds `refs/heads/`, `refs/remotes/` or `refs/tags/` from it.
+export type MergeKind = "local" | "remote" | "tag";
 
 export const isMerging = (action: VcsAction) =>
   action.kind === "ref" && MERGING_OPERATIONS.includes(action.operation);
@@ -95,7 +98,12 @@ export interface MergingUi extends RebaseUi {
 export interface MergingApi {
   state(): Promise<RepoState>;
   protectedBranches(): Promise<string[]>;
-  merge(branch: string, smart: boolean, expectedHead: string): Promise<BranchMergeResult>;
+  merge(
+    branch: string,
+    kind: MergeKind,
+    smart: boolean,
+    expectedHead: string,
+  ): Promise<BranchMergeResult>;
   commitMerge(): Promise<void>;
   rebase(onto: string, branch: string | null, expectedHead: string): Promise<RebaseRun>;
   rebaseRemote(
@@ -113,7 +121,7 @@ const result = async <T>(id: Promise<number>) => taskResult<T>(await id);
 const backend: MergingApi = {
   state: repoState,
   protectedBranches: async () => (await repoSettingsGet()).protectedBranches,
-  merge: (branch, smart, head) => result(branchMerge(branch, smart, head)),
+  merge: (branch, kind, smart, head) => result(branchMerge(branch, kind, smart, head)),
   commitMerge,
   rebase: (onto, branch, head) => result(branchRebase(onto, branch, head)),
   rebaseRemote: (remoteBranch, name, dropCommits, head) =>
@@ -230,6 +238,7 @@ export function mergingFlow(ui: MergingUi, api: MergingApi = backend) {
 
   interface Merging {
     branch: string;
+    kind: MergeKind;
     current: string;
     head: string;
     propose: boolean;
@@ -238,9 +247,9 @@ export function mergingFlow(ui: MergingUi, api: MergingApi = backend) {
 
   // `GitMergeOperation.execute`.
   async function runMerge(merging: Merging, smart: boolean): Promise<void> {
-    const { branch, current, head, propose, started } = merging;
+    const { branch, kind, current, head, propose, started } = merging;
     const failure = `Could Not Merge ${branch}`;
-    const answer = await attempt(failure, () => api.merge(branch, smart, head));
+    const answer = await attempt(failure, () => api.merge(branch, kind, smart, head));
     if (!answer || generation !== started) return;
     const { outcome, saved, restore } = answer;
     const saving = { operation: MERGE, from: branch };
@@ -318,7 +327,7 @@ export function mergingFlow(ui: MergingUi, api: MergingApi = backend) {
             kind: "error",
             title: "Cannot merge because of unmerged files",
             body: UNMERGED_FILES,
-            actions: [{ label: "Resolve…", run: () => void ui.resolveConflicts() }],
+            actions: [{ label: "Resolve conflicts…", run: () => void ui.resolveConflicts() }],
           },
           started,
         );
@@ -337,7 +346,14 @@ export function mergingFlow(ui: MergingUi, api: MergingApi = backend) {
     const patterns = await api.protectedBranches().catch(() => ["master", "main"]);
     const propose = kind === "local" && !isProtectedBranch(patterns, name);
     await runMerge(
-      { branch: name, current: currentOf(state), head: state.head, propose, started },
+      {
+        branch: name,
+        kind: kind === "remote" || kind === "tag" ? kind : "local",
+        current: currentOf(state),
+        head: state.head,
+        propose,
+        started,
+      },
       false,
     );
   }

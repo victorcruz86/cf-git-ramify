@@ -294,7 +294,9 @@ pub(crate) fn command(binary: &Path, repo: &Path, args: &[&str]) -> Result<Comma
         .current_dir(repo)
         .args(args)
         .env("LC_ALL", "C")
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        // `GitCommand.IJ_HANDLER_MARKER_ENV`: lets the user's hooks tell that the IDE runs git.
+        .env("INTELLIJ_GIT_EXECUTABLE", "true");
     Ok(command)
 }
 
@@ -366,11 +368,12 @@ pub fn version_of(path: Option<&str>) -> Result<String, GitError> {
     let output = String::from_utf8_lossy(&output);
     match output.trim().strip_prefix(VERSION_PREFIX) {
         Some(version) => Ok(version.to_string()),
-        None => Err(GitError::Io(format!(
-            "Cannot identify version of git executable {}",
-            binary.display()
-        ))),
+        None => Err(GitError::Io(unidentified_version(&binary))),
     }
+}
+
+fn unidentified_version(binary: &Path) -> String {
+    format!("Cannot identify version of Git executable {}", binary.display())
 }
 
 // Launched from Finder, the app does not inherit the terminal's PATH.
@@ -386,10 +389,29 @@ fn find_binary() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unidentifiable_git_names_git_with_a_capital() {
+        let tools = TempDir::new().unwrap();
+        let other = tools.path().join("another");
+        fs::write(&other, "#!/bin/sh\necho hello\n").unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o755)).unwrap();
+        let Err(GitError::Io(message)) = version_of(other.to_str()) else {
+            panic!("the version should not be identified");
+        };
+        assert_eq!(message, format!("Cannot identify version of Git executable {}", other.display()));
+    }
+
     use super::*;
     use crate::test_support::{TempRepo, DAMAGED_REFS};
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn every_git_command_carries_intellij_git_executable() {
+        let repo = TempRepo::new();
+        let output = run(repo.path(), &["-c", "alias.x=!echo $INTELLIJ_GIT_EXECUTABLE", "x"]).unwrap();
+        assert_eq!(output, b"true\n");
+    }
 
     #[test]
     fn run_returns_output() {

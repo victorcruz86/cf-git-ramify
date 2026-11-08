@@ -34,13 +34,14 @@
   import { store, stored } from "../lib/storage";
   import { runLocal } from "../lib/tasks";
   import FilePane from "../diff/FilePane.svelte";
-  import { loadOptions } from "../diff/options";
+  import { loadOptions, storeWrap } from "../diff/options";
   import { commitAndPush } from "../push/commitAndPush";
   import ChangelistChooser from "./ChangelistChooser.svelte";
   import ChangesPanel, { type Refreshed } from "./ChangesPanel.svelte";
   import type { CheckinRequest } from "./checkin";
   import CommitMessage from "./CommitMessage.svelte";
   import CommitOptionsPanel from "./CommitOptionsPanel.svelte";
+  import { historyMenu } from "./messageHistory";
   import { storedSignOff, storeSignOff } from "./options";
   import {
     canCommit,
@@ -135,7 +136,12 @@
   }: Props = $props();
 
   const texts = $derived(dialogTexts(executor));
-  const options = loadOptions();
+  let options = $state.raw(loadOptions("CommitDialog"));
+
+  function setWrap(wrap: boolean) {
+    options = { ...options, wrap };
+    storeWrap("CommitDialog", wrap);
+  }
 
   let changes = $state.raw<FileChange[]>([]);
   let lists = $state.raw<Changelists | null>(null);
@@ -337,6 +343,11 @@
     if (kept.length !== lineSelections.size) lineSelections = new Map(kept);
   }
 
+  // `Add to VCS` in the browser: the files are in the dialog's list now, and included.
+  function include(paths: string[]) {
+    if (paths.length > 0) included = new Set([...included, ...paths.map(keyOf)]);
+  }
+
   function toggle(targets: TreeNode[]) {
     included = toggleInclusion(included, [...new Set(targets.flatMap((node) => node.paths))]);
     dropUnchecked();
@@ -427,16 +438,12 @@
     const bounds = historyButton.getBoundingClientRect();
     try {
       const messages = await messagesList();
-      const items: MenuItem[] = messages.map((text) => ({
-        label: text,
-        run: () => {
-          message = text;
-          // `onCommitMessageReset`.
-          known = text;
-          tick().then(() => editor.focus());
-        },
-      }));
-      if (items.length === 0) items.push({ label: "History is empty", disabled: true, run: () => {} });
+      const items = historyMenu(messages, (text) => {
+        message = text;
+        // `onCommitMessageReset`.
+        known = text;
+        tick().then(() => editor.focus());
+      });
       menu = { x: bounds.left, y: bounds.bottom + 2, label: "Commit Message History", items };
     } catch (failure) {
       panel?.notify("error", errorText(failure));
@@ -818,6 +825,7 @@
               onshowdiff={showDiff}
               onselection={(_paths, _lists, path) => (lead = path)}
               onrolledback={rolledBack}
+              onadded={include}
               suspended={menu !== null || emptyMessage || checking}
             />
           </div>
@@ -919,6 +927,7 @@
                 embedded
                 onselection={selectionChanged}
                 onnotice={(kind, text, action) => panel?.notify(kind, text, action)}
+                onwrap={setWrap}
               />
             {/key}
           {/if}

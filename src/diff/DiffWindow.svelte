@@ -38,7 +38,13 @@
   import type { HighlightMode } from "./editor";
   import FilePane, { type NoticeKind } from "./FilePane.svelte";
   import ThreeVersionsPane from "./ThreeVersionsPane.svelte";
-  import { loadOptions, storeOptions, type DiffOptions } from "./options";
+  import {
+    loadOptions,
+    softWrapItem,
+    storeOptions,
+    storeWrap,
+    type DiffOptions,
+  } from "./options";
   import { frameLimit, nextFrame } from "../perf/run";
 
   interface Notice {
@@ -129,6 +135,12 @@
   function setOption(change: Partial<DiffOptions>) {
     options = { ...options, ...change };
     storeOptions(options);
+  }
+
+  // The diff window is the place `Default`.
+  function setWrap(wrap: boolean) {
+    options = { ...options, wrap };
+    storeWrap("Default", wrap);
   }
 
   const byPath = (left: FileChange, right: FileChange) => (left.path < right.path ? -1 : 1);
@@ -323,6 +335,7 @@
       y: bounds.bottom + 2,
       label: "Settings",
       items: [
+        softWrapItem(options.wrap, setWrap),
         {
           label: "Align Changes Highlighting",
           checked: options.align,
@@ -570,6 +583,7 @@
               lists={fileComparison ? null : lists}
               onselection={selectionChanged}
               onnotice={notify}
+              onwrap={setWrap}
               onactive={() => (current = file.path)}
             />
           {:else}
@@ -589,6 +603,7 @@
             {version}
             {options}
             onnotice={notify}
+            onwrap={setWrap}
             onfallback={() => fallBack(path)}
           />
         {:else}
@@ -604,6 +619,7 @@
             lists={fileComparison ? null : lists}
             onselection={selectionChanged}
             onnotice={notify}
+            onwrap={setWrap}
             ondrawn={measuring ? drawn : undefined}
           />
         {/if}

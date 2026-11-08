@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import type {
@@ -22,11 +23,16 @@ import {
   isEditing,
   rewordFromKeyboard,
   type CommitMessageRequest,
+  type DropAnswer,
   type EditingApi,
   type EditingUi,
 } from "./editing";
 import type { MenuAction, MenuItem } from "../lib/menu";
 import CommitMessageDialog from "./CommitMessageDialog.svelte";
+import DropConfirmDialog from "./DropConfirmDialog.svelte";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
 
 const H1 = "11111111".repeat(5);
 const H2 = "22222222".repeat(5);
@@ -94,6 +100,8 @@ const rewritten = (overrides: Partial<Rewritten> = {}): Rewritten => ({
 function api(overrides: Partial<EditingApi> = {}): EditingApi {
   return {
     state: vi.fn(async () => STATE),
+    askBeforeDropping: vi.fn(async () => true),
+    stopAskingBeforeDropping: vi.fn(async () => {}),
     check: vi.fn(async () => null),
     details: vi.fn(async (hashes: string[]) =>
       hashes.map((hash) =>
@@ -121,6 +129,7 @@ function api(overrides: Partial<EditingApi> = {}): EditingApi {
 
 function ui(answer: (request: CommitMessageRequest) => Promise<string | null> = async () => "new") {
   return {
+    confirmDrop: vi.fn(async (_count: number): Promise<DropAnswer> => ({ ok: true, doNotAsk: false })),
     editMessage: vi.fn(answer),
     chooseChangelist: vi.fn(async (_lists: ChangeList[], initial: string) => ({
       name: initial,
@@ -223,7 +232,7 @@ describe("Edit Commit Message", () => {
     expect(dialogs.editMessage).not.toHaveBeenCalled();
     expect(last()).toMatchObject({
       kind: "error",
-      title: "Couldn't Edit Commit Message",
+      title: "Could not Edit Commit Message",
       body: "The commit is not in the current branch",
     });
   });
@@ -247,18 +256,147 @@ test("squash_joins_the_messages_with_two_blank_lines", async () => {
   expect(last()).toMatchObject({ kind: "info", title: "Commits Squashed" });
 });
 
-test("drop_without_confirmation", async () => {
+test("drop_asks_drop_commits_with_ok_and_cancel", async () => {
   const backend = api();
   const dialogs = ui();
   const flow = editingFlow(dialogs, backend);
 
-  await flow.run({ kind: "drop", commits: [commit(H2, "two"), commit(H1, "one")] });
+  const H3 = "33333333".repeat(5);
+  await flow.run({ kind: "drop", commits: [commit(H3, "three"), commit(H2, "two"), commit(H1, "one")] });
 
   expect(dialogs.editMessage).not.toHaveBeenCalled();
-  expect(backend.drop).toHaveBeenCalledWith([H2, H1], HEAD);
-  expect(last()).toMatchObject({ kind: "info", title: "Commits Dropped" });
+  expect(dialogs.confirmDrop).toHaveBeenCalledWith(3);
+  expect(backend.drop).toHaveBeenCalledWith([H3, H2, H1], HEAD);
+  expect(last()).toMatchObject({ kind: "info", title: "Dropped 3 commits" });
   await flow.run({ kind: "drop", commits: [commit(H1, "one")] });
-  expect(last()).toMatchObject({ kind: "info", title: "Commit Dropped" });
+  expect(last()).toMatchObject({ kind: "info", title: "Dropped 1 commit" });
+});
+
+describe("the Drop Commits question dialog", () => {
+  afterEach(cleanup);
+
+  test("is a warning with the title, message, OK as default, Cancel and an unchecked Don't ask again", async () => {
+    const answer = vi.fn();
+    render(DropConfirmDialog, { count: 3, onanswer: answer });
+
+    expect(screen.getByText("Drop Commits")).toBeTruthy();
+    expect(screen.getByText("Do you want to drop 3 commits?")).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: "Don't ask again" }) as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByRole("button", { name: "OK" }).classList.contains("default")).toBe(true);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    expect(document.querySelector("svg")).not.toBeNull();
+
+    await fireEvent.click(screen.getByRole("checkbox", { name: "Don't ask again" }));
+    await fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(answer).toHaveBeenCalledWith({ ok: true, doNotAsk: true });
+  });
+
+  test("Cancel answers no even with the box checked, and one commit is singular", async () => {
+    const answer = vi.fn();
+    render(DropConfirmDialog, { count: 1, onanswer: answer });
+
+    expect(screen.getByText("Drop Commit")).toBeTruthy();
+    expect(screen.getByText("Do you want to drop 1 commit?")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("checkbox", { name: "Don't ask again" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(answer).toHaveBeenCalledWith({ ok: false, doNotAsk: false });
+  });
+});
+
+test("cancelling_the_drop_question_runs_nothing", async () => {
+  const backend = api();
+  const dialogs = ui();
+  dialogs.confirmDrop.mockResolvedValue({ ok: false, doNotAsk: true });
+
+  await editingFlow(dialogs, backend).run({ kind: "drop", commits: [commit(H1, "one")] });
+
+  expect(backend.state).not.toHaveBeenCalled();
+  expect(backend.drop).not.toHaveBeenCalled();
+  expect(backend.stopAskingBeforeDropping).not.toHaveBeenCalled();
+});
+
+test("drop_asks_after_the_check_and_before_reading_the_state", async () => {
+  const order: string[] = [];
+  const backend = api({
+    check: vi.fn(async () => {
+      order.push("check");
+      return null;
+    }),
+    state: vi.fn(async () => {
+      order.push("state");
+      return STATE;
+    }),
+  });
+  const dialogs = ui();
+  dialogs.confirmDrop.mockImplementation(async () => {
+    order.push("ask");
+    return { ok: true, doNotAsk: false };
+  });
+
+  await editingFlow(dialogs, backend).run({ kind: "drop", commits: [commit(H1, "one")] });
+
+  expect(order).toEqual(["check", "ask", "state"]);
+});
+
+test("a_refused_check_does_not_ask", async () => {
+  const backend = api({ check: vi.fn(async () => "Cannot drop during merge") });
+  const dialogs = ui();
+
+  await editingFlow(dialogs, backend).run({ kind: "drop", commits: [commit(H1, "one")] });
+
+  expect(dialogs.confirmDrop).not.toHaveBeenCalled();
+  expect(last()).toMatchObject({ kind: "error", title: "Could not Drop Commits" });
+});
+
+test("dont_ask_again_is_saved_only_on_ok", async () => {
+  const checkedOk = api();
+  const dialogs = ui();
+  dialogs.confirmDrop.mockResolvedValue({ ok: true, doNotAsk: true });
+  await editingFlow(dialogs, checkedOk).run({ kind: "drop", commits: [commit(H1, "one")] });
+  expect(checkedOk.stopAskingBeforeDropping).toHaveBeenCalledTimes(1);
+  expect(checkedOk.drop).toHaveBeenCalled();
+
+  const checkedCancel = api();
+  const cancelling = ui();
+  cancelling.confirmDrop.mockResolvedValue({ ok: false, doNotAsk: true });
+  await editingFlow(cancelling, checkedCancel).run({ kind: "drop", commits: [commit(H1, "one")] });
+  expect(checkedCancel.stopAskingBeforeDropping).not.toHaveBeenCalled();
+  expect(checkedCancel.drop).not.toHaveBeenCalled();
+
+  const unchecked = api();
+  await editingFlow(ui(), unchecked).run({ kind: "drop", commits: [commit(H1, "one")] });
+  expect(unchecked.stopAskingBeforeDropping).not.toHaveBeenCalled();
+});
+
+test("without_the_setting_drop_does_not_ask", async () => {
+  const backend = api({ askBeforeDropping: vi.fn(async () => false) });
+  const dialogs = ui();
+
+  await editingFlow(dialogs, backend).run({ kind: "drop", commits: [commit(H1, "one")] });
+
+  expect(dialogs.confirmDrop).not.toHaveBeenCalled();
+  expect(backend.drop).toHaveBeenCalledWith([H1], HEAD);
+});
+
+test("drop_success_lists_the_subjects", async () => {
+  const hash = (n: number) => String(n).padStart(2, "0").repeat(20);
+  const many = Array.from({ length: 12 }, (_, n) => commit(hash(n), `subject ${n}`));
+  await editingFlow(ui(), api()).run({ kind: "drop", commits: many });
+  expect(last()).toMatchObject({
+    title: "Dropped 12 commits",
+    body: [...many.slice(0, 10).map(({ subject }) => `"${subject}"`), "..."].join("\n"),
+  });
+
+  const long = "x".repeat(45);
+  const exact = "y".repeat(40);
+  await editingFlow(ui(), api()).run({
+    kind: "drop",
+    commits: [commit(H1, long), commit(H2, exact)],
+  });
+  expect(last()).toMatchObject({
+    title: "Dropped 2 commits",
+    body: `"${"x".repeat(37)}..."\n"${exact}"`,
+  });
 });
 
 describe("Undo", () => {
@@ -288,9 +426,16 @@ describe("Undo", () => {
     await vi.waitFor(() =>
       expect(last()).toMatchObject({
         kind: "error",
-        title: "Cannot Undo Drop",
+        title: "Cannot undo drop",
         body: "Repository has already been changed",
       }),
+    );
+
+    const droppingFails = api({ undo: vi.fn(async () => ({ kind: "failed", reason: "error: no" }) as const) });
+    await editingFlow(ui(), droppingFails).run({ kind: "drop", commits: [commit(H1, "one")] });
+    last().actions?.[0].run();
+    await vi.waitFor(() =>
+      expect(last()).toMatchObject({ kind: "error", title: "Undo drop failed", body: "error: no" }),
     );
 
     const failing = api({ undo: vi.fn(async () => ({ kind: "failed", reason: "error: no" }) as const) });
@@ -587,7 +732,7 @@ test("a_rebase_that_stops_continues_like_task_2_without_undo", async () => {
   await flow.run({ kind: "drop", commits: [commit(H1, "one")] });
 
   expect(dialogs.rebaseConflicts).toHaveBeenCalledWith([]);
-  expect(shown().some(({ title }) => title === "Commit Dropped")).toBe(false);
+  expect(shown().some(({ title }) => title === "Dropped 1 commit")).toBe(false);
   // One that does not get to start says so with its title.
   const refused = api({
     drop: vi.fn(async () =>
@@ -796,6 +941,12 @@ describe("menu", () => {
 });
 
 describe("CommitMessageDialog", () => {
+  let history: string[];
+  beforeEach(() => {
+    history = [];
+    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockImplementation(async (command) => (command === "messages_list" ? history : null));
+  });
   afterEach(() => cleanup());
 
   const request = (validate: () => Promise<string | null>): CommitMessageRequest => ({
@@ -859,5 +1010,74 @@ describe("CommitMessageDialog", () => {
     await fireEvent.input(field, { target: { value: "new" } });
     await fireEvent.keyDown(field, { key: "Enter", metaKey: true });
     await vi.waitFor(() => expect(onanswer).toHaveBeenCalledWith("new"));
+  });
+
+  describe("history", () => {
+    const pushes = () =>
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "messages_push")
+        .map(([, args]) => args);
+    const ok = async () => null;
+
+    test("the_reword_dialog_has_the_history_button", async () => {
+      history = ["newest", "older"];
+      render(CommitMessageDialog, { request: request(ok), onanswer: vi.fn() });
+      const field = screen.getByLabelText("Commit Message") as HTMLTextAreaElement;
+      const history_button = screen.getByRole("button", { name: "Commit Message History" }) as HTMLButtonElement;
+      expect(history_button.title).toBe("Commit Message History (⌃M)");
+      await vi.waitFor(() => expect(history_button.disabled).toBe(false));
+
+      await fireEvent.keyDown(field, { key: "m", code: "KeyM", ctrlKey: true });
+      const menu = await screen.findByRole("menu", { name: "Commit Message History" });
+      expect(within(menu).getAllByRole("menuitem").map((entry) => entry.textContent?.trim())).toEqual([
+        "newest",
+        "older",
+      ]);
+      await fireEvent.click(within(menu).getByRole("menuitem", { name: "older" }));
+      expect(field.value).toBe("older");
+    });
+
+    test("the_history_button_is_disabled_with_an_empty_history", async () => {
+      render(CommitMessageDialog, { request: request(ok), onanswer: vi.fn() });
+      await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("messages_list"));
+      const history_button = screen.getByRole("button", { name: "Commit Message History" }) as HTMLButtonElement;
+      expect(history_button.disabled).toBe(true);
+    });
+
+    test("a_changed_message_goes_to_history_on_any_close", async () => {
+      const field = () => screen.getByLabelText("Commit Message") as HTMLTextAreaElement;
+      for (const close of [
+        () => fireEvent.click(screen.getByRole("button", { name: "OK" })),
+        () => fireEvent.click(screen.getByRole("button", { name: "Cancel" })),
+        () => fireEvent.keyDown(field(), { key: "Escape" }),
+      ]) {
+        vi.mocked(invoke).mockClear();
+        const onanswer = vi.fn();
+        const view = render(CommitMessageDialog, { request: request(ok), onanswer });
+        await fireEvent.input(field(), { target: { value: "new text\n\n  \n" } });
+        await close();
+        await vi.waitFor(() => expect(onanswer).toHaveBeenCalled());
+        expect(pushes()).toEqual([{ message: "new text" }]);
+        view.unmount();
+      }
+    });
+
+    test("an_unchanged_message_calls_nothing_and_a_refused_ok_neither", async () => {
+      const onanswer = vi.fn();
+      const refuse = vi.fn(async () => "Cannot edit");
+      render(CommitMessageDialog, { request: request(refuse), onanswer });
+      await fireEvent.input(screen.getByLabelText("Commit Message"), { target: { value: "changed" } });
+      await fireEvent.click(screen.getByRole("button", { name: "OK" }));
+      expect(await screen.findByText("Cannot edit")).toBeTruthy();
+      expect(pushes()).toEqual([]);
+      cleanup();
+
+      const same = vi.fn();
+      render(CommitMessageDialog, { request: request(ok), onanswer: same });
+      await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(same).toHaveBeenCalledWith(null);
+      expect(pushes()).toEqual([]);
+    });
   });
 });

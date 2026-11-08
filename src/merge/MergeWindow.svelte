@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { inGutter, loadWrap, softWrapItem, storeWrap } from "../diff/options";
   import {
     conflictResolve,
     conflictSides,
@@ -68,7 +69,9 @@
   let busy = $state(false);
   let whitespace = $state<Whitespace>("default");
   let question = $state.raw<Question | null>(null);
-  let menu = $state.raw<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  let menu = $state.raw<{ x: number; y: number; label: string; items: MenuItem[] } | null>(null);
+  // `Soft-Wrap` of the place `Merge`. There is no gear here: the gutter menu is its only toggle.
+  let wrap = loadWrap("Merge");
 
   const binary = $derived(
     sides !== null && [sides.base, sides.yours, sides.theirs].some((side) => side.kind === "binary"),
@@ -215,12 +218,26 @@
     menu = {
       x: bounds.left,
       y: bounds.bottom + 2,
+      label: "Ignore Changes",
       items: WHITESPACE.map((choice) => ({
         label: choice.label,
         checked: choice.value === whitespace,
         run: () => changeWhitespace(choice.value),
       })),
     };
+  }
+
+  function setWrap(on: boolean) {
+    wrap = on;
+    storeWrap("Merge", on);
+    editors?.setWrap(on);
+  }
+
+  // The gutter popup of SetEditorSettingsActionGroup. The text has no menu here.
+  function contextmenu(event: MouseEvent) {
+    if (!editors || !inGutter(event)) return;
+    event.preventDefault();
+    menu = { x: event.clientX, y: event.clientY, label: "Diff", items: [softWrapItem(wrap, setWrap)] };
   }
 
   // Another command would throw away the merge: it asks as in Cancel, without closing; whoever asked decides.
@@ -291,7 +308,7 @@
     if (!host) return;
     editors = new MergeEditors(
       host,
-      { ...texts, blocks, titles: read.titles, path: read.path },
+      { ...texts, blocks, titles: read.titles, path: read.path, wrap },
       { onchange: changed, onallprocessed: () => (processed = true) },
     );
     autoApply();
@@ -405,7 +422,8 @@
         {/each}
       </div>
     {/if}
-    <div class="host" bind:this={host}></div>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="host" bind:this={host} oncontextmenu={contextmenu}></div>
     {#if processed}
       <div class="processed" role="status">
         <p>All changes have been processed.</p>
@@ -472,7 +490,7 @@
   <Menu
     x={menu.x}
     y={menu.y}
-    label="Ignore Changes"
+    label={menu.label}
     items={menu.items}
     onclose={() => (menu = null)}
   />

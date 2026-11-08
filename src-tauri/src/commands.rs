@@ -211,8 +211,9 @@ fn starts_disabled(id: &str) -> bool {
 }
 
 // What only applies with the repository in a normal state (`GitMerge.update`, `GitRebase.update`): it starts
-// enabled and the interface disables it with an operation in progress or a detached HEAD.
-const NORMAL_MENU: [&str; 2] = ["Git.Merge", "Git.Rebase"];
+// enabled and the interface disables it with an operation in progress or a detached HEAD. `Git.Fetch` also
+// starts enabled and is disabled while any fetch of the app runs (`GitFetch.update`).
+const NORMAL_MENU: [&str; 3] = ["Git.Merge", "Git.Rebase", "Git.Fetch"];
 
 fn driven_by_state(id: &str) -> bool {
     starts_disabled(id) || NORMAL_MENU.contains(&id)
@@ -2452,7 +2453,7 @@ mod tests {
     // so as not to continue if it could not be saved.
     #[test]
     fn whatever_touches_the_repository_saves_the_diff_window_first() {
-        let source = include_str!("commands.rs");
+        let source = [include_str!("commands.rs"), include_str!("vcs_commands.rs")].concat();
         for name in [
             "rollback_files",
             "lines_rollback",
@@ -2464,6 +2465,7 @@ mod tests {
             "staging_revert",
             "staging_stage_hunks",
             "staging_unstage_hunks",
+            "changes_add",
         ] {
             let start = source.find(&format!("pub async fn {name}(")).unwrap();
             let mut lines = source[start..].lines();
@@ -4050,12 +4052,11 @@ mod tests {
     // detached HEAD.
     #[test]
     fn merge_and_rebase_start_enabled_and_the_state_governs_them() {
-        for id in ["Git.Merge", "Git.Rebase"] {
+        for id in ["Git.Merge", "Git.Rebase", "Git.Fetch"] {
             assert!(!starts_disabled(id), "{id}");
             assert!(driven_by_state(id), "{id}");
             assert!(is_git_menu_item(id), "{id}");
         }
-        assert!(!driven_by_state("Git.Fetch"));
         assert!(driven_by_state("Git.Rebase.Skip"));
     }
 

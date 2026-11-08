@@ -41,7 +41,7 @@ Each one departs from IntelliJ or from the approved matrix. The user approves th
 
 1. **Stash only until phase 4.** `Clean working tree using` is Stash or Shelve, and in IntelliJ the default value is Shelve. The shelf arrives in phase 4, so here everything is saved with `git stash`.
 2. **The "auto, always or never" setting does not exist in 2023.2.3.** The matrix was wrong. The row becomes `Clean working tree using`, and in this phase it is shown with Stash fixed.
-3. **System credentials.** According to section 4 of the design, `Use credential helper` comes enabled, unlike in IntelliJ. Without Password Safe, the login dialog has no `Remember`: if there is a helper, git saves it.
+3. **System credentials.** According to section 4 of the design, `Use credential helper` comes enabled. IntelliJ's own default is off, but the user's IntelliJ has it on. Without Password Safe, the login dialog has no `Remember`: if there is a helper, git saves it.
 4. **Restore after an error or a cancellation.** IntelliJ leaves the changes saved in those cases. Here they are restored if the repository went back to its clean state, because there is no stash interface until phase 4.
 5. **`Restore Changes` button.** If saved changes remain, because of conflicts or because restoring fails, the notification stays with that button, which does `git stash pop` of that entry. IntelliJ links to the shelf, which does not exist here.
 6. **Conflicts.** The app detects the state and leaves the repository as git leaves it, with `Abort`. Resolving them belongs to phase 3, as do `Continue` and `Skip`.

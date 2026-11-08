@@ -449,6 +449,8 @@ export interface Settings {
   nonModalCommit: boolean;
   // `Clear initial commit message`.
   clearInitialCommitMessage: boolean;
+  // `SHOW_DROP_COMMIT_DIALOG`.
+  showDropCommitDialog: boolean;
 }
 
 export type CommitMode = "modal" | "non-modal";
@@ -462,10 +464,17 @@ export const effectiveStaging = (settings: Settings): boolean =>
   settings.nonModalCommit && settings.stagingArea;
 
 // `GitMergeOption`, in their order.
-export type MergeOption = "noFf" | "ffOnly" | "squash" | "message" | "noCommit" | "noVerify";
+export type MergeOption =
+  | "noFf"
+  | "ffOnly"
+  | "squash"
+  | "message"
+  | "noCommit"
+  | "noVerify"
+  | "allowUnrelatedHistories";
 
 // The flags remembered by the Rebase… dialog, which are those of `REBASE_FLAGS`.
-export type RebaseFlag = "rebaseMerges" | "keepEmpty" | "root" | "interactive";
+export type RebaseFlag = "rebaseMerges" | "keepEmpty" | "root" | "interactive" | "updateRefs";
 
 // Per repository. `forcePushTargets`: the `Don't warn about this target` ones, as `remote:branch`.
 export interface RepoSettings {
@@ -577,6 +586,10 @@ export const stagingStageHunks = (path: string, selection: LineSelection[]) =>
   invoke<string | null>("staging_stage_hunks", { path, selection });
 export const stagingUnstageHunks = (path: string, selection: LineSelection[]) =>
   invoke<string | null>("staging_unstage_hunks", { path, selection });
+// `Add to VCS` with changelists, for the repository `repo`: launches a task whose result is the saved
+// copy, if there was something that was only in the index.
+export const changesAdd = (repo: string, paths: string[]) =>
+  invoke<number>("changes_add", { repo, paths });
 export const stagingSides = (path: string, comparison: Comparison) =>
   invoke<WorktreeSides>("staging_sides", { path, comparison });
 export const stagingPreview = (path: string, content: string) =>
@@ -734,6 +747,7 @@ export interface RebaseParams {
   rebaseMerges: boolean;
   keepEmpty: boolean;
   root: boolean;
+  updateRefs: boolean;
 }
 
 export type MergeOutcome =
@@ -778,7 +792,10 @@ export type UpdateOutcome =
   | { kind: "noTrackedBranch"; reason: { branch: string } }
   | { kind: "error"; reason: string }
   | { kind: "cancelled" }
-  | { kind: "rebasingMergeCommits" };
+  // Asked before saving anything, for `branch`.
+  | { kind: "rebasingMergeCommits"; reason: { branch: string } }
+  // Asked before saving anything. `protected` is empty if it could not be read.
+  | { kind: "rebasingPublishedCommits"; reason: { branch: string; protected: string } };
 
 export interface UpdateResult {
   outcome: UpdateOutcome;
@@ -797,7 +814,10 @@ export interface UpdateOptions {
   target?: string;
   setUpstream?: boolean;
   fetched?: boolean;
-  rebaseMerges?: boolean;
+  // The branch for which `Rebase` was answered to `Rebasing Merge Commits`.
+  rebaseMerges?: string;
+  // The branch for which `Rebase Anyway` was answered to `Rebasing Published Commit`.
+  publishedConfirmed?: string;
 }
 
 export type PullOption = "rebase" | "ffOnly" | "noFf" | "squash" | "noCommit" | "noVerify";
@@ -922,8 +942,12 @@ export const branchCheckoutRemote = (remoteBranch: string, choice: RemoteChoice)
 export const branchRebaseOnto = (startPoint: string, branch: string) =>
   invoke<number>("branch_rebase_onto", { startPoint, branch });
 // The result of the task is a `BranchMergeResult`.
-export const branchMerge = (branch: string, smart: boolean, expectedHead: string) =>
-  invoke<number>("branch_merge", { branch, smart, expectedHead });
+export const branchMerge = (
+  branch: string,
+  kind: "local" | "remote" | "tag",
+  smart: boolean,
+  expectedHead: string,
+) => invoke<number>("branch_merge", { branch, kind, smart, expectedHead });
 // The result of the task is a `RebaseRun`.
 export const branchRebase = (onto: string, branch: string | null, expectedHead: string) =>
   invoke<number>("branch_rebase", { onto, branch, expectedHead });
@@ -1239,7 +1263,9 @@ export const gitPushUpdate = (
 export const pushTagsGet = () => invoke<PushTags | null>("push_tags_get");
 export const pushTagsSet = (tags: PushTags | null) => invoke<void>("push_tags_set", { tags });
 export const repoSettingsGet = () => invoke<RepoSettings>("repo_settings_get");
-// The patterns that are not valid.
+// The error of the first pattern of the `;`-separated field that does not compile, or `null`.
+export const protectedPatternsCheck = (text: string) =>
+  invoke<string | null>("protected_patterns_check", { text });
 export const protectedBranchesSet = (patterns: string[]) =>
   invoke<string[]>("protected_branches_set", { patterns });
 export const forcePushTargetRemember = (remote: string, branch: string) =>

@@ -26,7 +26,13 @@
   let { branches, refs, upstream: initial, options, version, validate, onanswer }: Props = $props();
 
   // `REBASE_FLAGS`: what comes out as a button. The rest of the options have their own field.
-  const FLAGS: RebaseOption[] = ["rebaseMerges", "keepEmpty", "root", "interactive"];
+  const FLAGS: RebaseOption[] = [
+    "rebaseMerges",
+    "keepEmpty",
+    "root",
+    "interactive",
+    "updateRefs",
+  ];
 
   let chosen = $state<RebaseOption[]>(untrack(() => [...options]));
   let upstream = $state(untrack(() => initial));
@@ -130,6 +136,7 @@
         rebaseMerges: has("rebaseMerges"),
         keepEmpty: has("keepEmpty"),
         root: has("root"),
+        updateRefs: has("updateRefs"),
       },
       // `saveSettings`: the new base if there is `--onto`, and otherwise the upstream, even if `--root` turns it off.
       newBase: (has("onto") ? onto : upstream).trim(),

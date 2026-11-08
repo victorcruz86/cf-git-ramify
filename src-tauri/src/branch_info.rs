@@ -247,11 +247,23 @@ pub fn incoming_outgoing(
     Ok(result)
 }
 
-// `hasExternalSSHAgent` with `shouldAvoidUserInteraction`: another agent could ask on its own,
-// outside our askpass. For `containsSSHUrl`, ssh is everything that does not start with http.
+// `hasExternalSSHAgent`: no agent is not external; a launchd one is external only if its path is not
+// the canonical one (a symlink, or a symlinked ancestor) and any failure to find out means it is not;
+// any other agent is external.
+fn has_external_agent(agent: Option<&OsStr>) -> bool {
+    let Some(agent) = agent else { return false };
+    if !agent.to_string_lossy().contains(SYSTEM_AGENT) {
+        return true;
+    }
+    fs::canonicalize(agent).is_ok_and(|real| real.as_os_str() != agent)
+}
+
+// `shouldAvoidUserInteraction`: another agent could ask on its own, outside our askpass. For
+// `containsSSHUrl`, ssh is everything that does not start with http.
 fn avoids_interaction(strategy: IncomingCheck, agent: Option<&OsStr>, urls: &[String]) -> bool {
-    let external = agent.is_some_and(|agent| !agent.to_string_lossy().contains(SYSTEM_AGENT));
-    strategy == IncomingCheck::Auto && external && urls.iter().any(|url| !url.starts_with(HTTP))
+    strategy == IncomingCheck::Auto
+        && has_external_agent(agent)
+        && urls.iter().any(|url| !url.starts_with(HTTP))
 }
 
 fn remote_urls(ctx: &TaskContext, remote: &str) -> Vec<String> {
@@ -885,6 +897,28 @@ mod tests {
         assert!(checked(&clone, IncomingCheck::Auto, SYSTEM_AGENT).contains_key("main"));
         assert!(checked(&clone, IncomingCheck::Auto, NO_AGENT).contains_key("main"));
         assert!(checked(&clone, IncomingCheck::Always, OTHER_AGENT).contains_key("main"));
+    }
+
+    #[test]
+    fn a_symlinked_launchd_agent_counts_as_external() {
+        let dir = TempDir::new().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let launchd = root.join("com.apple.launchd.x");
+        fs::create_dir(&launchd).unwrap();
+        let target = root.join("elsewhere");
+        fs::write(&target, "").unwrap();
+        let link = launchd.join("Listeners");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        // A real file under a launchd name is the system one.
+        let plain = launchd.join("Plain");
+        fs::write(&plain, "").unwrap();
+
+        assert!(has_external_agent(Some(link.as_os_str())));
+        assert!(!has_external_agent(Some(plain.as_os_str())));
+        // Missing: the check fails and that counts as not external.
+        assert!(!has_external_agent(Some(OsStr::new("/private/tmp/com.apple.launchd.nope/Listeners"))));
+        assert!(!has_external_agent(None));
+        assert!(has_external_agent(Some(OsStr::new("/Users/me/.1password/agent.sock"))));
     }
 
     #[test]

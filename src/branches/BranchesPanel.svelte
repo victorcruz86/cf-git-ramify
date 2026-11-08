@@ -9,6 +9,7 @@
     type BranchSync,
   } from "../lib/api";
   import Icon from "../lib/Icon.svelte";
+  import { fetching } from "../update/flow";
   import { matchBranchPanelShortcut } from "../lib/keymap";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { isProtected, type VcsAction } from "../log/contextMenu";
@@ -57,7 +58,6 @@
   let expanded = $state.raw(new Set<string>());
   let firstRead = true;
   let menu = $state.raw<{ x: number; y: number; label: string; items: MenuItem[] } | null>(null);
-  let fetching = $state(false);
   let readToken = 0;
   let syncToken = 0;
   const refs = refsTracker();
@@ -264,13 +264,9 @@
   }
 
   async function fetchRemotes() {
-    if (!onfetch || fetching) return;
-    fetching = true;
-    try {
-      await onfetch();
-    } finally {
-      fetching = false;
-    }
+    // The shared flag is raised by the fetch itself (`src/update/flow.ts`).
+    if (!onfetch || $fetching) return;
+    await onfetch();
   }
 
   function toggleFavorites() {
@@ -330,7 +326,7 @@
         single.current ||
         (single.section === "remote" && isProtected(refOf(single), $protectedBranches)),
     )}
-    {@render toolbarButton("Fetch All Remotes", "fetch", fetchRemotes, !onfetch || fetching)}
+    {@render toolbarButton("Fetch All Remotes", "fetch", fetchRemotes, !onfetch || $fetching)}
     {@render toolbarButton(
       "Mark/Unmark As Favorite",
       "favorite",

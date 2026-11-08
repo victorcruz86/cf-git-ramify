@@ -7,6 +7,10 @@ import type { ConflictSides, MergeBlock, Settings } from "../lib/api";
 import MergeWindow from "./MergeWindow.svelte";
 import { unprocessedMessage, withSeparator } from "./model";
 
+// What `EditorView.lineWrapping` puts on the content; `view.lineWrapping` only follows it after a
+// measure, which jsdom does not do.
+const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
+
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
 
@@ -534,4 +538,48 @@ test("the_page_announces_it_is_already_listening_before_loading", async () => {
   const order = vi.mocked(invoke).mock.calls.map(([name]) => name);
   expect(order.indexOf("merge_window_ready")).toBeGreaterThanOrEqual(0);
   expect(order.indexOf("merge_window_ready")).toBeLessThan(order.indexOf("conflict_sides"));
+});
+
+test("right_click_on_the_gutter_offers_soft_wrap_and_stores_it_for_merge", async () => {
+  localStorage.clear();
+  mockCommands({ conflict_sides: task(SAME) });
+  await open();
+  await waitFor(() => expect(document.querySelectorAll(".rm-merge .cm-gutters")).toHaveLength(3));
+  const views = () =>
+    [...document.querySelectorAll<HTMLElement>(".rm-merge .cm-editor")].map(
+      (dom) => EditorView.findFromDOM(dom) as EditorView,
+    );
+  const before = views();
+  // The place `Merge` starts off, as in IntelliJ.
+  expect(before.map(wrapped)).toEqual([false, false, false]);
+
+  const gutter = document.querySelector<HTMLElement>('[data-pane="right"] .cm-gutters .cm-gutterElement');
+  await fireEvent.contextMenu(gutter as HTMLElement);
+  const menu = await screen.findByRole("menu");
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.getAttribute("aria-label"))).toEqual([
+    "Soft-Wrap",
+  ]);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Soft-Wrap" }));
+
+  expect(views()).toEqual(before);
+  expect(before.map(wrapped)).toEqual([true, true, true]);
+  expect(localStorage.getItem("diff.wrap.Merge")).toBe("true");
+  expect(localStorage.getItem("diff.wrap.Default")).toBeNull();
+
+  // The text has no menu of its own.
+  await fireEvent.contextMenu(document.querySelector('[data-pane="base"] .cm-line') as HTMLElement);
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+test("the_merge_window_opens_with_the_wrap_of_its_place", async () => {
+  localStorage.clear();
+  localStorage.setItem("diff.wrap.Merge", "true");
+  mockCommands({ conflict_sides: task(SAME) });
+  await open();
+  await waitFor(() => expect(document.querySelectorAll(".rm-merge .cm-editor")).toHaveLength(3));
+
+  const views = [...document.querySelectorAll<HTMLElement>(".rm-merge .cm-editor")].map(
+    (dom) => EditorView.findFromDOM(dom) as EditorView,
+  );
+  expect(views.map(wrapped)).toEqual([true, true, true]);
 });

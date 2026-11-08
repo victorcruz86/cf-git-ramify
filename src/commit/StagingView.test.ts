@@ -44,6 +44,7 @@ const SETTINGS: Settings = {
   cherryPickSuffix: true,
   nonModalCommit: true,
   clearInitialCommitMessage: false,
+  showDropCommitDialog: true,
 };
 
 const LISTS = {

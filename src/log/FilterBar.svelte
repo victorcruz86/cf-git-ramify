@@ -60,7 +60,7 @@
 
   const SELECT = "Select…";
   const RECENT = "Recent";
-  const TEXT_FILTER = "Text or Hash Filter";
+  const TEXT_FILTER = "Filter by Commit Message or Hashes";
   const TEXT_HISTORY = "Text";
   const DOUBLE_LENGTH = 40;
   const hint = (separators: string) =>
@@ -371,6 +371,7 @@
       type="search"
       aria-label={TEXT_FILTER}
       title={TEXT_FILTER}
+      placeholder="Text or hash"
       spellcheck="false"
       bind:value={draft}
       onkeydown={textKeydown}

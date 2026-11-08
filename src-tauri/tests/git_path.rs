@@ -92,6 +92,6 @@ fn version_of_a_path_without_configuring_it() {
     fs::set_permissions(&other, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(
         git::version_of(other.to_str()),
-        Err(GitError::Io(message)) if message.contains("Cannot identify version")
+        Err(GitError::Io(message)) if message.contains("Cannot identify version of Git executable")
     ));
 }

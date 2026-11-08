@@ -305,18 +305,43 @@ describe("flow", () => {
     expect(backend.push).toHaveBeenCalledWith(expect.objectContaining({ source: HASH }));
   });
 
-  test("push_all_up_to_here_without_a_local_branch_is_not_possible", async () => {
+  test("push_all_up_to_here_outside_local_branches_opens_the_push_dialog", async () => {
+    // With a current branch the target of the dialog is `<remote>/<current>`.
     const backend = api({ branchOf: vi.fn(async () => null) });
     const dialogs = ui();
 
     await pushFlow(dialogs, backend).pushUpTo(HASH);
 
-    expect(dialogs.asked).toEqual([]);
-    expect(shown().at(-1)).toMatchObject({
-      kind: "error",
-      title: "Push failed to start",
-      body: "'Push All up to Here' is supported for commit contained in a local branch only",
+    expect(backend.info).toHaveBeenCalledWith(null);
+    expect(dialogs.asked[0]).toMatchObject({
+      source: { revision: HASH, label: HASH.slice(0, 8) },
+      info: { target: { remote: "origin", branch: "main" } },
     });
+    expect(backend.push).toHaveBeenCalledWith(
+      expect.objectContaining({ source: HASH, remote: "origin", target: "main" }),
+    );
+    expect(shown().filter(({ kind }) => kind === "error")).toEqual([]);
+  });
+
+  test("push_all_up_to_here_on_detached_head_targets_a_new_detached_branch", async () => {
+    const info = {
+      ...INFO,
+      branch: null,
+      target: { remote: "origin", branch: "detached", isNew: true },
+    };
+    const backend = api({ branchOf: vi.fn(async () => null), info: vi.fn(async () => info) });
+    const dialogs = ui({ ...CHOICE, target: "detached" });
+
+    await pushFlow(dialogs, backend).pushUpTo(HASH);
+
+    expect(dialogs.asked[0]).toMatchObject({
+      source: { revision: HASH, label: HASH.slice(0, 8) },
+      info: { target: { branch: "detached", isNew: true } },
+    });
+    expect(backend.push).toHaveBeenCalledWith(
+      expect.objectContaining({ source: HASH, target: "detached" }),
+    );
+    expect(shown().filter(({ kind }) => kind === "error")).toEqual([]);
   });
 
   test("push_tags_remembers_the_choice", async () => {

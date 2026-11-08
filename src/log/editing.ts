@@ -25,6 +25,7 @@ import {
   rewriteUndoCheck,
   rewriteValidate,
   settingsGet,
+  settingsSave,
   type ApiError,
   type ChangeList,
   type Changelists,
@@ -90,7 +91,21 @@ export interface InteractiveRebaseRequest {
   commits: RebaseCommit[];
 }
 
+// `GitDropLogAction`'s `MessageDialogBuilder.okCancel(...).asWarning().doNotAsk(...)`.
+export interface DropConfirmRequest {
+  kind: "dropConfirm";
+  count: number;
+}
+
+export interface DropAnswer {
+  ok: boolean;
+  // The `Don't ask again` checkbox. It only counts with `ok`.
+  doNotAsk: boolean;
+}
+
 export interface EditingUi extends RebaseUi {
+  // The Drop Commits question, with its warning icon and the `Don't ask again` checkbox.
+  confirmDrop(count: number): Promise<DropAnswer>;
   // The message dialog: `null` if cancelled.
   editMessage(request: CommitMessageRequest): Promise<string | null>;
   // `ChangeListChooser`, titled `Select Target Changelist`: `null` if cancelled.
@@ -103,6 +118,10 @@ export interface EditingUi extends RebaseUi {
 
 export interface EditingApi {
   state(): Promise<RepoState>;
+  // `GitVcsApplicationSettings.isShowDropCommitDialog`.
+  askBeforeDropping(): Promise<boolean>;
+  // `Don't ask again` of the Drop Commits question: `isShowDropCommitDialog = false`.
+  stopAskingBeforeDropping(): Promise<void>;
   // `lastCheckCommitsEditingAvailability`: the reason, or `null` if possible.
   check(hashes: string[], kind: RewriteKind): Promise<string | null>;
   details(hashes: string[]): Promise<CommitDetails[]>;
@@ -139,6 +158,11 @@ const result = async <T>(id: Promise<number>) => taskResult<T>(await id);
 
 export const backend: EditingApi = {
   state: repoState,
+  askBeforeDropping: async () => (await settingsGet()).showDropCommitDialog,
+  // Read again to save: whatever else changed in the meantime is kept.
+  stopAskingBeforeDropping: async () => {
+    await settingsSave({ ...(await settingsGet()), showDropCommitDialog: false });
+  },
   check: (hashes, kind) => result(rewriteCheck(hashes, kind)),
   details: commitDetails,
   reword: (hash, message, head) => result(rewriteReword(hash, message, head)),
@@ -210,19 +234,19 @@ interface Texts {
 
 const TEXTS: Record<RewriteKind, Texts> = {
   reword: {
-    failure: "Couldn't Edit Commit Message",
+    failure: "Could not Edit Commit Message",
     success: () => "Commit Message Changed",
     impossible: "Cannot Undo Commit Message Edit",
     undoFailed: "Undo Commit Message Edit Failed",
   },
   drop: {
-    failure: "Couldn't Drop Commits",
-    success: (count) => `${count === 1 ? "Commit" : "Commits"} Dropped`,
-    impossible: "Cannot Undo Drop",
-    undoFailed: "Undo Drop Failed",
+    failure: "Could not Drop Commits",
+    success: (count) => `Dropped ${count} ${count === 1 ? "commit" : "commits"}`,
+    impossible: "Cannot undo drop",
+    undoFailed: "Undo drop failed",
   },
   squash: {
-    failure: "Couldn't Squash Commits",
+    failure: "Could not Squash Commits",
     success: () => "Commits Squashed",
     impossible: "Cannot Undo Squash",
     undoFailed: "Undo Squash Failed",
@@ -261,6 +285,26 @@ const SQUASH_SEPARATOR = "\n\n\n";
 
 // `VcsCommitMetadata.getFullMessage`, rebuilt from the subject and body of the details.
 const fullMessage = ({ subject, body }: CommitDetails) => (body ? `${subject}\n\n${body}` : subject);
+
+// `MAX_COMMITS_IN_NOTIFICATION` and the length of `StringUtil.shortenTextWithEllipsis(subject, 40, 0)`.
+const MAX_DROPPED_LISTED = 10;
+const MAX_SUBJECT = 40;
+const ELLIPSIS = "...";
+
+// The body of the Drop success: the first subjects in straight double quotes, one per line, and `...` if
+// there are more.
+function droppedSubjects(commits: AppliedCommit[]): string {
+  const lines = commits.slice(0, MAX_DROPPED_LISTED).map(({ subject }) => {
+    const chars = [...subject];
+    const text =
+      chars.length > MAX_SUBJECT
+        ? chars.slice(0, MAX_SUBJECT - ELLIPSIS.length).join("") + ELLIPSIS
+        : subject;
+    return `"${text}"`;
+  });
+  if (commits.length > MAX_DROPPED_LISTED) lines.push(ELLIPSIS);
+  return lines.join("\n");
+}
 
 const isCancelled = (error: unknown) => (error as ApiError).kind === "cancelled";
 
@@ -301,18 +345,25 @@ export function editingFlow(ui: EditingUi, api: EditingApi = backend) {
   }
 
   // `notifySuccess`: the card with Undo, which stays until the repository changes and it is no longer valid.
-  function succeeded(kind: RewriteKind, count: number, rewritten: Rewritten, started: number) {
+  function succeeded(
+    kind: RewriteKind,
+    count: number,
+    rewritten: Rewritten,
+    started: number,
+    body?: string,
+  ) {
     const title = TEXTS[kind].success(count);
     if (generation !== started) {
       notify({ kind: "info", title, body: ELSEWHERE });
       return;
     }
     const card: Card = { kind, rewritten };
-    // Not expiring by time: Drop asks for no confirmation because there is Undo, which only goes away when
-    // the repository changes and it is no longer valid (`repositoryRefreshed`).
+    // Not expiring by time: it stays until the repository changes and Undo is no longer valid
+    // (`repositoryRefreshed`).
     const notification: Notification = {
       kind: "info",
       title,
+      body,
       sticky: true,
       actions: [{ label: UNDO, run: () => void undo(id, card) }],
     };
@@ -333,6 +384,7 @@ export function editingFlow(ui: EditingUi, api: EditingApi = backend) {
     count: number,
     work: () => Promise<Rewritten>,
     started: number,
+    body?: string,
   ) {
     let rewritten: Rewritten;
     try {
@@ -351,24 +403,36 @@ export function editingFlow(ui: EditingUi, api: EditingApi = backend) {
       rewritten,
       ui,
       REBASE_SAVING,
-      () => succeeded(kind, count, rewritten, started),
+      () => succeeded(kind, count, rewritten, started, body),
       ongoing,
     );
   }
 
-  // What is common before acting: the HEAD seen now and the checks against the history.
-  async function prepare(kind: RewriteKind, hashes: string[]): Promise<RepoState | null> {
+  // The checks against the history (`lastCheckCommitsEditingAvailability`): `false` if it was refused.
+  async function allowed(kind: RewriteKind, hashes: string[]): Promise<boolean> {
     try {
       const reason = await api.check(hashes, kind);
-      if (reason !== null) {
-        notify({ kind: "error", title: TEXTS[kind].failure, body: reason });
-        return null;
-      }
+      if (reason === null) return true;
+      notify({ kind: "error", title: TEXTS[kind].failure, body: reason });
+    } catch (error) {
+      failed(kind, error);
+    }
+    return false;
+  }
+
+  // The HEAD seen now.
+  async function headState(kind: RewriteKind): Promise<RepoState | null> {
+    try {
       return await api.state();
     } catch (error) {
       failed(kind, error);
       return null;
     }
+  }
+
+  // What is common before acting: the checks and then the HEAD.
+  async function prepare(kind: RewriteKind, hashes: string[]): Promise<RepoState | null> {
+    return (await allowed(kind, hashes)) ? headState(kind) : null;
   }
 
   // The message dialog, which does not accept if HEAD moved while it was open or if the oldest
@@ -429,12 +493,25 @@ export function editingFlow(ui: EditingUi, api: EditingApi = backend) {
     await finish("squash", hashes.length, () => api.squash(hashes, message, state.head), started);
   }
 
-  // `GitDropLogAction.actionPerformedAfterChecks`: without confirmation.
+  // `GitDropLogAction.actionPerformedAfterChecks`: the question (unless turned off) comes after the checks
+  // and before anything is read. `Don't ask again` is saved only on OK.
   async function drop(commits: AppliedCommit[], started: number) {
     const hashes = commits.map(({ hash }) => hash);
-    const state = await prepare("drop", hashes);
+    if (!(await allowed("drop", hashes))) return;
+    try {
+      if (await api.askBeforeDropping()) {
+        const answer = await ui.confirmDrop(hashes.length);
+        if (!answer.ok) return;
+        if (answer.doNotAsk) await api.stopAskingBeforeDropping();
+      }
+    } catch (error) {
+      failed("drop", error);
+      return;
+    }
+    if (generation !== started) return;
+    const state = await headState("drop");
     if (!state) return;
-    await finish("drop", hashes.length, () => api.drop(hashes, state.head), started);
+    await finish("drop", hashes.length, () => api.drop(hashes, state.head), started, droppedSubjects(commits));
   }
 
   // `GitUncommitAction.actionPerformedAfterChecks`: the changelist chooser (if there are any) and

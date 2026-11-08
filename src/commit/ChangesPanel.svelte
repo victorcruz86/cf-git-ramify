@@ -15,6 +15,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack, type Snippet } from "svelte";
   import {
+    changesAdd,
     changelistsCreate,
     changelistsGet,
     changelistsImport,
@@ -44,6 +45,7 @@
   import type { ActionId } from "../lib/keymap";
   import { matchShortcut } from "../lib/keymap";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
+  import { notify as showNotification } from "../lib/notifications";
   import { store, stored } from "../lib/storage";
   import { mergeFiles } from "../conflicts/flow";
   import { taskResult } from "../lib/tasks";
@@ -80,6 +82,9 @@
   const NOTICE_MS = 10_000;
   const GROUP_KEY = "commit.groupByDirectory";
   const NO_PATHS = new Set<string>();
+  // `error.adding.files.notification.title` and `error.adding.files.prompt`.
+  const ADD_FAILED = "Failed to add files";
+  const ADD_PROBLEMS = "The following problems have occurred when adding the files:";
 
   interface Props {
     repo: RepoInfo;
@@ -107,6 +112,8 @@
     onselection?: (paths: string[], lists: string[], lead: string | null) => void;
     // `Commit File…`: not offered without it.
     oncheckinfiles?: (paths: string[], lists: string[]) => void;
+    // `Add to VCS` took these files to the index and to the panel's list: the dialog includes them.
+    onadded?: (paths: string[]) => void;
     // Rolled back on purpose: what was chosen in these files has not been lost.
     onrolledback?: (paths: string[]) => void;
     // The `Resolve` link of the conflicts node: opens the Conflicts dialog.
@@ -143,6 +150,7 @@
     onshowdiff,
     onselection,
     oncheckinfiles,
+    onadded,
     onrolledback,
     onresolveconflicts,
     onconflictschange,
@@ -217,6 +225,7 @@
   const selectedVersioned = $derived(
     selectedFiles.filter((file) => file.state !== "untracked" && file.state !== "ignored"),
   );
+  const selectedUnversioned = $derived(selectedFiles.filter((file) => file.state === "untracked"));
   const selectedConflicts = $derived(
     selectedFiles.filter((file) => file.state === "unmerged").map((file) => file.path),
   );
@@ -621,6 +630,35 @@
     });
   }
 
+  // `ChangesView.AddUnversioned` (`ScheduleForAdditionAction`): the unversioned files of the selection go
+  // to the index and then to the active list or, in the dialog's browser, to the dialog's list, which
+  // includes them in the commit (`moveAddedChangesTo`). Ignored files are not listed, so the
+  // confirmation for them never applies.
+  async function addToVcs() {
+    const paths = selectedUnversioned.map((file) => file.path);
+    const target = browser ? list : lists?.active;
+    if (paths.length === 0 || !target) return;
+    try {
+      const copy = await taskResult<string | null>(await changesAdd(repo.path, paths));
+      if (copy) stagingCopy(copy);
+    } catch (failure) {
+      if ((failure as ApiError).kind !== "cancelled") {
+        showNotification({
+          kind: "error",
+          title: ADD_FAILED,
+          body: `${ADD_PROBLEMS}\n${errorText(failure)}`,
+        });
+      }
+      await reload();
+      return;
+    }
+    await run(() => changelistsMove(paths, target));
+    const added = new Set(
+      changes.filter((change) => change.state !== "untracked").map((change) => change.path),
+    );
+    onadded?.(paths.filter((path) => added.has(path)));
+  }
+
   function stageSelected() {
     const { stage } = stagingTargets(selectedKeys, changes);
     if (stage.length > 0) staging?.apply({ stage, unstage: [] });
@@ -716,8 +754,9 @@
   }
 
   // `MultipleLocalChangeListsBrowser.createPopupMenuActions`, without what rama does not have: `Show
-  // Diff in a New Tab or Window` (the diff is always a window), the unversioned group and `Jump to
-  // Source`. With unversioned files `Move to Another Changelist` has only its shortcut.
+  // Diff in a New Tab or Window` (the diff is always a window) and `Jump to Source`. Of the unversioned
+  // group (`Unversioned.Files.Dialog.Popup`) there is only `Add to VCS`, shown even when disabled
+  // because the place is not `ChangesViewPopupMenu`; `Move to Another Changelist` has only its shortcut.
   function openBrowserMenu(x: number, y: number) {
     const items: MenuItem[] = conflictActions();
     items.push(
@@ -729,6 +768,14 @@
       },
       { label: "Refresh", run: reload },
     );
+    if (unversioned) {
+      items.push({
+        label: "Add to VCS",
+        shortcut: "⌥⌘A",
+        disabled: selectedUnversioned.length === 0,
+        run: addToVcs,
+      });
+    }
     if (!unversioned && selectedVersioned.length > 0) {
       items.push({ label: "Move to Another Changelist...", shortcut: "⇧⌘M", run: openMove });
     }
@@ -775,6 +822,11 @@
       });
     }
     if (count > 0) items.push({ label: "Show Diff", shortcut: "⌘D", run: showDiff });
+    // `ChangesView.AddUnversioned` is visible here only when enabled; `$Delete` and `Remove from VCS`,
+    // the rest of its group, rama does not have.
+    if (selectedUnversioned.length > 0) {
+      items.push(null, { label: "Add to VCS", shortcut: "⌥⌘A", run: addToVcs });
+    }
     items.push(null, { label: "New Changelist...", run: openNew });
     if (canRemove(singleList)) items.push({ label: "Delete Changelist", run: removeList });
     if (singleList && singleList.id !== lists?.active) {
@@ -796,9 +848,11 @@
       case "ChangesView.Revert":
         openRollback();
         break;
-      case "Git.Stage.Add":
-        if (!stagingArea) return false;
-        stageSelected();
+      // `Git.Stage.Add` takes the shortcut of `ChangesView.AddUnversioned`.
+      case "ChangesView.AddUnversioned":
+        if (stagingArea) stageSelected();
+        else if (selectedUnversioned.length > 0) void addToVcs();
+        else return false;
         break;
       case "ChangesView.Move":
         openMove();

@@ -84,6 +84,7 @@ const SETTINGS = {
   cherryPickSuffix: true,
   nonModalCommit: false,
   clearInitialCommitMessage: false,
+  showDropCommitDialog: true,
 };
 
 const NON_MODAL = { ...SETTINGS, nonModalCommit: true };
@@ -1434,8 +1435,10 @@ test("the_widget_goes_from_one_operation_to_another_with_repo_changed", async ()
 
   expect(await screen.findByRole("button", { name: "Git Branch: main" })).toBeTruthy();
   expect(calls("git_menu_enable").map(([, args]) => args)).toEqual([
-    { ids: ["Git.MainMenu.RebaseActions", "Git.Rebase.Abort", "Git.Rebase.Continue", "Git.Rebase.Skip"] },
-    { ids: ["Git.Merge", "Git.Rebase"] },
+    {
+      ids: ["Git.MainMenu.RebaseActions", "Git.Rebase.Abort", "Git.Rebase.Continue", "Git.Rebase.Skip", "Git.Fetch"],
+    },
+    { ids: ["Git.Merge", "Git.Rebase", "Git.Fetch"] },
   ]);
 });
 
@@ -1451,7 +1454,7 @@ test("opening_a_half_done_repository_shows_the_state", async () => {
   expect(await screen.findByText("Cannot complete update")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Abort" })).toBeTruthy();
   expect(calls("git_menu_enable")[0][1]).toEqual({
-    ids: ["Git.MainMenu.RebaseActions", "Git.Rebase.Abort", "Git.Rebase.Continue", "Git.Rebase.Skip"],
+    ids: ["Git.MainMenu.RebaseActions", "Git.Rebase.Abort", "Git.Rebase.Continue", "Git.Rebase.Skip", "Git.Fetch"],
   });
 });
 
@@ -2074,7 +2077,7 @@ test("resolve_conflicts_from_the_git_menu_turns_on_with_conflicts_and_opens_the_
 
   await waitFor(() =>
     expect(calls("git_menu_enable").map(([, args]) => args)).toContainEqual({
-      ids: ["Git.Merge", "Git.Rebase", "Git.ResolveConflicts"],
+      ids: ["Git.Merge", "Git.Rebase", "Git.ResolveConflicts", "Git.Fetch"],
     }),
   );
   deliver("git-action", "Git.ResolveConflicts");
@@ -2115,7 +2118,7 @@ test("when_everything_is_resolved_resolve_conflicts_turns_off", async () => {
   await screen.findByRole("treeitem", { name: "Merge Conflicts" });
   await waitFor(() =>
     expect(calls("git_menu_enable").map(([, args]) => args)).toContainEqual({
-      ids: ["Git.Merge", "Git.Rebase", "Git.ResolveConflicts"],
+      ids: ["Git.Merge", "Git.Rebase", "Git.ResolveConflicts", "Git.Fetch"],
     }),
   );
 
@@ -2124,9 +2127,29 @@ test("when_everything_is_resolved_resolve_conflicts_turns_off", async () => {
 
   await waitFor(() =>
     expect(calls("git_menu_enable").map(([, args]) => args).at(-1)).toEqual({
-      ids: ["Git.Merge", "Git.Rebase"],
+      ids: ["Git.Merge", "Git.Rebase", "Git.Fetch"],
     }),
   );
+});
+
+// Decision 5: `Git.Fetch` is off while a fetch runs, and comes back when it ends.
+test("the_git_menu_fetch_is_disabled_while_a_fetch_runs", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    fetch_all: () => 9,
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Git Branch: main" });
+  const lastIds = () => (calls("git_menu_enable").at(-1)?.[1] as { ids: string[] }).ids;
+  await waitFor(() => expect(lastIds()).toContain("Git.Fetch"));
+
+  deliver("git-action", "Git.Fetch");
+
+  await waitFor(() => expect(lastIds()).not.toContain("Git.Fetch"));
+  expect(lastIds()).toEqual(["Git.Merge", "Git.Rebase"]);
+  deliver("task-changed", taskDone(9, { pruned: [], failed: [] }));
+  await waitFor(() => expect(lastIds()).toContain("Git.Fetch"));
 });
 
 // Merge… and Rebase… of the Git menu: they open their dialog, launch the command with the HEAD it saw and notify.
@@ -2223,4 +2246,42 @@ test("with_a_half_done_merge_merge_and_rebase_from_the_menu_open_nothing", async
   expect(screen.queryByRole("dialog", { name: "Merge into main" })).toBeNull();
   expect(screen.queryByRole("dialog", { name: "Rebase" })).toBeNull();
   expect(calls("git_merge")).toHaveLength(0);
+});
+
+test("the_merge_and_rebase_widget_sits_after_the_branch_widget", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => ({ ...INFO, state: REBASING }),
+  });
+  render(App);
+  const branch = await screen.findByRole("button", { name: "Git Branch: Rebasing main" });
+
+  const cont = screen.getByRole("button", { name: "Continue Rebase" });
+  expect(branch.compareDocumentPosition(cont) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(branch.nextElementSibling?.contains(cont)).toBe(true);
+});
+
+test("the_widget_buttons_run_the_git_menu_actions", async () => {
+  const merging = { ...INFO.state, operation: "merging", label: "Merging main" };
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => ({ ...INFO, state: merging }),
+    repo_state: () => merging,
+    flush: () => undefined,
+  });
+  render(App);
+
+  await fireEvent.click(await screen.findByRole("button", { name: "Abort Merge" }));
+
+  const dialog = await screen.findByRole("dialog", { name: "Abort Merge" });
+  expect(within(dialog).getByText("Abort merge?")).toBeTruthy();
+});
+
+test("without_an_operation_the_widget_is_not_in_the_toolbar", async () => {
+  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+  render(App);
+  await screen.findByRole("button", { name: "Git Branch: main" });
+
+  expect(screen.queryByRole("button", { name: "Continue Rebase" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Abort Merge" })).toBeNull();
 });

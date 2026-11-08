@@ -21,6 +21,8 @@ export interface BranchOptions {
   showRecent: boolean;
   expanded: string[];
   popupSize: PopupSize | null;
+  // `GitVcsSettings.filterByActionInPopup`: the popup search also looks at the actions.
+  filterByAction: boolean;
   filterOnSelect: boolean;
   navigateOnSelect: boolean;
 }
@@ -31,6 +33,7 @@ export const defaultBranchOptions = (): BranchOptions => ({
   showRecent: true,
   expanded: [],
   popupSize: null,
+  filterByAction: true,
   filterOnSelect: false,
   navigateOnSelect: false,
 });

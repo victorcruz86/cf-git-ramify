@@ -15,11 +15,14 @@
     type ChosenChangelist,
   } from "../log/applying";
   import CommitMessageDialog from "../log/CommitMessageDialog.svelte";
+  import DropConfirmDialog from "../log/DropConfirmDialog.svelte";
   import type { VcsAction } from "../log/contextMenu";
   import {
     editingFlow,
     isEditing,
     type CommitMessageRequest,
+    type DropAnswer,
+    type DropConfirmRequest,
     type InteractiveRebaseRequest,
   } from "../log/editing";
   import InteractiveRebaseDialog from "../rebase/InteractiveRebaseDialog.svelte";
@@ -57,6 +60,7 @@
     | MergingRequest
     | ChangelistRequest
     | CommitMessageRequest
+    | DropConfirmRequest
     | InteractiveRebaseRequest;
 
   interface Props {
@@ -115,6 +119,7 @@
   });
   const actions = branchActions({
     ask,
+    resolveConflicts: () => conflicts.resolveConflicts(),
     rebaseStopped: (outcome, saved) => operation.notifyRebaseStopped(outcome, false, saved),
     rebaseConflicts: (saved) => operation.resolveStoppedRebase(saved),
     restored,
@@ -147,6 +152,9 @@
   // Here… of the log, with the same tracking of a stopped rebase.
   const editing = editingFlow({
     editMessage: (asked) => ask<string>(asked),
+    // Closing the dialog is Cancel.
+    confirmDrop: async (count) =>
+      (await ask<DropAnswer>({ kind: "dropConfirm", count })) ?? { ok: false, doNotAsk: false },
     interactiveRebase: (commits) => ask<RebasePlan>({ kind: "interactiveRebase", commits }),
     chooseChangelist: (lists, initial) =>
       ask<ChosenChangelist>({ kind: "changelist", lists, initial }),
@@ -201,7 +209,7 @@
     // The Merge… and Rebase… dialogs belonged to this one: their HEAD and their branches are no longer
     // valid.
     const kind = open?.request.kind;
-    const own = ["conflicts", "merge", "rebase", "changelist", "commitMessage", "interactiveRebase"];
+    const own = ["conflicts", "merge", "rebase", "changelist", "commitMessage", "dropConfirm", "interactiveRebase"];
     if (kind && own.includes(kind)) {
       answer(null);
     }
@@ -210,6 +218,8 @@
 
 {#if request?.kind === "commitMessage"}
   <CommitMessageDialog {request} onanswer={answer} />
+{:else if request?.kind === "dropConfirm"}
+  <DropConfirmDialog count={request.count} onanswer={answer} />
 {:else if request?.kind === "interactiveRebase"}
   <InteractiveRebaseDialog commits={request.commits} onanswer={answer} />
 {:else if request?.kind === "confirm"}

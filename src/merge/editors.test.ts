@@ -6,6 +6,10 @@ import type { MergeBlock, MergeBlockKind } from "../lib/api";
 import { MergeEditors } from "./editors";
 import { canResolveAutomatically, type MergePane } from "./model";
 
+// What `EditorView.lineWrapping` puts on the content; `view.lineWrapping` only follows it after a
+// measure, which jsdom does not do.
+const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
+
 // jsdom does no layout: CodeMirror measures with this.
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 Element.prototype.scrollIntoView = () => {};
@@ -463,6 +467,45 @@ test("margin_shows_arrow_accept_cross_ignore_and_wand_resolve_with_their_tooltip
   apply.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ctrlKey: true }));
   merge2.expectText("R");
   expect(merge2.resolved(0)).toBe("both");
+});
+
+test("the_three_merge_panes_wrap_together", () => {
+  const merge = doTest("L_b", "A_b", "A_b", [one("modified", [0, 1], "left")]);
+  const panes: MergePane[] = ["left", "base", "right"];
+  const views = panes.map((pane) => merge.view(pane));
+  expect(views.map(wrapped)).toEqual([false, false, false]);
+  expect(merge.parent.querySelector(".cm-lineWrapping")).toBeNull();
+
+  merge.editors.setWrap(true);
+
+  expect(panes.map((pane) => merge.view(pane))).toEqual(views);
+  expect(views.map(wrapped)).toEqual([true, true, true]);
+  // The margin arrows stay on the first row of a wrapped line.
+  const cell = merge.parent
+    .querySelector<HTMLElement>('[data-pane="left"] .rm-operation')
+    ?.closest<HTMLElement>(".cm-gutterElement") as HTMLElement;
+  expect(getComputedStyle(cell).alignItems).toBe("flex-start");
+
+  merge.editors.setWrap(false);
+
+  expect(views.map(wrapped)).toEqual([false, false, false]);
+});
+
+test("the_merge_panes_open_wrapped_when_asked", () => {
+  const parent = document.body.appendChild(document.createElement("div"));
+  const editors = new MergeEditors(
+    parent,
+    { left: "a", base: "a", right: "a", blocks: [], titles: ["Yours", "Result", "Theirs"], wrap: true },
+    { onchange: vi.fn(), onallprocessed: vi.fn() },
+  );
+  try {
+    const views = [...parent.querySelectorAll<HTMLElement>(".cm-editor")].map(
+      (dom) => EditorView.findFromDOM(dom) as EditorView,
+    );
+    expect(views.map(wrapped)).toEqual([true, true, true]);
+  } finally {
+    editors.destroy();
+  }
 });
 
 test("the_dividers_join_each_block_of_a_side_with_the_center", () => {

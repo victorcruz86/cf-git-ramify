@@ -114,7 +114,22 @@ describe("checkout", () => {
       title: "Local changes were restored with conflicts",
       sticky: true,
     });
-    expect(last().body).toContain(STASH.message);
+  });
+
+  test("unstash_with_conflicts_says_241s_text_and_offers_resolve", async () => {
+    const checkout = vi.fn().mockResolvedValue({ kind: "conflicts", stash: STASH, failure: null });
+    const resolveConflicts = vi.fn(async () => "resolved" as const);
+    await branchActions(ui({}, { resolveConflicts }), api({ checkout })).run({
+      kind: "checkout",
+      target: "other",
+    });
+
+    expect(last().body).toBe(
+      "Your uncommitted changes were saved to stash.\nUnstash is not complete, you have unresolved merges in your working tree\nResolve conflicts and drop the stash.",
+    );
+    expect(last().actions?.map(({ label }) => label)).toEqual(["Resolve conflicts…"]);
+    last().actions?.[0].run();
+    expect(resolveConflicts).toHaveBeenCalledTimes(1);
   });
 
   test("conflicts_with_the_failed_operation_report_both", async () => {
@@ -161,7 +176,7 @@ describe("checkout", () => {
     const actions = branchActions(ui(), api({ checkout }));
 
     await actions.run({ kind: "checkout", target: "other" });
-    expect(last()).toMatchObject({ kind: "error", title: "Couldn't checkout other", body: "git failed" });
+    expect(last()).toMatchObject({ kind: "error", title: "Could not checkout other", body: "git failed" });
 
     dismiss(last().id);
     await actions.run({ kind: "checkout", target: "other" });
@@ -630,7 +645,7 @@ describe("rename and tags", () => {
     const dialogs = ui({ tag: { name: "v1", target: HASH, message: "", force: false } });
     await branchActions(dialogs, backend).run({ kind: "newTag", hash: HASH });
 
-    expect(last()).toMatchObject({ title: "Couldn't create tag", body: "already exists" });
+    expect(last()).toMatchObject({ title: "Could not create tag", body: "already exists" });
   });
 });
 

@@ -175,6 +175,7 @@ function rebaseFlags(params: RebaseParams): RebaseFlag[] {
     ["keepEmpty", params.keepEmpty],
     ["root", params.root],
     ["interactive", params.interactive],
+    ["updateRefs", params.updateRefs],
   ];
   return on.filter(([, enabled]) => enabled).map(([flag]) => flag);
 }

@@ -13,6 +13,7 @@ import { dismiss, notifications } from "../lib/notifications";
 import { isProtectedBranch, silentTarget } from "./force";
 import ForcePushDialog from "./ForcePushDialog.svelte";
 import { pushFlow, type PushApi, type PushUi } from "./model";
+import { fetching, updateFlow, type UpdateApi } from "../update/flow";
 import PushRejectedDialog from "./PushRejectedDialog.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -316,7 +317,7 @@ test("remember_saves_method_and_autoupdate", async () => {
   expect(backend.updateAndPush).toHaveBeenCalledWith(
     expect.objectContaining({ force: null }),
     "rebase",
-    { rebaseMerges: true },
+    { rebaseMerges: "feature" },
     1,
   );
 });
@@ -417,7 +418,7 @@ test("with_another_update_running_it_does_not_update", async () => {
 });
 
 test("rebasing_merge_commits_asks_and_the_count_continues", async () => {
-  const stop: UpdateResult = { ...UPDATED, outcome: { kind: "rebasingMergeCommits" } };
+  const stop: UpdateResult = { ...UPDATED, outcome: { kind: "rebasingMergeCommits", reason: { branch: "feature" } } };
   const updateAndPush = vi
     .fn(async (): Promise<UpdatedPush> => ({ push: RESULT, update: UPDATED, attempts: 4 }))
     .mockResolvedValueOnce({ push: rejected, update: stop, attempts: 3 });
@@ -434,8 +435,34 @@ test("rebasing_merge_commits_asks_and_the_count_continues", async () => {
   expect(updateAndPush).toHaveBeenLastCalledWith(expect.anything(), "merge", { fetched: true }, 3);
 });
 
+// The answer is for the branch that was asked about, as in `src/update/flow.ts`.
+test("rebase_in_rebasing_merge_commits_continues_for_the_branch_asked_about", async () => {
+  const stop: UpdateResult = {
+    ...UPDATED,
+    outcome: { kind: "rebasingMergeCommits", reason: { branch: "feature" } },
+  };
+  const updateAndPush = vi
+    .fn(async (): Promise<UpdatedPush> => ({ push: RESULT, update: UPDATED, attempts: 2 }))
+    .mockResolvedValueOnce({ push: rejected, update: stop, attempts: 1 });
+  const backend = api({
+    push: vi.fn(async () => rejected),
+    updateAndPush,
+    settings: vi.fn(async () => ({ ...SETTINGS, pushAutoUpdate: true, updateMethod: "rebase" as const })),
+  });
+  const dialogs = ui({ push: { ...FORCE_CHOICE, force: false }, rebaseMerges: "rebase" });
+
+  await pushFlow(dialogs, backend).push();
+
+  expect(updateAndPush).toHaveBeenLastCalledWith(
+    expect.anything(),
+    "rebase",
+    { fetched: true, rebaseMerges: "feature" },
+    1,
+  );
+});
+
 test("cancelling_rebasing_merge_commits_leaves_the_rejection", async () => {
-  const stop: UpdateResult = { ...UPDATED, outcome: { kind: "rebasingMergeCommits" } };
+  const stop: UpdateResult = { ...UPDATED, outcome: { kind: "rebasingMergeCommits", reason: { branch: "feature" } } };
   const backend = api({
     push: vi.fn(async () => rejected),
     updateAndPush: vi.fn(async () => ({ push: rejected, update: stop, attempts: 1 })),
@@ -446,6 +473,77 @@ test("cancelling_rebasing_merge_commits_leaves_the_rejection", async () => {
 
   expect(backend.updateAndPush).toHaveBeenCalledTimes(1);
   expect(shown()[0]).toMatchObject({ body: "Push was rejected, and update was canceled" });
+});
+
+// `GitRebaseUpdater` asks in the Update of a rejected push too.
+const publishedStop: UpdateResult = {
+  ...UPDATED,
+  outcome: {
+    kind: "rebasingPublishedCommits",
+    reason: { branch: "feature", protected: "origin/main" },
+  },
+};
+
+test("rebasing_published_commits_asks_and_rebase_anyway_continues", async () => {
+  const updateAndPush = vi
+    .fn(async (): Promise<UpdatedPush> => ({ push: RESULT, update: UPDATED, attempts: 4 }))
+    .mockResolvedValueOnce({ push: rejected, update: publishedStop, attempts: 3 });
+  const backend = api({
+    push: vi.fn(async () => rejected),
+    updateAndPush,
+    settings: vi.fn(async () => ({ ...SETTINGS, pushAutoUpdate: true, updateMethod: "rebase" as const })),
+  });
+  const dialogs = ui({ push: { ...FORCE_CHOICE, force: false }, publishedCommits: true });
+
+  await pushFlow(dialogs, backend).push();
+
+  expect(dialogs.asked.map(({ kind }) => kind)).toEqual(["push", "publishedCommits"]);
+  expect(updateAndPush).toHaveBeenLastCalledWith(
+    expect.anything(),
+    "rebase",
+    { fetched: true, publishedConfirmed: "feature" },
+    3,
+  );
+});
+
+test("cancelling_rebasing_published_commits_leaves_the_rejection", async () => {
+  const backend = api({
+    push: vi.fn(async () => rejected),
+    updateAndPush: vi.fn(async () => ({ push: rejected, update: publishedStop, attempts: 1 })),
+    settings: vi.fn(async () => ({ ...SETTINGS, pushAutoUpdate: true, updateMethod: "rebase" as const })),
+  });
+  const dialogs = ui({ push: { ...FORCE_CHOICE, force: false }, publishedCommits: false });
+
+  await pushFlow(dialogs, backend).push();
+
+  expect(backend.updateAndPush).toHaveBeenCalledTimes(1);
+  expect(shown()[0]).toMatchObject({ body: "Push was rejected, and update was canceled" });
+});
+
+// Only the Rust call fetches, as in Update: Fetch is enabled again while a question waits on the user.
+test("the_fetching_flag_is_down_while_rebasing_published_commit_is_open", async () => {
+  const seen: Record<string, boolean> = {};
+  const updateAndPush = vi.fn(async (): Promise<UpdatedPush> => {
+    seen.updating = get(fetching);
+    return { push: rejected, update: publishedStop, attempts: 1 };
+  });
+  const backend = api({
+    push: vi.fn(async () => rejected),
+    updateAndPush,
+    settings: vi.fn(async () => ({ ...SETTINGS, pushAutoUpdate: true, updateMethod: "rebase" as const })),
+  });
+  const dialogs = ui({ push: { ...FORCE_CHOICE, force: false }, publishedCommits: false });
+  const answer = dialogs.ask;
+  dialogs.ask = async <T,>(request: { kind: string }) => {
+    if (request.kind === "publishedCommits") seen.asking = get(fetching);
+    return answer<T>(request as never);
+  };
+  dialogs.updates = updateFlow({ ask: vi.fn() as never }, {} as UpdateApi).forPush;
+
+  await pushFlow(dialogs, backend).push();
+
+  expect(seen).toEqual({ updating: true, asking: false });
+  expect(get(fetching)).toBe(false);
 });
 
 test("with_autoupdate_switching_repository_while_reading_the_settings_does_not_update", async () => {
@@ -510,7 +608,7 @@ test("a_push_cancelled_after_updating_offers_what_was_received", async () => {
 test("what_was_saved_before_asking_about_the_merges_is_reported", async () => {
   const stop: UpdateResult = {
     ...UPDATED,
-    outcome: { kind: "rebasingMergeCommits" },
+    outcome: { kind: "rebasingMergeCommits", reason: { branch: "feature" } },
     saved: { sha: "abc", message: "saved" },
     restore: { kind: "restoredWithoutIndex" },
   };

@@ -73,8 +73,8 @@
       title: jumpFailure(target, found),
       actions: hidden
         ? [
-            { label: "View and Reset Filters", run: () => jumpAfter(onresetfilters, target) },
-            { label: "View in New Tab", run: () => jumpAfter(onnewtab, target) },
+            { label: "View and reset filters", run: () => jumpAfter(onresetfilters, target) },
+            { label: "View in new tab", run: () => jumpAfter(onnewtab, target) },
           ]
         : undefined,
     });

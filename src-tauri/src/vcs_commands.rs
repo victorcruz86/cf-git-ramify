@@ -32,6 +32,8 @@ use crate::rebase::{self, RebaseParams};
 use crate::remotes::{self, Cloned, InitOutcome, Remote};
 use crate::rewrite::{self, MenuChecks, Rewritten, Undone};
 use crate::settings::{self, RepoSettings, UpdateMethod};
+use crate::snapshots::SnapshotId;
+use crate::staging;
 use crate::task::{TaskId, TaskKind};
 use crate::update::{self, Aborted, UpdateOptions, UpdateResult};
 use crate::worktree_diff::{self, ThreeSides, Written};
@@ -39,6 +41,7 @@ use crate::worktree_diff::{self, ThreeSides, Written};
 const BRANCH_SYNC_EVENT: &str = "branch-sync-changed";
 // Per remote. One that does not answer must not leave anyone waiting: ssh takes minutes to give up.
 const CHECK_LIMIT: Duration = Duration::from_secs(60);
+const ADDING_FILES: &str = "Adding Files to VCS…";
 const ADDING_REMOTE: &str = "Adding Remote…";
 const CHANGING_REMOTE: &str = "Changing Remote…";
 const COMMITTING: &str = "Committing…";
@@ -151,10 +154,11 @@ pub async fn branch_rebase_onto(
     })
 }
 
-// `Merge 'x' into 'y'` of the branches popup. With `smart`, the Smart Merge of `Git Merge Problem`.
+// `Merge 'x' into 'y'` of the branches popup; `kind` is `local`, `remote` or `tag`. With `smart`, the Smart Merge of `Git Merge Problem`.
 #[tauri::command]
 pub async fn branch_merge(
     branch: String,
+    kind: String,
     smart: bool,
     expected_head: String,
     app: AppHandle,
@@ -164,7 +168,7 @@ pub async fn branch_merge(
     // `branch.merging.process`.
     let title = format!("Merging {branch}…");
     start(&app, &state, TaskKind::Write, title, move |repo| {
-        merge::merge_into(repo, &branch, smart, &expected_head)
+        merge::merge_into(repo, &branch, &kind, smart, &expected_head)
     })
 }
 
@@ -482,6 +486,31 @@ pub async fn apply_paths(
         move |repo| -> Result<PathsResult, GitError> {
             apply_commits::apply_selection(repo, &expected_head, &selection, reverse)
         },
+    )
+}
+
+// `ChangesView.AddUnversioned` with changelists. `repo` is the repository the interface saw: the files are
+// not added to another one opened in the meantime. The task's result is the snapshot of what was only in
+// the stage, if there was any.
+#[tauri::command]
+pub async fn changes_add(
+    repo: String,
+    paths: Vec<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    if current_repo(&state)? != Path::new(&repo) {
+        return Err(failed(
+            "Another repository was opened before the files were added".to_string(),
+        ));
+    }
+    start(
+        &app,
+        &state,
+        TaskKind::Write,
+        ADDING_FILES.to_string(),
+        move |repo| -> Result<Option<SnapshotId>, GitError> { staging::add_to_vcs(repo, &paths) },
     )
 }
 
@@ -905,6 +934,10 @@ pub async fn branch_restore(
     })
 }
 
+fn remote_not_found(remote_branch: &str) -> String {
+    format!("Could not find remote by name: {remote_branch}")
+}
+
 // It talks to a remote, without touching the index: a commit does not have to wait.
 #[tauri::command]
 pub async fn branch_delete_remote(
@@ -918,7 +951,7 @@ pub async fn branch_delete_remote(
     let name = remote_branch.clone();
     let split = blocking_api(move || Ok(branches::split_remote(&path, &name)?)).await?;
     let (remote, branch) =
-        split.ok_or_else(|| failed(format!("Couldn't find remote by name: {remote_branch}")))?;
+        split.ok_or_else(|| failed(remote_not_found(&remote_branch)))?;
     let title = format!("Deleting {remote_branch}");
     let kind = TaskKind::Remote(remote.clone());
     start(
@@ -1590,6 +1623,13 @@ pub fn protected_branches_set(
     Ok(push::invalid_patterns(&patterns))
 }
 
+// The error of the first pattern of the field that does not compile, while it is typed. It reads
+// and writes nothing.
+#[tauri::command]
+pub fn protected_patterns_check(text: String) -> Option<String> {
+    push::first_pattern_error(&text)
+}
+
 #[tauri::command]
 pub fn force_push_target_remember(
     remote: String,
@@ -1670,6 +1710,11 @@ pub fn start_remote_check(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_missing_remote_says_could_not_find_it() {
+        assert_eq!(super::remote_not_found("origin/main"), "Could not find remote by name: origin/main");
+    }
+
     // Reads change nothing: there is nothing to save beforehand.
     const READS: [&str; 30] = [
         "merge_message",
@@ -1719,7 +1764,7 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('(').unwrap()])
             .collect();
-        assert_eq!(commands.len(), 78, "{commands:?}");
+        assert_eq!(commands.len(), 79, "{commands:?}");
         let unsaved = |name: &&&str| {
             !READS.contains(name) && !ELSEWHERE.contains(name) && !WHILE_SAVING.contains(name)
         };

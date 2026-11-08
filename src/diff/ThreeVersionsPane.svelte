@@ -323,6 +323,7 @@
     sides: ThreeSides;
     blocks: MergeBlock[];
     synced: () => boolean;
+    wrap: boolean;
     onedit: () => void;
     onaction: (action: VersionAction) => void;
   }
@@ -365,6 +366,7 @@
         mapLine: (from, to, line) => this.mapLine(from, to, line),
         bands: (side) => this.bands(side),
         synced: config.synced,
+        wrap: config.wrap,
       });
       this.saved = {
         base: this.panes.view("base").state.doc,
@@ -544,6 +546,10 @@
       return true;
     }
 
+    setWrap(on: boolean) {
+      this.panes.setWrap(on);
+    }
+
     destroy() {
       this.panes.destroy();
     }
@@ -563,8 +569,9 @@
     type ApiError,
   } from "../lib/api";
   import { errorText } from "../lib/errors";
+  import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import type { NoticeKind } from "./FilePane.svelte";
-  import type { DiffOptions } from "./options";
+  import { inGutter, softWrapItem, type DiffOptions } from "./options";
 
   const REDIFF_DELAY_MS = 150;
 
@@ -577,9 +584,11 @@
     onnotice: (kind: NoticeKind, text: string, action?: { label: string; run: () => void }) => void;
     // One of the three versions is missing: they are compared two at a time, like ThreeSidesProducer.
     onfallback: () => void;
+    // `Soft-Wrap` of the gutter menu: the diff window stores it.
+    onwrap: (on: boolean) => void;
   }
 
-  let { path, oldPath, version, options, onnotice, onfallback }: Props = $props();
+  let { path, oldPath, version, options, onnotice, onfallback, onwrap }: Props = $props();
 
   // The last thing read or written on each side: their hashes are what is expected when writing.
   let sides: ThreeSides | null = null;
@@ -589,6 +598,7 @@
   // `gone`: the three versions no longer exist; what was typed stays until the user discards it.
   let conflict = $state<"staged" | "local" | "gone" | null>(null);
   let host = $state<HTMLDivElement>();
+  let menu = $state.raw<{ x: number; y: number; items: MenuItem[] } | null>(null);
   let editors: VersionEditors | null = null;
   let request = 0;
   let rediffs = 0;
@@ -633,6 +643,7 @@
       sides: fresh,
       blocks,
       synced: () => options.sync,
+      wrap: options.wrap,
       onedit: edited,
       onaction: run,
     });
@@ -813,6 +824,19 @@
     untrack(() => editors && rediff());
   });
 
+  // The three panes wrap together, without being rebuilt.
+  $effect(() => {
+    const wrap = options.wrap;
+    untrack(() => editors?.setWrap(wrap));
+  });
+
+  // The gutter popup of SetEditorSettingsActionGroup. The text has no menu here.
+  function contextmenu(event: MouseEvent) {
+    if (!editors || !inGutter(event)) return;
+    event.preventDefault();
+    menu = { x: event.clientX, y: event.clientY, items: [softWrapItem(options.wrap, onwrap)] };
+  }
+
   onDestroy(() => {
     clearTimeout(timer);
     editors?.destroy();
@@ -839,8 +863,13 @@
     <p class="message" role="alert">{failure}</p>
   {/if}
 
-  <div class="host" bind:this={host}></div>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="host" bind:this={host} oncontextmenu={contextmenu}></div>
 </div>
+
+{#if menu}
+  <Menu x={menu.x} y={menu.y} label="Diff" items={menu.items} onclose={() => (menu = null)} />
+{/if}
 
 <style>
   .pane {

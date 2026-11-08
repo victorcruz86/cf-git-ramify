@@ -2,6 +2,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { language, type Language } from "@codemirror/language";
 import { presentableDiff, type Change } from "@codemirror/merge";
 import {
+  Compartment,
   EditorSelection,
   EditorState,
   Facet,
@@ -37,7 +38,8 @@ import { marginFor, type MarginCheck, type Side } from "./gutter";
 import checkOff from "./icons/gutterCheckBox.svg?raw";
 import checkOn from "./icons/gutterCheckBoxSelected.svg?raw";
 import { languageFor, lineSeparator, separatorExtension } from "./language";
-import { diffHighlight, diffTheme, LINE_HEIGHT } from "./theme";
+import { alignSpacers, boundariesOf, withoutSpacers } from "./spacers";
+import { diffHighlight, diffTheme, LINE_HEIGHT, numberColumn } from "./theme";
 
 export type HighlightMode = "words" | "lines" | "none";
 
@@ -46,6 +48,8 @@ export interface EditorOptions {
   collapse: boolean;
   align: boolean;
   sync: boolean;
+  // `Soft-Wrap`: each place remembers its own (`options.ts`).
+  wrap: boolean;
 }
 
 export interface DiffData {
@@ -75,6 +79,14 @@ const CONTEXT_LINES = 4;
 export const WORD_DIFF_MAX_CHARS = 40_000;
 const OLD_LINE_SYNTAX_MAX_CHARS = 1_000_000;
 
+// A spacer of the aligned view, before the text of `line` (or after the end of the document).
+// `blank` ones level unchanged text, before a hunk or at the end, and are not painted.
+interface SpacerAt {
+  line: number;
+  height: number;
+  blank: boolean;
+}
+
 interface Model {
   side: Side;
   unified: boolean;
@@ -89,9 +101,13 @@ interface Model {
   other: Text;
   // The document changed and the hunks of what was typed have not arrived yet.
   stale: boolean;
+  // Measured with soft wrap on; null is one spacer per hunk of the lines the other side has more.
+  spacers: SpacerAt[] | null;
 }
 
 const updateModel = StateEffect.define<Partial<Model>>();
+// Only the measuring pass sends it, so it can tell its own transactions apart.
+const measuredSpacers = StateEffect.define<SpacerAt[] | null>();
 const handlersFacet = Facet.define<Handlers, Handlers>({ combine: (values) => values[0] });
 
 const modelField = StateField.define<Model>({
@@ -102,7 +118,14 @@ const modelField = StateField.define<Model>({
     let next = model;
     if (transaction.docChanged && !model.stale) next = { ...next, stale: true };
     for (const effect of transaction.effects) {
-      if (effect.is(updateModel)) next = { ...next, ...effect.value };
+      if (effect.is(updateModel)) {
+        // Measured spacers belong to the hunks and the alignment they were measured for.
+        const { hunks, align } = effect.value;
+        const rehunked = hunks !== undefined && hunks !== next.hunks;
+        const realigned = align !== undefined && align !== next.align;
+        next = { ...next, ...(rehunked || realigned ? { spacers: null } : {}), ...effect.value };
+      }
+      if (effect.is(measuredSpacers)) next = { ...next, spacers: effect.value };
     }
     return next;
   },
@@ -146,22 +169,62 @@ function wordKind(change: Change): ChangeType {
   return change.fromB === change.toB ? "deleted" : "modified";
 }
 
+// Heights closer than this are the same: what is measured comes in fractions of a pixel.
+const SPACER_TOLERANCE = 1;
+
 class SpacerWidget extends WidgetType {
-  constructor(readonly lines: number) {
+  constructor(
+    readonly height: number,
+    readonly blank: boolean,
+  ) {
     super();
   }
+  // Exact, as MergeView's Spacer: an equal widget keeps the old DOM, which must then have the
+  // height the model counts. The tolerance belongs to `sameSpacers`, before anything is sent.
   eq(other: SpacerWidget) {
-    return other.lines === this.lines;
+    return other.blank === this.blank && other.height === this.height;
   }
   get estimatedHeight() {
-    return this.lines * LINE_HEIGHT;
+    return this.height;
   }
   toDOM() {
     const dom = document.createElement("div");
-    dom.className = "rm-spacer";
-    dom.style.height = `${this.lines * LINE_HEIGHT}px`;
+    dom.className = this.blank ? "rm-spacer rm-spacer-blank" : "rm-spacer";
+    dom.style.height = `${this.height}px`;
     return dom;
   }
+  // Same class only: a measured height resizes the spacer instead of recreating it.
+  updateDOM(dom: HTMLElement, _view: EditorView, from: this) {
+    if (from.blank !== this.blank) return false;
+    dom.style.height = `${this.height}px`;
+    return true;
+  }
+}
+
+// Without measuring, equal lines are taken as equally tall: the shorter side of each hunk gets the
+// lines it lacks, after the hunk.
+function countedSpacers(model: Model): SpacerAt[] {
+  return model.hunks.flatMap((hunk) => {
+    const lines = sideLines(hunk, model.side);
+    const other = model.side === "old" ? hunk.newLines : hunk.oldLines;
+    if (other <= lines) return [];
+    const line = sideStart(hunk, model.side) + lines;
+    return [{ line, height: (other - lines) * LINE_HEIGHT, blank: false }];
+  });
+}
+
+const shownSpacers = (model: Model): SpacerAt[] => model.spacers ?? countedSpacers(model);
+
+function sameSpacers(before: readonly SpacerAt[], after: readonly SpacerAt[]): boolean {
+  return (
+    before.length === after.length &&
+    before.every(
+      (spacer, index) =>
+        spacer.line === after[index].line &&
+        spacer.blank === after[index].blank &&
+        Math.abs(spacer.height - after[index].height) <= SPACER_TOLERANCE,
+    )
+  );
 }
 
 class FoldWidget extends WidgetType {
@@ -338,18 +401,21 @@ function buildBlocks(state: EditorState, model: Model, onexpand: (run: FoldRun) 
       continue;
     }
     const other = side === "old" ? hunk.newLines : hunk.oldLines;
-    if (model.align && other > lines) {
-      const line = start + lines;
-      const atEnd = line >= doc.lines;
+    if (!(model.align && other > lines) && lines === 0 && model.highlight !== "none") {
+      ranges.push(Decoration.line({ class: `rm-gap-${type}` }).range(lineFrom(doc, start)));
+    }
+  }
+  if (model.align && !model.unified) {
+    // In order: spacers of the same line stack as their boundaries come.
+    for (const spacer of shownSpacers(model)) {
+      const atEnd = spacer.line >= doc.lines;
       ranges.push(
         Decoration.widget({
-          widget: new SpacerWidget(other - lines),
+          widget: new SpacerWidget(spacer.height, spacer.blank),
           block: true,
           side: atEnd ? 1 : -1,
-        }).range(lineFrom(doc, line)),
+        }).range(lineFrom(doc, spacer.line)),
       );
-    } else if (lines === 0 && model.highlight !== "none") {
-      ranges.push(Decoration.line({ class: `rm-gap-${type}` }).range(lineFrom(doc, start)));
     }
   }
   for (const run of model.folds) {
@@ -376,7 +442,8 @@ function blocksChanged(before: Model, after: Model): boolean {
     before.highlight !== after.highlight ||
     before.align !== after.align ||
     before.margin !== after.margin ||
-    before.selectable !== after.selectable
+    before.selectable !== after.selectable ||
+    before.spacers !== after.spacers
   );
 }
 
@@ -596,9 +663,34 @@ const oldNumbers = gutter({
   initialSpacer: () => new NumberMarker(9999),
 });
 
-function commonExtensions(handlers: Handlers, onexpand: (run: FoldRun) => void): Extension {
+// Soft wrap, in a compartment so that it changes without rebuilding the editors. Each state keeps
+// its own value: one compartment serves every editor.
+export const wrapping = new Compartment();
+
+export const softWrap = (on: boolean): Extension => (on ? EditorView.lineWrapping : []);
+
+// Equal number columns in the aligned diff, so that equal lines wrap at the same width.
+const numberWidth = new Compartment();
+
+// Every editor of a viewer wraps together, as SetEditorSettingsActionGroup applies the toggle to all.
+export function setWrap(views: readonly EditorView[], on: boolean) {
+  for (const view of views) {
+    const wraps = wrapping.get(view.state) === EditorView.lineWrapping;
+    if (wraps !== on) view.dispatch({ effects: wrapping.reconfigure(softWrap(on)) });
+  }
+}
+
+function commonExtensions(
+  handlers: Handlers,
+  onexpand: (run: FoldRun) => void,
+  wrap: boolean,
+): Extension {
   return [
+    // Its rule wins by specificity: one more class, `.cm-gutters`. Ahead of the theme, it also
+    // comes later in the sheet, which jsdom needs because it ignores specificity.
+    numberWidth.of([]),
     diffTheme,
+    wrapping.of(softWrap(wrap)),
     handlersFacet.of(handlers),
     expandFacet.of(onexpand),
     lineNumbers(),
@@ -654,6 +746,8 @@ export class DiffEditors {
   private options: EditorOptions;
   private readonly expanded = new Set<number>();
   private readonly cleanups: (() => void)[] = [];
+  private frame = 0;
+  private numberDigits = 0;
 
   constructor(
     parent: HTMLElement,
@@ -673,7 +767,11 @@ export class DiffEditors {
     this.dom = parent.appendChild(document.createElement("div"));
     this.dom.className = `rm-editors${config.embedded ? " rm-embedded" : ""}`;
     const onexpand = (run: FoldRun) => this.expand(run);
-    const common = [commonExtensions(config.handlers, onexpand), this.geometry];
+    const common = [
+      commonExtensions(config.handlers, onexpand, this.options.wrap),
+      this.geometry,
+      this.remeasure,
+    ];
     const oldDoc = documentOf(config.data.oldText);
     const newDoc = documentOf(config.data.newText);
     const newText = config.draft ?? config.data.newText;
@@ -692,6 +790,7 @@ export class DiffEditors {
       folds: config.draft === null ? folds : [],
       other,
       stale: false,
+      spacers: null,
     });
     const newHost = document.createElement("div");
     newHost.className = "rm-editor";
@@ -750,14 +849,81 @@ export class DiffEditors {
       );
     }
     this.drawDivider();
+    this.equalNumbers();
+    this.scheduleSpacers();
   }
 
   private readonly geometry = EditorView.updateListener.of((update) => {
     if (update.geometryChanged) this.drawDivider();
   });
 
+  // Heights change when lines wrap anew or come into view and are measured. The spacers' own
+  // transactions change heights too, but measuring text only, they would change nothing.
+  private readonly remeasure = EditorView.updateListener.of((update) => {
+    if (!update.heightChanged && !update.viewportChanged) return;
+    const own = update.transactions.some((transaction) =>
+      transaction.effects.some((effect) => effect.is(measuredSpacers)),
+    );
+    if (!own) this.scheduleSpacers();
+  });
+
   private alignment(): boolean {
     return this.config.embedded || this.options.align;
+  }
+
+  // With soft wrap off, equal lines are equally tall and the spacers are counted, not measured.
+  private measures(): boolean {
+    return this.oldView !== null && this.alignment() && this.options.wrap;
+  }
+
+  // One pass for both editors per frame, never from inside an update.
+  private scheduleSpacers() {
+    if (this.frame || !this.measures()) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      this.measureSpacers();
+    });
+  }
+
+  // AlignedDiffModel.updateInlayHeights with CodeMirror's heights: the tops of each boundary,
+  // without the spacers each side already has, give the spacers that level them.
+  private measureSpacers() {
+    const left = this.oldView;
+    const right = this.newView;
+    if (!left || !this.measures() || right.state.field(modelField).stale) return;
+    const boundaries = boundariesOf(this.data.hunks, left.state.doc.lines, right.state.doc.lines);
+    const spacers = alignSpacers(
+      boundaries,
+      textTops(left, boundaries.map((boundary) => boundary.left)),
+      textTops(right, boundaries.map((boundary) => boundary.right)),
+      SPACER_TOLERANCE,
+    );
+    for (const [view, side] of [
+      [left, "left"],
+      [right, "right"],
+    ] as const) {
+      // Even boundaries are the hunks' starts and the end: there the spacer levels unchanged text.
+      const next = spacers.flatMap((spacer, index) =>
+        spacer?.side === side
+          ? [{ line: spacer.line, height: spacer.height, blank: index % 2 === 0 }]
+          : [],
+      );
+      if (!sameSpacers(shownSpacers(view.state.field(modelField)), next)) {
+        view.dispatch({ effects: measuredSpacers.of(next) });
+      }
+    }
+  }
+
+  private equalNumbers() {
+    const left = this.oldView;
+    const lines = left ? Math.max(left.state.doc.lines, this.newView.state.doc.lines) : 0;
+    const digits = this.measures() ? String(lines).length : 0;
+    if (digits === this.numberDigits) return;
+    this.numberDigits = digits;
+    const extension = digits ? numberColumn(digits) : [];
+    for (const view of this.views()) {
+      view.dispatch({ effects: numberWidth.reconfigure(extension) });
+    }
   }
 
   private views(): EditorView[] {
@@ -769,6 +935,7 @@ export class DiffEditors {
       const { side } = view.state.field(modelField);
       view.dispatch({ effects: updateModel.of(change(side)) });
     }
+    this.scheduleSpacers();
   }
 
   // Aligned, the two columns have the same height. Unaligned, each line goes with the one that
@@ -863,13 +1030,17 @@ export class DiffEditors {
     const clean = !this.dirty;
     this.data = { ...this.data, hunks };
     this.push(() => ({ hunks, stale: false, margin: clean, folds: [] }));
+    this.equalNumbers();
     this.drawDivider();
   }
 
   setOptions(options: EditorOptions) {
     if (options === this.options) return;
     this.options = options;
-    this.push(() => ({ highlight: options.highlight, align: this.alignment() }));
+    setWrap(this.views(), options.wrap);
+    const counted = this.measures() ? {} : { spacers: null };
+    this.push(() => ({ highlight: options.highlight, align: this.alignment(), ...counted }));
+    this.equalNumbers();
     this.refreshFolds();
     this.updateDivider();
   }
@@ -912,6 +1083,8 @@ export class DiffEditors {
         }),
       });
     }
+    this.equalNumbers();
+    this.scheduleSpacers();
     this.drawDivider();
   }
 
@@ -980,6 +1153,7 @@ export class DiffEditors {
   }
 
   destroy() {
+    if (this.frame) cancelAnimationFrame(this.frame);
     this.cleanups.forEach((cleanup) => cleanup());
     this.oldView?.destroy();
     this.newView.destroy();
@@ -989,6 +1163,15 @@ export class DiffEditors {
 
 export function lineTop(view: EditorView, line: number): number {
   return view.lineBlockAt(lineFrom(view.state.doc, line)).top;
+}
+
+// The top of each line without the view's spacers; past the last line, the end of the document.
+function textTops(view: EditorView, lines: number[]): number[] {
+  const doc = view.state.doc;
+  const tops = lines.map((line) =>
+    line >= doc.lines ? view.lineBlockAt(doc.length).bottom : lineTop(view, line),
+  );
+  return withoutSpacers(lines, tops, shownSpacers(view.state.field(modelField)), doc.lines);
 }
 
 // Each editor reports when it scrolls; `driving` says whether it is the one that moves the others:

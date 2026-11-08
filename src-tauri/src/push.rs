@@ -336,8 +336,32 @@ pub fn target(path: &Path, branch: Option<&str>) -> Result<PushTarget, GitError>
 // `GitSharedSettings.isBranchProtected`. Java compares the whole string, also in each alternative:
 // hence the group. A pattern valid only inside the group, like `a)|(b`, is not valid.
 fn protection(pattern: &str) -> Option<Regex> {
-    Regex::new(pattern).ok()?;
-    Regex::new(&format!("^(?:{pattern})$")).ok()
+    compile(pattern).ok()
+}
+
+fn compile(pattern: &str) -> Result<Regex, regex::Error> {
+    Regex::new(pattern)?;
+    Regex::new(&format!("^(?:{pattern})$"))
+}
+
+// While the `;`-separated field is typed: the first pattern that does not compile, with the cause the
+// `regex` crate gives (the last `error:` line of its message).
+pub fn first_pattern_error(text: &str) -> Option<String> {
+    text.split(';')
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .find_map(|pattern| {
+            let error = compile(pattern).err()?;
+            let message = error.to_string();
+            let cause = message
+                .lines()
+                .rev()
+                .find_map(|line| line.strip_prefix("error: "))
+                .unwrap_or(&message);
+            Some(format!(
+                "Skipped invalid protected branch pattern '{pattern}': {cause}"
+            ))
+        })
 }
 
 // `branch`: the name without the remote.
@@ -1550,6 +1574,20 @@ mod tests {
     }
 
     #[test]
+    fn a_bad_pattern_reports_the_first_error() {
+        assert_eq!(
+            first_pattern_error("main;(").as_deref(),
+            Some("Skipped invalid protected branch pattern '(': unclosed group")
+        );
+        assert_eq!(
+            first_pattern_error(" main ; ; a) ; ( ").as_deref(),
+            Some("Skipped invalid protected branch pattern 'a)': unopened group")
+        );
+        assert_eq!(first_pattern_error("main; release.*;"), None);
+        assert_eq!(first_pattern_error(""), None);
+    }
+
+    #[test]
     fn protected_branch_rejects_force_in_the_core() {
         let harness = Harness::new();
         let remote = harness.remote_hash("refs/heads/main");
@@ -2004,7 +2042,13 @@ mod tests {
         for outcome in [
             Outcome::Conflicts,
             Outcome::Cancelled,
-            Outcome::RebasingMergeCommits,
+            Outcome::RebasingMergeCommits {
+                branch: "main".to_string(),
+            },
+            Outcome::RebasingPublishedCommits {
+                branch: "main".to_string(),
+                protected: "origin/main".to_string(),
+            },
             Outcome::Error("bad".to_string()),
             Outcome::NotReady("bad".to_string()),
         ] {
