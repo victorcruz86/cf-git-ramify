@@ -97,7 +97,7 @@ fn rebased_branch(git_dir: &Path) -> Option<String> {
     })
 }
 
-fn head_of(repo: &Path) -> Result<String, GitError> {
+pub(crate) fn head_of(repo: &Path) -> Result<String, GitError> {
     match git::run(repo, &["rev-parse", "-q", "--verify", HEAD]) {
         Ok(output) => Ok(String::from_utf8_lossy(&output).trim().to_string()),
         Err(GitError::Failed { code: Some(1), .. }) => Ok(String::new()),

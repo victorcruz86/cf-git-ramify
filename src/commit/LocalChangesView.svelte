@@ -51,12 +51,21 @@
     panel?.focusTree();
   }
 
+  export function rollback() {
+    panel?.requestRollback();
+  }
+
   // After a commit of this list from the dialog: if it is not the active one and was left empty, its
   // removal is offered.
   export async function offerToRemoveEmpty(list: ChangeList) {
     if (list.id === lists?.active) return;
     await panel?.refresh();
     panel?.offerToRemoveEmpty([list]);
+  }
+
+  // After Shelve Changes from the dialog: the list it shelved from goes if it was left empty.
+  export async function removeIfEmpty(id: string) {
+    await panel?.removeIfEmpty(id);
   }
 
   function checkinProject() {

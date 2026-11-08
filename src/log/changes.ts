@@ -7,10 +7,10 @@ export interface LogChange {
   base: string | null;
 }
 
-export interface ChangeSection {
+export interface ChangeSection<C extends { file: ChangedFile } = LogChange> {
   // The "Changes to …" node. Without it, the commit's own changes.
   title: string | null;
-  folders: { name: string; changes: LogChange[] }[];
+  folders: { name: string; changes: C[] }[];
 }
 
 const kindOf = (file: ChangedFile) => file.status[0];
@@ -62,8 +62,11 @@ const directory = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("
 
 export const shortName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
-export function sectionOf(title: string | null, changes: LogChange[]): ChangeSection {
-  const folders = new Map<string, LogChange[]>();
+export function sectionOf<C extends { file: ChangedFile } = LogChange>(
+  title: string | null,
+  changes: C[],
+): ChangeSection<C> {
+  const folders = new Map<string, C[]>();
   const sorted = [...changes].sort((a, b) => (a.file.path < b.file.path ? -1 : 1));
   for (const change of sorted) {
     const name = directory(change.file.path);

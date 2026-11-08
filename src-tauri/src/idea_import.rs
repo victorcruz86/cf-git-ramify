@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
@@ -32,7 +32,12 @@ fn project_path(raw: &str) -> Option<String> {
     valid.then(|| relative.to_string())
 }
 
-fn attributes(element: &BytesStart) -> Result<HashMap<String, String>, String> {
+// `Boolean.parseBoolean`.
+pub(crate) fn parse_bool(value: Option<impl AsRef<str>>) -> bool {
+    value.is_some_and(|value| value.as_ref().eq_ignore_ascii_case("true"))
+}
+
+pub(crate) fn attributes(element: &BytesStart) -> Result<HashMap<String, String>, String> {
     let mut found = HashMap::new();
     for attribute in element.attributes() {
         let attribute = attribute.map_err(|error| error.to_string())?;
@@ -146,16 +151,100 @@ pub fn read_workspace(xml: &str) -> Result<ImportedLists, String> {
 
 // Opens `.idea/workspace.xml` read-only. Without that file there is nothing to import.
 pub fn read_project(project: &Path) -> Result<ImportedLists, String> {
+    match read_workspace_file(project)? {
+        Some(xml) => read_workspace(&xml),
+        None => Ok(ImportedLists::default()),
+    }
+}
+
+fn read_workspace_file(project: &Path) -> Result<Option<String>, String> {
     let bytes = match fs::read(project.join(WORKSPACE_FILE)) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(ImportedLists::default())
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("Could not read {WORKSPACE_FILE}: {error}")),
     };
-    let xml = String::from_utf8(bytes)
-        .map_err(|_| format!("{WORKSPACE_FILE} is not encoded in UTF-8"))?;
-    read_workspace(&xml)
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| format!("{WORKSPACE_FILE} is not encoded in UTF-8"))
+}
+
+// `VcsConfiguration.USE_CUSTOM_SHELF_PATH` and `CUSTOM_SHELF_PATH`, options of the
+// `VcsManagerConfiguration` component.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ShelfSettings {
+    pub use_custom: bool,
+    pub custom_path: Option<String>,
+}
+
+const VCS_CONFIGURATION: &str = "VcsManagerConfiguration";
+const DEFAULT_SHELF: &str = ".idea/shelf";
+const PROJECT_DIR_MACRO: &str = "$PROJECT_DIR$";
+const USER_HOME_MACRO: &str = "$USER_HOME$";
+
+pub fn read_shelf_settings(xml: &str) -> Result<ShelfSettings, String> {
+    let mut reader = Reader::from_str(xml);
+    let mut settings = ShelfSettings::default();
+    let mut in_component = false;
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|error| format!("Malformed XML: {error}"))?;
+        match &event {
+            Event::Start(element) if element.name().as_ref() == "component" => {
+                in_component = attributes(element)?
+                    .get("name")
+                    .is_some_and(|name| name == VCS_CONFIGURATION);
+            }
+            Event::Start(element) | Event::Empty(element)
+                if in_component && element.name().as_ref() == "option" =>
+            {
+                let mut found = attributes(element)?;
+                let value = found.remove("value");
+                match found.get("name").map(String::as_str) {
+                    Some("USE_CUSTOM_SHELF_PATH") => settings.use_custom = parse_bool(value),
+                    Some("CUSTOM_SHELF_PATH") => settings.custom_path = value,
+                    _ => {}
+                }
+            }
+            Event::End(element) if element.name().as_ref() == "component" => in_component = false,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(settings)
+}
+
+// Where IntelliJ keeps the project's shelf (`ShelveChangesManager.getShelfPath`): the custom path
+// when it is on and set, otherwise `.idea/shelf`. The custom path is stored with the project's
+// macros collapsed; any other macro, or a path that is still relative, is refused.
+pub fn shelf_folder(project: &Path) -> Result<PathBuf, String> {
+    let settings = match read_workspace_file(project)? {
+        Some(xml) => read_shelf_settings(&xml)?,
+        None => ShelfSettings::default(),
+    };
+    let custom = settings
+        .custom_path
+        .filter(|path| settings.use_custom && !path.is_empty());
+    let Some(custom) = custom else {
+        return Ok(project.join(DEFAULT_SHELF));
+    };
+    let project_dir = project
+        .to_str()
+        .ok_or_else(|| "The project path is not UTF-8".to_string())?;
+    let mut expanded = custom.replace(PROJECT_DIR_MACRO, project_dir);
+    if expanded.contains(USER_HOME_MACRO) {
+        let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
+        expanded = expanded.replace(USER_HOME_MACRO, &home);
+    }
+    let path = PathBuf::from(&expanded);
+    let macro_left = regex::Regex::new(r"\$[A-Za-z_][A-Za-z0-9_]*\$")
+        .is_ok_and(|pattern| pattern.is_match(&expanded));
+    if macro_left || !path.is_absolute() {
+        return Err(format!(
+            "The custom shelf path \"{custom}\" cannot be resolved"
+        ));
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -468,6 +557,79 @@ mod tests {
         assert_eq!(snapshot(&idea), before);
         assert_eq!(first, second);
         assert_eq!(second.lists.len(), 3);
+    }
+
+    fn project_with_workspace(xml: Option<&str>) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        if let Some(xml) = xml {
+            fs::create_dir(dir.path().join(".idea")).unwrap();
+            fs::write(dir.path().join(WORKSPACE_FILE), xml).unwrap();
+        }
+        dir
+    }
+
+    fn shelf_settings(use_custom: &str, custom: &str) -> String {
+        format!(
+            r#"<project version="4"><component name="VcsManagerConfiguration">
+<option name="USE_CUSTOM_SHELF_PATH" value="{use_custom}" />
+<option name="CUSTOM_SHELF_PATH" value="{custom}" />
+</component></project>"#
+        )
+    }
+
+    #[test]
+    fn shelf_folder_follows_the_custom_shelf_options() {
+        let default = |dir: &TempDir| dir.path().join(".idea/shelf");
+        // No `workspace.xml`, or one without the component: the default place.
+        let missing = project_with_workspace(None);
+        assert_eq!(shelf_folder(missing.path()).unwrap(), default(&missing));
+        let other = project_with_workspace(Some(&workspace("")));
+        assert_eq!(shelf_folder(other.path()).unwrap(), default(&other));
+        // On but empty, or set but off: the default place (`USE_CUSTOM_SHELF_PATH ? … : null`).
+        let empty = project_with_workspace(Some(&shelf_settings("true", "")));
+        assert_eq!(shelf_folder(empty.path()).unwrap(), default(&empty));
+        let off = project_with_workspace(Some(&shelf_settings("false", "/elsewhere")));
+        assert_eq!(shelf_folder(off.path()).unwrap(), default(&off));
+        // `Boolean.parseBoolean` ignores case.
+        let upper = project_with_workspace(Some(&shelf_settings("TRUE", "/elsewhere")));
+        assert_eq!(
+            shelf_folder(upper.path()).unwrap(),
+            PathBuf::from("/elsewhere")
+        );
+        assert_eq!(
+            read_shelf_settings(&shelf_settings("TRUE", "/elsewhere")).unwrap(),
+            ShelfSettings {
+                use_custom: true,
+                custom_path: Some("/elsewhere".to_string()),
+            }
+        );
+
+        // The project's macros are expanded.
+        let home = std::env::var("HOME").unwrap();
+        let in_home = project_with_workspace(Some(&shelf_settings("true", "$USER_HOME$/shelves")));
+        assert_eq!(
+            shelf_folder(in_home.path()).unwrap(),
+            Path::new(&home).join("shelves")
+        );
+        let beside = project_with_workspace(Some(&shelf_settings("true", "$PROJECT_DIR$/../s")));
+        assert_eq!(
+            shelf_folder(beside.path()).unwrap(),
+            PathBuf::from(format!("{}/../s", beside.path().display()))
+        );
+        // A `$` that is not a macro is a plain character.
+        let dollar = project_with_workspace(Some(&shelf_settings("true", "/a$b/shelf")));
+        assert_eq!(
+            shelf_folder(dollar.path()).unwrap(),
+            PathBuf::from("/a$b/shelf")
+        );
+
+        // Another macro, or a path that stays relative, cannot be resolved.
+        for custom in ["$APPLICATION_HOME_DIR$/shelf", "../shelf", "shelf"] {
+            let refused = project_with_workspace(Some(&shelf_settings("true", custom)));
+            assert!(shelf_folder(refused.path()).is_err(), "{custom}");
+        }
+        let broken = project_with_workspace(Some("<project"));
+        assert!(shelf_folder(broken.path()).is_err());
     }
 
     #[test]

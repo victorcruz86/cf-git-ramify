@@ -134,12 +134,12 @@ test("the toolbar follows the order of ChangesViewToolbar", async () => {
     "Rollback…",
     "Show Diff",
     "Changelists",
+    "Shelve Silently",
     "View Options",
     "Expand All",
     "Collapse All",
     "Preview Diff",
   ]);
-  expect(within(toolbar).queryByRole("button", { name: /Shelve/ })).toBeNull();
 });
 
 test("the popup follows the order of ChangesViewPopupMenu", async () => {
@@ -156,11 +156,13 @@ test("the popup follows the order of ChangesViewPopupMenu", async () => {
     "Delete Changelist",
     "Set Active Changelist",
     "Edit Changelist...",
+    "Create Patch from Local Changes...",
+    "Copy as Patch to Clipboard",
+    "Shelve Changes...",
     "Import Changelists from .idea",
     "Restore Snapshot…",
     "Refresh",
   ]);
-  expect(within(listMenu).queryByRole("menuitem", { name: /Shelve|Patch/ })).toBeNull();
   await fireEvent.keyDown(listMenu, { key: "Escape" });
 
   await fireEvent.click(row("a.txt"));
@@ -301,6 +303,9 @@ test("Add to VCS is offered only for unversioned files, after Show Diff and befo
     "Show Diff",
     "Add to VCS",
     "New Changelist...",
+    "Create Patch from Local Changes...",
+    "Copy as Patch to Clipboard",
+    "Shelve Changes...",
     "Import Changelists from .idea",
     "Restore Snapshot…",
     "Refresh",
@@ -400,4 +405,184 @@ test("right_click_on_the_gutter_offers_soft_wrap", async () => {
     "Move Lines to Another Changelist...",
     "Show Diff for Lines",
   ]);
+});
+
+// `ChangesView.CreatePatchToClipboard`: no dialog, the chosen files and the comment of the chosen
+// list, and `Patch copied to clipboard`.
+test("copy_as_patch_puts_the_selected_changes_on_the_clipboard_and_says_so", async () => {
+  await listenToTasks();
+  const commented: Changelists = {
+    ...LISTS,
+    lists: [{ id: "default", name: "Changes", comment: "Work in progress" }, LISTS.lists[1]],
+  };
+  mockCommands({
+    repo_status: () => WITH_NEW,
+    changelists_get: () => commented,
+    patch_create: () => task(),
+  });
+  await open();
+
+  const menu = await contextMenu(/^Changes/);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy as Patch to Clipboard" }));
+
+  await waitFor(() => expect(calls("patch_create")).toHaveLength(1));
+  expect(calls("patch_create")[0][1]).toEqual({
+    entries: [
+      { path: "a.txt", oldPath: null, before: { kind: "head" }, after: { kind: "disk" } },
+      { path: "b.txt", oldPath: null, before: { kind: "head" }, after: { kind: "disk" } },
+    ],
+    options: { basePath: "/repo", reverse: false, message: "Work in progress" },
+    to: { kind: "clipboard" },
+    remember: false,
+    expectedRepo: "/repo",
+  });
+  await waitFor(() =>
+    expect(get(notifications).map((shown) => shown.title)).toContain("Patch copied to clipboard"),
+  );
+
+  // An unversioned file goes in as a new one. Only unversioned files: no changes, so no Create Patch.
+  await fireEvent.click(row(/^Unversioned Files/));
+  const files = await contextMenu(/^Unversioned Files/);
+  const create = within(files).getByRole("menuitem", { name: "Create Patch from Local Changes..." });
+  expect((create as HTMLButtonElement).disabled).toBe(true);
+  await fireEvent.click(within(files).getByRole("menuitem", { name: "Copy as Patch to Clipboard" }));
+  await waitFor(() => expect(calls("patch_create")).toHaveLength(2));
+  expect(calls("patch_create")[1][1]).toMatchObject({
+    entries: [{ path: "new.txt", oldPath: null, before: null, after: { kind: "disk" } }],
+    options: { message: null },
+  });
+});
+
+// A file split across lists: from one list, only the hunks of that list.
+test("copy_as_patch_of_a_partial_changelist_takes_only_its_hunks", async () => {
+  await listenToTasks();
+  const split: Changelists = { ...LISTS, hunkAssignments: { "a.txt": { h1: "default", h2: "other" } } };
+  mockCommands({
+    changelists_get: () => split,
+    file_hunks: () => [
+      { id: "h1", oldStart: 0, oldLines: 1, newStart: 0, newLines: 1 },
+      { id: "h2", oldStart: 5, oldLines: 1, newStart: 5, newLines: 1 },
+    ],
+    patch_create: () => task(),
+  });
+  await open();
+
+  const menu = await contextMenu(/^Other/);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy as Patch to Clipboard" }));
+
+  await waitFor(() => expect(calls("patch_create")).toHaveLength(1));
+  const sent = calls("patch_create")[0][1] as { entries: unknown[] };
+  expect(sent.entries).toEqual([
+    {
+      path: "a.txt",
+      oldPath: null,
+      before: { kind: "head" },
+      after: { kind: "selection", selection: [{ hunk: "h2", lines: null }] },
+    },
+    { path: "c.txt", oldPath: null, before: { kind: "head" }, after: { kind: "disk" } },
+  ]);
+});
+
+// `CreatePatchAction`: the Create Patch dialog with the chosen changes; two lists turn both off.
+test("create_patch_from_local_changes_opens_the_create_patch_dialog", async () => {
+  mockCommands();
+  const { commitDialog, closeCommitDialog } = await import("./dialogStore");
+  await open();
+
+  await fireEvent.click(row("a.txt"));
+  const files = await contextMenu("a.txt");
+  await fireEvent.click(within(files).getByRole("menuitem", { name: "Create Patch from Local Changes..." }));
+
+  expect(get(commitDialog)).toMatchObject({
+    executor: "patch",
+    request: { kind: "project", paths: ["a.txt"], lists: [] },
+  });
+  closeCommitDialog();
+
+  await fireEvent.click(row(/^Changes/));
+  await fireEvent.click(row(/^Other/), { metaKey: true });
+  const two = await contextMenu(/^Other/);
+  for (const name of ["Create Patch from Local Changes...", "Copy as Patch to Clipboard"]) {
+    expect((within(two).getByRole("menuitem", { name }) as HTMLButtonElement).disabled, name).toBe(true);
+  }
+});
+
+// `ChangesView.Shelve`: the Shelve Changes dialog with the chosen changes, enabled as Create Patch.
+test("shelve_changes_opens_the_dialog_titled_shelve_changes_and_shelves_the_included_part", async () => {
+  mockCommands();
+  const { commitDialog, closeCommitDialog } = await import("./dialogStore");
+  await open();
+
+  await fireEvent.click(row("a.txt"));
+  const files = await contextMenu("a.txt");
+  await fireEvent.click(within(files).getByRole("menuitem", { name: "Shelve Changes..." }));
+
+  expect(get(commitDialog)).toMatchObject({
+    executor: "shelve",
+    request: { kind: "project", paths: ["a.txt"], lists: [] },
+  });
+  closeCommitDialog();
+
+  await fireEvent.click(row(/^Changes/));
+  await fireEvent.click(row(/^Other/), { metaKey: true });
+  const two = await contextMenu(/^Other/);
+  const shelve = within(two).getByRole("menuitem", { name: "Shelve Changes..." });
+  expect((shelve as HTMLButtonElement).disabled).toBe(true);
+});
+
+// `ChangesView.ShelveSilently`, on the toolbar and with ⇧⌘H: one shelf per changelist of the
+// chosen changes, with rollback. Unversioned files are not changes: alone, they leave it off.
+test("shelve_silently_makes_one_shelf_per_list_and_rolls_back", async () => {
+  mockCommands({ repo_status: () => WITH_NEW, shelf_shelve_silently: () => 7 });
+  await open();
+  const toolbar = screen.getByRole("toolbar", { name: "Changes" });
+  const button = within(toolbar).getByRole("button", { name: "Shelve Silently" }) as HTMLButtonElement;
+  expect(button.disabled).toBe(true);
+
+  await fireEvent.click(row(/^Changes/));
+  await fireEvent.click(row("c.txt"), { metaKey: true });
+  await fireEvent.click(row(/^Unversioned Files/), { metaKey: true });
+  await fireEvent.click(button);
+
+  const groups = [
+    {
+      name: "Changes",
+      entries: [
+        { path: "a.txt", oldPath: null, selection: null },
+        { path: "b.txt", oldPath: null, selection: null },
+      ],
+    },
+    { name: "Other", entries: [{ path: "c.txt", oldPath: null, selection: null }] },
+  ];
+  await waitFor(() => expect(calls("shelf_shelve_silently")).toHaveLength(1));
+  expect(calls("shelf_shelve_silently")[0][1]).toEqual({
+    lists: groups,
+    rollback: true,
+    expectedRepo: "/repo",
+  });
+
+  await fireEvent.keyDown(row("c.txt"), { key: "H", metaKey: true, shiftKey: true });
+  await waitFor(() => expect(calls("shelf_shelve_silently")).toHaveLength(2));
+  expect(calls("shelf_shelve_silently")[1][1]).toEqual(calls("shelf_shelve_silently")[0][1]);
+
+  await fireEvent.click(row(/^Unversioned Files/));
+  expect(button.disabled).toBe(true);
+});
+
+// `scheduleAutomaticEmptyChangeListDeletion(list, true)`: after Shelve Changes the list is read
+// again; left empty and not active, it is deleted without asking. The active one and one that still
+// has changes stay.
+test("an_emptied_changelist_is_deleted", async () => {
+  let status = [change("a.txt"), change("b.txt"), change("c.txt")];
+  mockCommands({ repo_status: () => status, changelists_remove: () => LISTS });
+  const view = await open();
+
+  await view.component.removeIfEmpty("other");
+  expect(calls("changelists_remove")).toEqual([]);
+
+  status = [];
+  await view.component.removeIfEmpty("default");
+  expect(calls("changelists_remove")).toEqual([]);
+  await view.component.removeIfEmpty("other");
+  expect(calls("changelists_remove")).toEqual([["changelists_remove", { id: "other" }]]);
 });

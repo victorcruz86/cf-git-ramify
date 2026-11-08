@@ -1,7 +1,7 @@
 import { writable } from "svelte/store";
 import type { CommitMode } from "../lib/api";
 import type { CheckinRequest } from "./checkin";
-import type { Executor, ExecutorChanges } from "./dialog";
+import type { Executor, ExecutorRun } from "./dialog";
 
 // `Commit and Rebase…` of Fixup… and Squash Into…: the base (`<hash>~`) and the HEAD that was seen when
 // proposing it, which the executor is only valid for. Both or neither: a base without its HEAD cannot be
@@ -14,7 +14,7 @@ export type CommitDialogInput = {
   executor?: Executor;
   // Fixup… and Squash Into…: the message.
   prefilled?: string;
-  onexecute?: (changes: ExecutorChanges) => Promise<void>;
+  onexecute?: ExecutorRun;
 } & RebaseExecutor;
 
 const store = writable<CommitDialogInput | null>(null);
@@ -55,4 +55,12 @@ export function routeCommitRequests(next: CommitRouting | null): void {
 export function requestCommit(input: CommitRequestInput): void | Promise<void> {
   if (routing && routing.mode() === "non-modal") return routing.nonModal(input);
   openCommitDialog({ ...input, executor: "commit" });
+}
+
+// `Create Patch from Local Changes...` and `Shelve Changes...`: executor actions always open the
+// modal dialog, in either commit interface (`CheckinActionUtil.performCheckInAfterUpdate`). They do
+// not exist with the staging area, so whoever offers them hides them there. What the executor does
+// is the application's (`App.svelte`).
+export function requestExecutor(executor: Exclude<Executor, "commit">, request: CheckinRequest): void {
+  openCommitDialog({ request, executor });
 }

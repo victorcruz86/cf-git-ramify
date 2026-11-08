@@ -293,7 +293,7 @@ export async function runSmoke(): Promise<void> {
     await task("update_branch", () => api.updateBranch("feature"));
     await task("update_abort", api.updateAbort);
     await task("update_restore", () =>
-      api.updateRestore({ sha: "0".repeat(40), message: "smoke" }),
+      api.updateRestore({ kind: "stash", sha: "0".repeat(40), message: "smoke", lists: [] }),
     );
 
     await step("push_info", () => api.pushInfo(null));

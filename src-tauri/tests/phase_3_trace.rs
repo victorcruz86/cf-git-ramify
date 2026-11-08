@@ -263,8 +263,8 @@ fn phase_3_trace() {
         &fixture,
         &repo,
         |r| {
-            let _ = conflicts::session(r.ctx);
-            conflicts::sides(r.ctx, "a.txt")
+            let _ = conflicts::session(r);
+            conflicts::sides(r, "a.txt")
         },
     );
     let hash = sides.unwrap().hash;

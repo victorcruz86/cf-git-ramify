@@ -27,6 +27,7 @@ const PULL_INFO: PullInfo = {
 
 const SETTINGS = { updateMethod: "merge", pushAutoUpdate: false, previewPushOnCommit: true };
 let settingsNow: Record<string, unknown> = SETTINGS;
+let cleanTreeNow = "stash";
 
 function mockCommands(tasks: Record<string, unknown>) {
   vi.mocked(invoke).mockImplementation(async (command) => {
@@ -42,7 +43,9 @@ function mockCommands(tasks: Record<string, unknown>) {
     if (command === "branch_list") return BRANCHES;
     if (command === "branch_current") return "main";
     if (command === "repo_state") return repoState;
-    if (command === "repo_settings_get") return { protectedBranches: ["master", "main"] };
+    if (command === "repo_settings_get") {
+      return { protectedBranches: ["master", "main"], cleanTree: cleanTreeNow };
+    }
     if (command === "commit_details") {
       return [{ hash: HASH, subject: "one", author: "Ana", refs: [] }];
     }
@@ -211,11 +214,31 @@ test("checkout_problem_with_its_three_buttons", async () => {
     screen.getByText("Your local changes to the following files would be overwritten by checkout."),
   ).toBeTruthy();
   expect(screen.getByText("Can stash the changes, checkout and unstash them after that.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Smart Checkout" }).title).toBe(
+    "Stash local changes, checkout, unstash",
+  );
   expect(screen.getByRole("button", { name: "Force Checkout" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Smart Checkout" })).toBeTruthy();
   await fireEvent.click(screen.getByRole("button", { name: "Don't Checkout" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === "branch_checkout")).toHaveLength(1);
+});
+
+// G:377 and G:379: the dialog names the repository's saver, Shelve by default.
+test("the_smart_dialog_follows_the_saver", async () => {
+  cleanTreeNow = "shelve";
+  mockCommands({ branch_checkout: { kind: "overwritten", files: ["a.txt"] } });
+  const { component } = render(BranchDialogs);
+
+  component.run({ kind: "checkout", target: "other" });
+
+  expect(await screen.findByRole("dialog", { name: "Git Checkout Problem" })).toBeTruthy();
+  expect(screen.getByText("Can shelve the changes, checkout and unshelve them after that.")).toBeTruthy();
+  expect(screen.queryByText(/stash/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Smart Checkout" }).title).toBe(
+    "Shelve local changes, checkout, unshelve",
+  );
+  cleanTreeNow = "stash";
 });
 
 test("the_update_project_dialog_launches_the_update_and_saves_the_method", async () => {

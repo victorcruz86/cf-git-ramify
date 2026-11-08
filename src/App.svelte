@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from "svelte";
   import {
     appVersion,
+    changelistsGet,
     diffWindowOpen,
     commitMode,
     effectiveStaging,
@@ -11,6 +12,8 @@
     gitMenuEnable,
     initialRepo,
     notifyRepoChanged,
+    onAppActivated,
+    onAppDeactivated,
     onDiffReady,
     onGitAction,
     onLeaveRefused,
@@ -20,9 +23,13 @@
     onSettingsChanged,
     perfEnabled,
     repoOpen,
+    repoSettingsGet,
     repoState,
     settingsGet,
+    shelfLists,
+    shelfSides,
     showWindow,
+    stashList,
     type ChangeList,
     type StageComparison,
     type FileChange,
@@ -33,7 +40,12 @@
     type PublishedSelection,
     type SelectionOwner,
     type SelectionState,
+    type RepoChange,
     type Settings,
+    type ShelfEntry,
+    type ShelfSettings,
+    type ShelfSides,
+    type StashEntry,
   } from "./lib/api";
   import AskpassDialog from "./lib/AskpassDialog.svelte";
   import MessageEditorDialog from "./editor/MessageEditorDialog.svelte";
@@ -43,19 +55,23 @@
   import { notify } from "./lib/notifications";
   import Notifications from "./lib/Notifications.svelte";
   import {
+    keepSelected,
     onTabRequested,
     toolWindows,
     type ContentId,
     type TabRequest,
     type ToolWindowId,
   } from "./lib/tabs";
+  import { taskResult } from "./lib/tasks";
   import TaskStatus from "./lib/TaskStatus.svelte";
   import type { CheckinRequest } from "./commit/checkin";
   import CommitDialog from "./commit/CommitDialog.svelte";
+  import type { Executor, ExecutorRun } from "./commit/dialog";
   import {
     closeCommitDialog,
     commitDialog,
     requestCommit,
+    requestExecutor,
     routeCommitRequests,
     type CommitRequestInput,
   } from "./commit/dialogStore";
@@ -71,15 +87,41 @@
   import { gitMenuEnabled, ongoingActionFor, ongoingActions } from "./operation/operation";
   import RemotesHost from "./remotes/RemotesHost.svelte";
   import { UPDATE_ACTIONS, fetching, type UpdateAction } from "./update/flow";
+  import {
+    applies,
+    applyInProgress,
+    applying,
+    clipboardWatcher,
+    defaultApplyApi,
+    localEntries,
+    logEntries,
+    patches,
+    type ApplyContext,
+  } from "./patch/flow";
+  import PatchDialogs from "./patch/PatchDialogs.svelte";
+  import { defaultShelfTabApi, shelfFlow, shelfTabFlow, showShelf } from "./shelf/flow";
+  import { shelfDialogsUi } from "./shelf/dialogs";
+  import { shelfTabRequest, takeShelfTabRequest } from "./shelf/request";
+  import ShelfDialogs from "./shelf/ShelfDialogs.svelte";
+  import ShelfTab from "./shelf/ShelfTab.svelte";
+  import {
+    loadedShelfSettings,
+    NO_SHELF_SETTINGS,
+    resetShelfSettings,
+    saveShelfSetting,
+    shelfSettings,
+    shelfSettingsGeneration,
+  } from "./shelf/settings";
+  import type { ShelfSelection } from "./shelf/shelfTree";
   import { framesRunning, runPerf } from "./perf/run";
   import SettingsView from "./settings/SettingsView.svelte";
+  import { showTabStep } from "./stash/flow";
+  import StashTab from "./stash/StashTab.svelte";
   import VersionControlWindow from "./vcs/VersionControlWindow.svelte";
 
   const PUSH_ACTION: ActionId = "Vcs.Push";
   const COMMIT_ACTION: ActionId = "CheckinProject";
   const BRANCHES_ACTION: ActionId = "Git.Branches";
-  // The contents that exist now. Shelf and Stash arrive with their views.
-  const AVAILABLE: ContentId[] = ["local-changes", "log", "console"];
   // `ToolWindowChanges` is the branch icon in the new UI; `ToolWindowCommit` is the commit one.
   const WINDOWS: Record<ToolWindowId, { label: string; icon: string; shortcut: string }> = {
     commit: { label: "Commit", icon: "commit", shortcut: "⌘0" },
@@ -95,6 +137,19 @@
   let opening = $state(false);
   let logPanel = $state<LogPanel>();
   let commitView = $state<CommitView>();
+  let stashTab = $state<StashTab>();
+  let contentArea = $state<HTMLDivElement>();
+  // `GitStashTracker`: read again whenever the repository changes. The Stash tab exists only while there
+  // are stashes (`isStashTabVisible`, with the tabs not combined).
+  let stashes = $state.raw<StashEntry[]>([]);
+  // `GitStashTracker.Stashes.Error`: the tab stays, with the error as its node.
+  let stashError = $state<string | null>(null);
+  let stashRequest = 0;
+  // `ShelveChangesManager`'s lists: the Shelf tab exists while there is one (`ContentPredicate`),
+  // whatever its state. They are read again whenever the repository changes.
+  let shelfEntries = $state.raw<ShelfEntry[]>([]);
+  let shelfRequest = 0;
+  let shelfTab = $state<ShelfTab>();
   let localChanges = $state<LocalChangesView>();
   // What the Commit view had when the mode went modal: it comes back with the non-modal mode.
   let commitDraft = $state.raw<CommitDraft | null>(null);
@@ -106,9 +161,19 @@
   const repoNow = $derived(status ?? info?.state);
   // Modal: everything is in the `Git` window. Non-modal: Local Changes is in the `Commit` window.
   const mode = $derived(settings ? commitMode(settings) : "modal");
-  const windows = $derived(toolWindows(mode, AVAILABLE));
+  // The contents that exist now.
+  const available = $derived<ContentId[]>([
+    "local-changes",
+    ...(shelfEntries.length > 0 ? (["shelf"] as const) : []),
+    ...(stashes.length > 0 || stashError !== null ? (["stash"] as const) : []),
+    "log",
+    "console",
+  ]);
+  const windows = $derived(toolWindows(mode, available));
   const stripeWindows = $derived((["commit", "git"] as const).filter((id) => windows[id]));
-  const tab = $derived(windows[activeWindow] ? selected[activeWindow] : null);
+  // A selected tab that went away (the last stash dropped) leaves its window on the first one.
+  const shown = $derived(keepSelected(windows, selected));
+  const tab = $derived(windows[activeWindow] ? shown[activeWindow] : null);
   const branch = $derived(repoNow?.branch ?? null);
   const branchLabel = $derived(repoNow?.label ?? "");
   // A rebase leaves HEAD detached: `branch` comes from `head-name` and is the one being rebased, which already exists.
@@ -150,6 +215,10 @@
       // If it does not open, we stay in the current repository, with whatever was half done.
       const opened = await repoOpen(repoPath.trim());
       select("commit");
+      stashes = [];
+      stashError = null;
+      shelfEntries = [];
+      resetShelfSettings();
       closeCommitDialog();
       commitDraft = null;
       diffWindow = false;
@@ -160,6 +229,8 @@
       info = opened;
       syncMenu(opened.state);
       branchDialogs?.repositoryChanged(opened);
+      void loadStashes();
+      void loadShelf();
       await loadBranchState();
     } catch (failure) {
       showError(failure);
@@ -183,10 +254,118 @@
   }
 
   async function showTab(request: TabRequest) {
-    if (select(request) !== "local-changes") return;
+    const id = select(request);
+    if (id !== "local-changes" && id !== "stash" && id !== "shelf") return;
     await tick();
-    (mode === "modal" ? localChanges : commitView)?.focusTree();
+    if (id === "stash") stashTab?.focus();
+    else if (id === "shelf") {
+      // `activateView(list)`: the list asked for, once the tab shows it.
+      const asked = takeShelfTabRequest();
+      if (asked?.select) shelfTab?.select(asked.select);
+      shelfTab?.focus();
+    } else (mode === "modal" ? localChanges : commitView)?.focusTree();
   }
+
+  // A request for the Shelf tab made before it existed (the first list just shelved) is taken
+  // once the lists are read.
+  $effect(() => {
+    const asked = $shelfTabRequest;
+    if (asked && available.includes("shelf")) untrack(() => void showTab("shelf"));
+  });
+
+  // `Vcs.Show.Shelf` (`VcsShowToolWindowTabAction`), only while the tab is there.
+  function toggleShelf() {
+    const owner = windowOf("shelf");
+    if (!owner) return;
+    const focused = contentArea?.contains(document.activeElement) ?? false;
+    const step = showTabStep(activeWindow === owner && focused, shown[owner] === "shelf");
+    if (step !== "hide") void showTab("shelf");
+  }
+
+  // On open and when `repo-changed` says a command wrote the store. What arrives for an earlier
+  // request is dropped.
+  async function loadShelf() {
+    const token = ++shelfRequest;
+    const started = shelfSettingsGeneration();
+    try {
+      const [lists, repoSettings] = await Promise.all([
+        taskResult<ShelfEntry[]>(await shelfLists()),
+        repoSettingsGet().catch(() => null),
+      ]);
+      if (token !== shelfRequest) return;
+      if (JSON.stringify(lists) !== JSON.stringify(shelfEntries)) shelfEntries = lists;
+      // A save since the read began wins over what it read.
+      if (repoSettings) loadedShelfSettings(repoSettings.shelf ?? NO_SHELF_SETTINGS, started);
+    } catch {
+      // The next change of the repository reads it again.
+    }
+  }
+
+  // The Shelf tab's actions, tied to the repository they were started in.
+  const shelfActions = shelfTabFlow(defaultShelfTabApi, shelfDialogsUi, {
+    dialog: (context, request) => applies.unshelveWithDialog(context, request),
+    silently: (context, request) => applies.unshelveSilently(context, request),
+  });
+
+  // A list chosen whole takes all its files: the files chosen in it are not a part of it.
+  const partFiles = (selection: ShelfSelection) => {
+    const whole = new Set(selection.exact.map((entry) => entry.list.name));
+    return selection.files.filter((files) => !whole.has(files.name));
+  };
+
+  async function unshelveFromTab(selection: ShelfSelection, withDialog: boolean) {
+    const context = await applyContext();
+    if (!context) return;
+    if (withDialog) await shelfActions.unshelve(context, selection.lists, partFiles(selection));
+    else await shelfActions.unshelveSilently(context, selection.lists, partFiles(selection));
+  }
+
+  // One field at a time, over what the other writers saved (`src/shelf/settings.ts`).
+  function shelfSettingsChanged(next: ShelfSettings) {
+    const before = $shelfSettings;
+    const changed = Object.fromEntries(
+      Object.entries(next).filter(([key, value]) => before[key as keyof ShelfSettings] !== value),
+    );
+    void saveShelfSetting(changed).catch(showError);
+  }
+
+  const shelfTabApi = {
+    sides: async (name: string, file: ShelfEntry["changes"][number]["file"], withLocal: boolean) =>
+      taskResult<ShelfSides>(await shelfSides(name, file, withLocal)),
+  };
+
+  // `Git.Show.Stash` (`VcsShowToolWindowTabAction`), which `Unstash Changes…` tries first. The window is
+  // active when it is in front with the focus inside. rama has no hidden tool window, so the step that
+  // hides it leaves everything as it is. `false` if the tab is not there.
+  function showGitStash(): boolean {
+    const owner = windowOf("stash");
+    if (!owner) return false;
+    const focused = contentArea?.contains(document.activeElement) ?? false;
+    const step = showTabStep(activeWindow === owner && focused, shown[owner] === "stash");
+    if (step !== "hide") void showTab("stash");
+    return true;
+  }
+
+  // On open and when the watcher says the stash changed. What arrives for an earlier request is dropped.
+  async function loadStashes() {
+    const token = ++stashRequest;
+    try {
+      const list = await taskResult<StashEntry[]>(await stashList());
+      if (token !== stashRequest) return;
+      stashError = null;
+      // The same list does not rebuild the tab.
+      if (JSON.stringify(list) !== JSON.stringify(stashes)) stashes = list;
+    } catch (failure) {
+      if (token !== stashRequest) return;
+      stashes = [];
+      stashError = errorText(failure);
+    }
+  }
+
+  // The selection follows what `shown` already shows, so that a tab that comes back is not selected.
+  $effect(() => {
+    if (shown !== selected) selected = shown;
+  });
 
   // ⌘0 and ⌘9, or the stripe: a window that does not exist now does nothing, and neither does the one in front.
   function activateWindow(id: ToolWindowId) {
@@ -239,9 +418,28 @@
   // ⌘K from outside Local Changes, the Git menu and the branches popup.
   const checkinFromLog = () => requestCommit({ request: wholeProject });
 
+  // `Create Patch…` of the Create Patch dialog: Patch File Settings, then the patch of what it
+  // included, from the repository it was opened in.
+  const createPatchExecutor: ExecutorRun = async (changes, context) => {
+    const selections = new Map(changes.selections.map((file) => [file.path, file.selection]));
+    const entries = localEntries(changes.files, selections);
+    await patches.createPatch({ repo: changes.repo, entries }, changes.message, context.close);
+  };
+
+  // `Shelve Changes` of the Shelve Changes dialog: the Shelf tab with the new list, and the list it
+  // shelved from deleted if it was left empty, wherever Local Changes is.
+  const shelving = shelfFlow(undefined, {
+    openShelf: showShelf,
+    removeIfEmpty: (list) => (mode === "modal" ? localChanges : commitView)?.removeIfEmpty(list),
+  });
+  const shelveExecutor: ExecutorRun = (changes, context) => shelving.shelveChanges(changes, context);
+
+  const executorRun = (executor: Executor | undefined): ExecutorRun | undefined =>
+    executor === "patch" ? createPatchExecutor : executor === "shelve" ? shelveExecutor : undefined;
+
   function keydown(event: KeyboardEvent) {
-    // The Commit Changes dialog is modal: what is underneath does not act.
-    if ($commitDialog) return;
+    // The Commit Changes dialog is modal: what is underneath does not act. So is a patch being applied.
+    if ($commitDialog || applyInProgress()) return;
     const action = matchShortcut(event);
     if (action === "ShowSettings") {
       settingsOpen = true;
@@ -270,8 +468,11 @@
   }
 
   // With a modal dialog open the menu does not act, like IntelliJ's: what is underneath is not touched.
+  // A patch being applied counts too: its conflicts wait in the merge window, which is modal there.
   const modalOpen = () =>
-    settingsOpen || document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
+    settingsOpen ||
+    applyInProgress() ||
+    document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
 
   // What each action of the Git menu does, or `null` if it is not handled now: without a repository,
   // only Clone and Create Git Repository apply.
@@ -295,12 +496,71 @@
     }
     if (action === "Git.Tag") return () => void branchDialogs?.tag(null);
     if (action === "Git.Reset") return () => void branchDialogs?.resetHead();
+    // `ChangesView.CreatePatch`, an executor action: there is none with the staging area.
+    if (action === "ChangesView.CreatePatch") {
+      if (settings && effectiveStaging(settings)) return null;
+      return () => requestExecutor("patch", wholeProject);
+    }
+    // `ChangesView.Shelve`, the same kind of action; `Show Shelf` asks for the Shelf tab.
+    if (action === "ChangesView.Shelve") {
+      if (settings && effectiveStaging(settings)) return null;
+      return () => requestExecutor("shelve", wholeProject);
+    }
+    if (action === "Vcs.Show.Shelf") return toggleShelf;
+    // rama's own: the Shelf tab's `Import from .idea`, also while the tab is not there.
+    if (action === "Shelf.ImportFromIdea") return () => void shelfActions.importIdea(current.path);
+    // `ChangesView.Revert`: Local Changes' Rollback, in front.
+    if (action === "ChangesView.Revert") return () => void rollbackLocalChanges();
+    if (action === "ChangesView.ApplyPatch") {
+      return () => void applyContext().then((context) => context && applies.applyPatch(context));
+    }
+    if (action === "ChangesView.ApplyPatchFromClipboard") {
+      return () => void applyContext().then((context) => context && applies.applyFromClipboard(context));
+    }
+    if (action === "Git.Stash") return () => void branchDialogs?.stashChanges();
+    if (action === "Git.Unstash") return () => void branchDialogs?.unstashChanges();
+    if (action === "Git.Show.Stash") return () => void showGitStash();
     if (action === "Git.Configure.Remotes") return () => void remotesHost?.manage();
     if (action === "Git.OpenExcludeFile") return () => void remotesHost?.openExcludeFile();
     if ((UPDATE_ACTIONS as readonly string[]).includes(action)) {
       return () => void branchDialogs?.runUpdate(action as UpdateAction);
     }
     return null;
+  }
+
+  async function rollbackLocalChanges() {
+    await showTab("commit");
+    (mode === "modal" ? localChanges : commitView)?.rollback();
+  }
+
+  // Apply Patch is tied to the repository and the HEAD it was opened on, and to its lists when
+  // there are changelists (not with the staging area).
+  async function applyContext(): Promise<ApplyContext | null> {
+    const current = info;
+    if (!current) return null;
+    const staging = settings ? effectiveStaging(settings) : false;
+    const lists = staging ? null : await changelistsGet([]).catch(() => null);
+    return {
+      repo: current.path,
+      head: repoNow?.head ?? current.head,
+      lists,
+      current: () => info?.path ?? null,
+    };
+  }
+
+  // `PatchClipboardListener`: the clipboard is looked at when the app becomes active (the backend
+  // says so; moving between rama's own windows is not), with a repository open and nothing modal.
+  const onTheFly = clipboardWatcher(defaultApplyApi, (text) => {
+    if (modalOpen()) return;
+    void applyContext().then((context) => context && applies.applyText(context, text));
+  });
+
+  function appActivated() {
+    if (info && !modalOpen()) void onTheFly.activated();
+  }
+
+  function appDeactivated() {
+    if (info) void onTheFly.deactivated();
   }
 
   // The Git actions requested by whoever is outside the window, like the Git menu: the action id
@@ -440,6 +700,8 @@
       onSettingsChanged(settingsChanged),
       onOpenSettings(() => (settingsOpen = true)),
       onGitAction(gitAction),
+      onAppActivated(appActivated),
+      onAppDeactivated(appDeactivated),
       onRepoChanged(refreshState),
     ];
     start();
@@ -476,8 +738,11 @@
   }
 
   // If git fails now, the next signal reads it again.
-  async function refreshState() {
+  async function refreshState(change: RepoChange = { stash: false, shelf: false }) {
     if (!info) return;
+    if (change.stash) void loadStashes();
+    // `SHELF_TOPIC`: only a command that wrote the store makes the lists be read again.
+    if (change.shelf) void loadShelf();
     try {
       status = await repoState();
     } catch {
@@ -516,7 +781,8 @@
 <svelte:window onkeydown={keydown} />
 
 <main>
-  <form class="main-toolbar" onsubmit={submit}>
+  <!-- An apply is modal from its OK to its end (`applyInProgress`): what is underneath is inert. -->
+  <form class="main-toolbar" onsubmit={submit} inert={$applying}>
     {#if info}
       <button
         bind:this={branchWidget}
@@ -549,7 +815,7 @@
   </form>
 
   {#if info}
-    <div class="workspace">
+    <div class="workspace" inert={$applying}>
       <div class="stripe" role="tablist" aria-orientation="vertical" aria-label="Tool windows">
         {#each stripeWindows as id (id)}
           {@const { label, icon, shortcut } = WINDOWS[id]}
@@ -567,11 +833,23 @@
         {/each}
       </div>
 
-      <div class="content">
+      <div class="content" bind:this={contentArea}>
+        <!-- The Commit window shows its strip only with more than one content (New UI). -->
+        {#if activeWindow === "commit" && windows.commit && windows.commit.length > 1}
+          <VersionControlWindow
+            toolWindow="commit"
+            label="Commit"
+            contents={windows.commit}
+            selected={shown.commit}
+            onselect={(id, focus) => void (focus ? showTab(id) : select(id))}
+          />
+        {/if}
         {#if activeWindow === "git" && windows.git.length > 0}
           <VersionControlWindow
+            toolWindow="git"
+            label="Git"
             contents={windows.git}
-            selected={selected.git}
+            selected={shown.git}
             onselect={(id, focus) => void (focus ? showTab(id) : select(id))}
           />
         {/if}
@@ -610,6 +888,51 @@
             {/key}
           </div>
 
+          {#if available.includes("shelf")}
+            <div class="pane" class:hidden={tab !== "shelf"}>
+              {#key info}
+                <ShelfTab
+                  bind:this={shelfTab}
+                  entries={shelfEntries}
+                  settings={$shelfSettings}
+                  active={tab === "shelf"}
+                  api={shelfTabApi}
+                  onunshelve={(selection, withDialog) => void unshelveFromTab(selection, withDialog)}
+                  ondelete={(selection) =>
+                    info &&
+                    void shelfActions.remove(
+                      info.path,
+                      selection.exact.map((entry) => entry.list.name),
+                      partFiles(selection),
+                    )}
+                  onrestore={(names) => info && void shelfActions.restore(info.path, names)}
+                  onrename={(name, description) => info && void shelfActions.rename(info.path, name, description)}
+                  onimport={() => info && void shelfActions.importPatches(info.path)}
+                  onimportidea={() => info && void shelfActions.importIdea(info.path)}
+                  oncreatepatch={(files) => info && void patches.createPatch({ repo: info.path, entries: [], shelf: files }, null)}
+                  oncopypatch={(files) => info && void patches.copyAsPatch({ repo: info.path, entries: [], shelf: files })}
+                  onsettings={shelfSettingsChanged}
+                />
+              {/key}
+            </div>
+          {/if}
+          {#if available.includes("stash")}
+            <div class="pane" class:hidden={tab !== "stash"}>
+              {#key info}
+                <StashTab
+                  bind:this={stashTab}
+                  {stashes}
+                  error={stashError}
+                  currentBranch={branch}
+                  onunstash={(stash, pop) => branchDialogs?.unstashEntry(stash, pop)}
+                  onunstashas={(stash) => branchDialogs?.unstashAs(stash)}
+                  ondrop={(stash) => branchDialogs?.dropStash(stash)}
+                  onvcs={(action) => branchDialogs?.run(action)}
+                />
+              {/key}
+            </div>
+          {/if}
+
           <div class="pane" class:hidden={tab !== "log"}>
             {#key info}
               <LogPanel
@@ -618,6 +941,10 @@
                 onready={logReady}
                 onvcs={(action) => branchDialogs?.run(action)}
                 onfetch={() => branchDialogs?.fetch() ?? Promise.resolve()}
+                oncreatepatch={(changes) => {
+                  const entries = logEntries(changes);
+                  if (info) void patches.createPatch({ repo: info.path, entries }, null);
+                }}
               />
             {/key}
           </div>
@@ -640,6 +967,7 @@
   onviewcommits={viewCommits}
   ondefineremote={() => remotesHost?.defineRemote() ?? Promise.resolve(false)}
   onshowcommit={() => void showTab("commit")}
+  onshowstash={showGitStash}
 />
 <RemotesHost bind:this={remotesHost} current={() => info?.path ?? null} open={openRepository} />
 {#if branchesPopup}
@@ -669,7 +997,7 @@
       rebaseFrom={input.rebaseFrom}
       head={input.head}
       onrebase={(base) => branchDialogs?.rebaseAfterCommit(base) ?? Promise.resolve()}
-      onexecute={input.onexecute}
+      onexecute={input.onexecute ?? executorRun(input.executor)}
       branch={branchLabel}
       hasHead={(repoNow?.head ?? "") !== ""}
       clearInitial={settings?.clearInitialCommitMessage ?? false}
@@ -684,6 +1012,9 @@
     />
   {/key}
 {/if}
+<!-- After the Create Patch dialog: Patch File Settings opens on top of it. -->
+<PatchDialogs />
+<ShelfDialogs />
 <Notifications />
 
 {#if settingsOpen && settings}

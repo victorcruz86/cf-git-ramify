@@ -1,0 +1,1 @@
+{ "identifier": "choosers", "windows": ["main"], "permissions": ["dialog:allow-open", "dialog:allow-save"] }

@@ -12,6 +12,7 @@ import type {
   UpdateResult,
 } from "../lib/api";
 import { dismiss, notifications, type Shown } from "../lib/notifications";
+import { takeShelfTabRequest } from "../shelf/flow";
 import {
   UPDATE_ACTIONS,
   fetching,
@@ -34,7 +35,7 @@ const PULL_INFO: PullInfo = {
   tracked: ["origin", "main"],
 };
 const PULL: PullChoice = { remote: "origin", branch: "main", options: [] };
-const SAVED = { sha: "abc", message: "Uncommitted changes before Update at today" };
+const SAVED = { kind: "stash" as const, sha: "abc", message: "Uncommitted changes before Update at today", lists: [] };
 const SETTINGS = {
   updateMethod: "merge",
   showUpdateDialog: false,
@@ -75,6 +76,9 @@ function api(overrides: Partial<UpdateApi> = {}): UpdateApi {
   };
 }
 
+// `View saved changes…` of a stash.
+const showStashes = vi.fn();
+
 const flow = (
   backend: UpdateApi,
   answers: unknown[] = [],
@@ -82,7 +86,10 @@ const flow = (
   abortOperation?: (operation: Operation) => Promise<boolean>,
 ) => {
   const ask = vi.fn(async (_: UpdateRequest) => answers.shift() ?? null);
-  return { ask, ...updateFlow({ ask: ask as never, viewCommits, abortOperation }, backend) };
+  return {
+    ask,
+    ...updateFlow({ ask: ask as never, viewCommits, abortOperation, showStashes }, backend),
+  };
 };
 
 const shown = () => get(notifications);
@@ -92,7 +99,11 @@ const click = (title: string, label: string) =>
   titled(title).actions?.find((action) => action.label === label)?.run();
 const labels = (title: string) => titled(title).actions?.map(({ label }) => label);
 
-beforeEach(() => shown().forEach(({ id }) => dismiss(id)));
+beforeEach(() => {
+  shown().forEach(({ id }) => dismiss(id));
+  showStashes.mockReset();
+  takeShelfTabRequest();
+});
 afterEach(cleanup);
 
 describe("dialog", () => {
@@ -666,7 +677,19 @@ describe("saved changes", () => {
     result({ outcome: { kind: "conflicts" }, saved: SAVED, inProgress: true });
   const NOT_RESTORED = "Local changes were not restored";
 
-  test("saved_changes_offer_restore_changes", async () => {
+  // A record of an earlier build, found on opening: the only one with `Restore Changes` (decision 10).
+  const PENDING = { sha: "abc", title: "Update", message: SAVED.message };
+  const calm = { operation: null, branch: "main", label: "main", head: "abc" };
+  const reopened = (backend: UpdateApi, operation: Operation | null = null) => {
+    const update = flow(backend);
+    update.repositoryChanged({
+      pending: [PENDING],
+      state: { ...calm, operation },
+    } as RepoInfo);
+    return update;
+  };
+
+  test("saved_changes_offer_view_saved_changes", async () => {
     const backend = api({
       update: vi.fn(async () =>
         result({
@@ -681,10 +704,44 @@ describe("saved changes", () => {
     const notification = titled(NOT_RESTORED);
     expect(notification.sticky).toBe(true);
     expect(notification.body).toContain("index.lock");
-    expect(notification.body).toContain(SAVED.message);
-    expect(labels(NOT_RESTORED)).toEqual(["Restore Changes"]);
-    click(NOT_RESTORED, "Restore Changes");
-    await vi.waitFor(() => expect(backend.restore).toHaveBeenCalledWith(SAVED));
+    expect(notification.body).toContain(`They are in the stash: ${SAVED.message}`);
+    expect(labels(NOT_RESTORED)).toEqual(["View saved changes…"]);
+    click(NOT_RESTORED, "View saved changes…");
+    expect(showStashes).toHaveBeenCalledTimes(1);
+    expect(backend.restore).not.toHaveBeenCalled();
+  });
+
+  // Review Focus 4: the shelf keeps the changes, and the Shelf tab opens on the first list by name.
+  test("a_stopped_update_leaves_the_shelf_and_offers_view_saved_changes", async () => {
+    const message = "Uncommitted changes before Update at today";
+    const shelved = {
+      kind: "shelve" as const,
+      sha: "",
+      message,
+      lists: [
+        { name: "Other_list", description: `${message} [Other]`, changelist: "cl-1" },
+        { name: "Changes_list", description: `${message} [changes]`, changelist: "default" },
+      ],
+    };
+    const backend = api({
+      update: vi.fn(async () =>
+        result({ outcome: { kind: "conflicts" }, saved: shelved, inProgress: true }),
+      ),
+    });
+
+    await flow(backend).updateProject();
+
+    const notification = titled(NOT_RESTORED);
+    expect(notification.kind).toBe("warning");
+    expect(notification.body).toBe(
+      "Before update your uncommitted changes were saved to shelf.\nUpdate is not complete, you have unresolved merges in your working tree\nResolve conflicts, complete update and restore changes manually." +
+        `\nThey are in the shelf: ${message}`,
+    );
+    expect(labels(NOT_RESTORED)).toEqual(["View saved changes…", "Abort"]);
+    click(NOT_RESTORED, "View saved changes…");
+    expect(takeShelfTabRequest()).toEqual({ select: "Changes_list" });
+    expect(showStashes).not.toHaveBeenCalled();
+    expect(backend.restore).not.toHaveBeenCalled();
   });
 
   const blocked: RestoreOutcome = { kind: "restoreBlocked", reason: { files: ["a.txt", "b.txt"] } };
@@ -696,7 +753,7 @@ describe("saved changes", () => {
 
     await flow(backend).updateProject();
 
-    expect(labels(NOT_RESTORED)).toEqual(["Restore Changes"]);
+    expect(labels(NOT_RESTORED)).toEqual(["View saved changes…"]);
     const { body } = titled(NOT_RESTORED);
     expect(body).toContain("a.txt\nb.txt");
     expect(body).toContain("must be committed or moved first");
@@ -716,11 +773,8 @@ describe("saved changes", () => {
   });
 
   test("restoring_again_when_blocked_names_the_files_again", async () => {
-    const backend = api({
-      update: vi.fn(async () => result({ saved: SAVED, restore: blocked })),
-      restore: vi.fn(async () => blocked),
-    });
-    await flow(backend).updateProject();
+    const backend = api({ restore: vi.fn(async () => blocked) });
+    reopened(backend);
     const { id } = titled(NOT_RESTORED);
 
     click(NOT_RESTORED, "Restore Changes");
@@ -732,10 +786,9 @@ describe("saved changes", () => {
   // Item 1: the backend refuses with the operation half-done; here both buttons remain.
   test("restoring_with_something_half_done_keeps_both_buttons", async () => {
     const backend = api({
-      update: vi.fn(async () => conflicts()),
       restore: vi.fn(async () => ({ kind: "failed" as const, reason: "Finish or abort first" })),
     });
-    await flow(backend).updateProject();
+    reopened(backend, "merging");
     const { id } = titled(NOT_RESTORED);
 
     click(NOT_RESTORED, "Restore Changes");
@@ -747,11 +800,8 @@ describe("saved changes", () => {
 
   test("if_the_entry_is_gone_the_card_goes_away_and_does_not_come_back", async () => {
     const restore = vi.fn(async (): Promise<RestoreOutcome> => ({ kind: "gone" }));
-    const backend = api({
-      update: vi.fn(async () => result({ saved: SAVED, restore: { kind: "conflicts" } })),
-      restore,
-    });
-    await flow(backend).updateProject();
+    const backend = api({ restore });
+    reopened(backend);
     const { id } = titled(NOT_RESTORED);
 
     click(NOT_RESTORED, "Restore Changes");
@@ -775,10 +825,9 @@ describe("saved changes", () => {
 
   test("restoring_again_without_success_leaves_the_button", async () => {
     const backend = api({
-      update: vi.fn(async () => result({ saved: SAVED, restore: { kind: "conflicts" } })),
       restore: vi.fn(async () => ({ kind: "failed" as const, reason: "still cannot" })),
     });
-    await flow(backend).updateProject();
+    reopened(backend);
     const { id } = titled(NOT_RESTORED);
     click(NOT_RESTORED, "Restore Changes");
     dismiss(id);
@@ -804,11 +853,8 @@ describe("saved changes", () => {
   });
 
   test("the_button_that_restores_without_stage_does_not_suggest_deleting_either", async () => {
-    const backend = api({
-      update: vi.fn(async () => result({ saved: SAVED, restore: { kind: "conflicts" } })),
-      restore: vi.fn(async () => ({ kind: "restoredWithoutIndex" as const })),
-    });
-    await flow(backend).updateProject();
+    const backend = api({ restore: vi.fn(async () => ({ kind: "restoredWithoutIndex" as const })) });
+    reopened(backend);
 
     click(NOT_RESTORED, "Restore Changes");
 
@@ -825,8 +871,9 @@ describe("saved changes", () => {
     const notification = titled(NOT_RESTORED);
     expect(notification.sticky).toBe(true);
     expect(notification.body).toContain("Update is not complete");
+    expect(notification.body).toContain("saved to stash");
     expect(notification.body).not.toMatch(/drop/i);
-    expect(labels(NOT_RESTORED)).toEqual(["Restore Changes", "Abort"]);
+    expect(labels(NOT_RESTORED)).toEqual(["View saved changes…", "Abort"]);
   });
 
   test("conflicts_with_nothing_saved_also_offer_abort", async () => {
@@ -852,7 +899,7 @@ describe("saved changes", () => {
     await vi.waitFor(() => expect(titled("Merge abort succeeded")).toBeTruthy());
     expect(backend.abort).toHaveBeenCalled();
     expect(backend.restore).not.toHaveBeenCalled();
-    expect(labels(NOT_RESTORED)).toEqual(["Restore Changes"]);
+    expect(labels(NOT_RESTORED)).toEqual(["View saved changes…"]);
     expect(titled(NOT_RESTORED).body).not.toContain("Resolve conflicts");
   });
 
@@ -895,7 +942,7 @@ describe("saved changes", () => {
     dismiss(id);
 
     await vi.waitFor(() => expect(titled("Abort failed")?.body).toBe("could not"));
-    expect(labels(NOT_RESTORED)).toEqual(["Restore Changes", "Abort"]);
+    expect(labels(NOT_RESTORED)).toEqual(["View saved changes…", "Abort"]);
   });
 });
 
@@ -907,7 +954,8 @@ describe("when opening a repository", () => {
   const opened = (overrides: Partial<RepoInfo> = {}) =>
     ({ pending: [pending], state: calm, ...overrides }) as RepoInfo;
 
-  test("after_restarting_the_card_comes_back_with_restore_changes", async () => {
+  // Decision 10: what an earlier build recorded keeps `Restore Changes`, and still restores.
+  test("a_pending_stash_from_an_earlier_build_still_restores", async () => {
     const backend = api();
     const { repositoryChanged } = flow(backend);
 
@@ -919,8 +967,9 @@ describe("when opening a repository", () => {
     expect(labels(NOT_RESTORED)).toEqual(["Restore Changes"]);
     click(NOT_RESTORED, "Restore Changes");
     await vi.waitFor(() =>
-      expect(backend.restore).toHaveBeenCalledWith({ sha: "abc", message: pending.message }),
+      expect(backend.restore).toHaveBeenCalledWith({ kind: "stash", sha: "abc", message: pending.message, lists: [] }),
     );
+    await vi.waitFor(() => expect(titled("Local changes were restored")).toBeTruthy());
   });
 
   test("with_something_half_done_it_also_offers_abort", () => {
@@ -1000,7 +1049,7 @@ describe("when opening a repository", () => {
 
     await vi.waitFor(() => expect(abortOperation).toHaveBeenCalledWith("rebasing"));
     expect(backend.abort).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(labels(NOT_RESTORED)).toEqual(["Restore Changes"]));
+    await vi.waitFor(() => expect(labels(NOT_RESTORED)).toEqual(["View saved changes…"]));
   });
 
   test("a_closed_card_comes_back_when_opening_again", () => {
@@ -1081,6 +1130,31 @@ describe("when opening a repository", () => {
     expect(titles()).toEqual(["The update of the previous repository finished"]);
   });
 
+  // Nothing offers them on reopening (decision 10): the card says where they are.
+  test("an_update_that_keeps_the_changes_in_another_repository_says_where_they_are", async () => {
+    const { update, finish } = waitingUpdate();
+    const { updateProject, repositoryChanged } = flow(api({ update }));
+    const running = updateProject();
+    await vi.waitFor(() => expect(update).toHaveBeenCalled());
+    const message = "Uncommitted changes before Update at today";
+    const shelved = {
+      kind: "shelve" as const,
+      sha: "",
+      message,
+      lists: [{ name: "Changes_list", description: `${message} [Changes]`, changelist: "default" }],
+    };
+
+    repositoryChanged(opened({ pending: [] }));
+    finish(result({ outcome: { kind: "conflicts" }, saved: shelved, inProgress: true }));
+    await running;
+
+    const card = titled("The update of the previous repository finished");
+    expect(card.kind).toBe("warning");
+    expect(card.body).toBe(`Your uncommitted changes were saved to shelf: ${message}`);
+    expect(card.body).not.toMatch(/reopen/);
+    expect(buttons()).toEqual([]);
+  });
+
   test("choosing_the_tracked_branch_does_not_survive_another_repository_either", async () => {
     const backend = api({
       update: vi.fn(async () =>
@@ -1151,12 +1225,9 @@ describe("when opening a repository", () => {
   test("restoring_without_success_after_switching_repository_does_not_bring_buttons_back", async () => {
     let finish = (_: RestoreOutcome) => {};
     const restore = vi.fn(() => new Promise<RestoreOutcome>((resolve) => (finish = resolve)));
-    const backend = api({
-      restore,
-      update: vi.fn(async () => result({ saved: SAVED, restore: { kind: "conflicts" } })),
-    });
-    const { updateProject, repositoryChanged } = flow(backend);
-    await updateProject();
+    const backend = api({ restore });
+    const { repositoryChanged } = flow(backend);
+    repositoryChanged(opened());
     click(NOT_RESTORED, "Restore Changes");
 
     repositoryChanged(opened({ pending: [] }));
@@ -1461,16 +1532,18 @@ test("after_a_push_what_ended_well_reports_nothing", () => {
 test("after_a_push_in_another_repository_there_are_no_buttons", () => {
   const { forPush } = flow(api());
 
-  forPush.report(result({ outcome: { kind: "conflicts" }, inProgress: true }), false);
+  forPush.report(result({ outcome: { kind: "conflicts" }, inProgress: true, saved: SAVED }), false);
 
   expect(shown().map(({ title }) => title)).toEqual([
     "The update of the previous repository finished",
   ]);
+  expect(shown()[0].body).toBe(`Your uncommitted changes were saved to stash: ${SAVED.message}`);
+  expect(shown()[0].actions).toBeUndefined();
 });
 
 describe("what another operation saved", () => {
   const NOT_RESTORED = "Local changes were not restored";
-  const REBASE_SAVED = { sha: "r1", message: "Uncommitted changes before rebase" };
+  const REBASE_SAVED = { kind: "stash" as const, sha: "r1", message: "Uncommitted changes before rebase", lists: [] };
   const SAVING = { operation: "rebase", from: "main" };
 
   test("pull_into_is_an_update_towards_the_remote_with_its_notices", async () => {
@@ -1482,7 +1555,7 @@ describe("what another operation saved", () => {
     expect(titles()).toContain("2 files updated in 1 commit");
   });
 
-  test("what_did_not_come_back_is_announced_with_restore_changes_and_its_text", () => {
+  test("what_did_not_come_back_is_announced_with_view_saved_changes_and_its_text", () => {
     const update = flow(api());
 
     update.showRestored(
@@ -1497,7 +1570,7 @@ describe("what another operation saved", () => {
     expect(titled(NOT_RESTORED).body).toBe(
       `Uncommitted changes that were saved before rebase have conflicts with files from main\nThey are in the stash: ${REBASE_SAVED.message}`,
     );
-    expect(labels(NOT_RESTORED)).toEqual(["Restore Changes"]);
+    expect(labels(NOT_RESTORED)).toEqual(["View saved changes…"]);
   });
 
   test("restoring_goes_from_last_to_first_and_stops_if_one_does_not_come_back", async () => {

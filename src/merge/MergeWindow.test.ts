@@ -88,6 +88,7 @@ function task(value: unknown = null, failure?: { kind: string; text: string }) {
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
   const all: Record<string, (args: never) => unknown> = {
+    merge_window_contents: () => null,
     merge_window_path: () => "a.txt",
     settings_get: () => SETTINGS,
     settings_save: (args: { settings: Settings }) => args.settings,
@@ -582,4 +583,131 @@ test("the_merge_window_opens_with_the_wrap_of_its_place", async () => {
     (dom) => EditorView.findFromDOM(dom) as EditorView,
   );
   expect(views.map(wrapped)).toEqual([true, true, true]);
+});
+
+// Contents mode: three texts given by whoever opened it (a patch that did not apply), without a
+// file in conflict.
+const CONTENTS = {
+  id: "7",
+  title: "Merge Revisions for /repo/a.txt",
+  titles: ["Local changes", "Result", "Patched version"],
+  left: "a\r\nX\r\nc\r\n",
+  base: "a\nb\nc\n",
+  right: "a\nY\nc\n",
+  path: "a.txt",
+};
+
+function mockContents(commands: Record<string, (args: never) => unknown> = {}) {
+  const refused = (name: string) => () => {
+    throw new Error(`${name} in contents mode`);
+  };
+  mockCommands({
+    merge_window_contents: () => CONTENTS,
+    merge_window_path: () => null,
+    merge_blocks: () => [CONFLICT],
+    conflict_sides: refused("conflict_sides"),
+    merge_working_file: refused("merge_working_file"),
+    conflict_resolve: refused("conflict_resolve"),
+    conflicts_accept: refused("conflicts_accept"),
+    ...commands,
+  });
+}
+
+const doneArgs = () => calls("merge_window_done").map(([, args]) => args);
+
+test("contents_mode_saves_into_the_done_event_and_never_calls_conflict_resolve", async () => {
+  mockContents();
+  await open();
+  edit();
+  // `check()` is not for this mode: there is no working file to compare.
+  deliver("repo-changed");
+
+  await fireEvent.click(button("Apply"));
+  await answer("Apply Changes", "Apply Changes and Mark Resolved");
+
+  await waitFor(() => expect(doneArgs()).toEqual([{ result: "resolved", content: "za\nb\nc\n" }]));
+  expect(calls("conflict_resolve")).toHaveLength(0);
+  expect(calls("conflict_sides")).toHaveLength(0);
+  expect(calls("merge_working_file")).toHaveLength(0);
+  expect(screen.queryByText("Conflict is not valid and no longer can be resolved.")).toBeNull();
+  // The blocks are those of the given texts, with their line breaks normalised.
+  expect(calls("merge_blocks")[0][1]).toEqual({
+    left: "a\nX\nc\n",
+    base: "a\nb\nc\n",
+    right: "a\nY\nc\n",
+    policy: "default",
+  });
+});
+
+test("contents_mode_shows_the_given_titles", async () => {
+  mockContents();
+  await open();
+
+  const titles = [...document.querySelectorAll(".rm-merge-title")].map((title) => title.textContent);
+  expect(titles).toEqual(CONTENTS.titles);
+  expect(centre().state.doc.toString()).toBe("a\nb\nc\n");
+});
+
+test("contents_mode_accepts_a_side_as_its_text_without_touching_the_index", async () => {
+  mockContents();
+  await open();
+
+  await fireEvent.click(button("Accept Left"));
+
+  await waitFor(() => expect(doneArgs()).toEqual([{ result: "yours", content: "a\nX\nc\n" }]));
+  expect(calls("conflicts_accept")).toHaveLength(0);
+});
+
+test("contents_mode_cancel_returns_no_text", async () => {
+  mockContents();
+  await open();
+
+  await fireEvent.click(button("Cancel"));
+
+  await waitFor(() => expect(doneArgs()).toEqual([{ result: "cancelled" }]));
+});
+
+// A patch conflict (`ApplyPatchAction.applyContent`): Cancel is `Abort…` (V:381), and it, or closing
+// the window, asks `Abort Patch` (V:382-386) instead of the discard question. `Continue Resolve`
+// keeps the window and its edits.
+test("abort_asks_abort_and_rollback_skip_or_continue_resolve", async () => {
+  mockCommands({
+    merge_window_contents: () => ({ ...CONTENTS, abort: true }),
+    merge_window_path: () => null,
+    merge_blocks: () => [CONFLICT],
+  });
+  await open();
+  edit();
+
+  expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  await fireEvent.click(button("Abort…"));
+  const question = await screen.findByRole("dialog", { name: "Abort Patch" });
+  expect(within(question).getByText("Abort and Rollback applying patch or Skip this file?")).toBeTruthy();
+  expect(within(question).getAllByRole("button").map((item) => item.textContent)).toEqual([
+    "Continue Resolve",
+    "Skip",
+    "Abort and Rollback",
+  ]);
+  await fireEvent.click(within(question).getByRole("button", { name: "Continue Resolve" }));
+  expect(screen.queryByRole("dialog", { name: "Abort Patch" })).toBeNull();
+  expect(doneArgs()).toEqual([]);
+  expect(centre().state.doc.toString()).toBe("za\nb\nc\n");
+
+  deliver("merge-close");
+  await answer("Abort Patch", "Skip");
+  await waitFor(() => expect(doneArgs()).toEqual([{ result: "skip" }]));
+});
+
+test("abort_and_rollback_closes_the_patch_merge_as_aborted", async () => {
+  mockCommands({
+    merge_window_contents: () => ({ ...CONTENTS, abort: true }),
+    merge_window_path: () => null,
+    merge_blocks: () => [CONFLICT],
+  });
+  await open();
+
+  await fireEvent.click(button("Abort…"));
+  await answer("Abort Patch", "Abort and Rollback");
+
+  await waitFor(() => expect(doneArgs()).toEqual([{ result: "abort" }]));
 });

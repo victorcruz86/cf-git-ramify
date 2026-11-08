@@ -319,6 +319,28 @@ pub fn open_in_text_editor(path: &Path) -> std::io::Result<()> {
     }
 }
 
+// `RevealFileAction`: Finder opens the folder with the file selected. The path comes from a chooser
+// or a dialog: only an absolute one, which is never taken for an option of `open`.
+pub fn reveal_command(path: &Path) -> Result<Command, String> {
+    if !path.is_absolute() {
+        return Err(format!("The path '{}' is not absolute", path.display()));
+    }
+    let mut command = Command::new(OPEN);
+    command.arg("-R").arg(path);
+    Ok(command)
+}
+
+pub fn reveal_in_finder(path: &Path) -> Result<(), String> {
+    let status = reveal_command(path)?
+        .status()
+        .map_err(|error| format!("Could not open Finder: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("open exited with {status}"))
+    }
+}
+
 // One window per repository and the app does not open several yet: another window is another
 // process. Inside an `.app`, `open -n` launches it with the path as `argv[1]`, which is what
 // `initial_repo` reads. Outside one (development) there is nothing `open` knows how to launch, and
@@ -1047,5 +1069,20 @@ mod tests {
         assert!(new_window_command(exe, Path::new("-n")).is_err());
         assert!(new_window_command(exe, Path::new("relative/repo")).is_err());
         assert!(new_window_command(exe, Path::new("")).is_err());
+    }
+
+    #[test]
+    fn reveal_in_finder_is_open_dash_r_with_the_path_as_an_argument() {
+        let command = reveal_command(Path::new("/tmp/my patch.patch")).unwrap();
+
+        assert_eq!(command.get_program(), "/usr/bin/open");
+        assert_eq!(args(&command), ["-R", "/tmp/my patch.patch"]);
+    }
+
+    #[test]
+    fn reveal_in_finder_refuses_a_relative_path() {
+        assert!(reveal_command(Path::new("-a")).is_err());
+        assert!(reveal_command(Path::new("relative/a.patch")).is_err());
+        assert!(reveal_command(Path::new("")).is_err());
     }
 }

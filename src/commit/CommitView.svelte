@@ -291,6 +291,15 @@
     panel?.focusTree();
   }
 
+  export function rollback() {
+    panel?.requestRollback();
+  }
+
+  // After Shelve Changes from the dialog: the list it shelved from goes if it was left empty.
+  export async function removeIfEmpty(id: string) {
+    await panel?.removeIfEmpty(id);
+  }
+
   export function checkin() {
     if (!stagingArea) inclusion = activateInclusion(inclusion, activePaths(), unversionedPaths());
     problem = null;

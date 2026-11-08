@@ -8,9 +8,16 @@ export interface DiffOptions extends EditorOptions {
 }
 
 // The places of DiffPlaces that rama has: the diff window, the commit dialog's `Diff` panel, the
-// Local Changes preview, the merge window and the diff docked in the log (also in the push
-// dialog). Soft wrap is remembered for each one, as TextDiffSettingsHolder's PlaceSettings does.
-export type DiffPlace = "Default" | "CommitDialog" | "ChangesView" | "Merge" | "VcsLogView";
+// Local Changes preview, the merge window, the diff docked in the log (also in the push dialog) and
+// the stash and shelf preview (`SavedPatchesUi.SAVED_PATCHES_UI_PLACE`, not one of DiffPlaces).
+// Soft wrap is remembered for each one, as TextDiffSettingsHolder's PlaceSettings does.
+export type DiffPlace =
+  | "Default"
+  | "CommitDialog"
+  | "ChangesView"
+  | "Merge"
+  | "VcsLogView"
+  | "SavedPatchesUiPlace";
 
 const KEY = "diff.options";
 const WRAP_KEY = "diff.wrap.";
@@ -32,6 +39,7 @@ const WRAP_DEFAULTS: Record<DiffPlace, boolean> = {
   ChangesView: false,
   Merge: false,
   VcsLogView: false,
+  SavedPatchesUiPlace: false,
 };
 
 export function loadWrap(place: DiffPlace): boolean {

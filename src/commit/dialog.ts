@@ -138,14 +138,36 @@ export function onClosed(input: {
 
 export type Executor = "commit" | "shelve" | "patch";
 
-// What an executor other than the commit receives once the dialog closes (part 3: Shelve and Create
-// Patch): the list, the message, the included paths and, as for the commit, the chosen lines.
+// What an executor other than the commit receives (Shelve and Create Patch): the repository the
+// changes are in, the list, the message, the included files (with the old name of a rename) and,
+// as for the commit, the chosen lines.
 export interface ExecutorChanges {
+  repo: string;
   list: string;
   message: string;
-  paths: string[];
-  partial: PartialFile[];
+  files: { path: string; oldPath: string | null }[];
   selections: FileSelection[];
+}
+
+// `close` closes the dialog: the executor calls it once it goes ahead (Create Patch, after Patch
+// File Settings). Until then the dialog stays open, and an executor that gives up leaves it open.
+// `here` says whether the repository is still the open one.
+export interface ExecutorContext {
+  close: () => void;
+  here: () => boolean;
+}
+
+export type ExecutorRun = (changes: ExecutorChanges, context: ExecutorContext) => Promise<void>;
+
+// `saveCommitMessageBeforeCommit` for an executor (`SingleChangeListCommitMessagePolicy.onDialogClosed`
+// with `onBeforeCommit`): the message becomes the list's comment when the whole list goes in, and
+// the list keeps its own comment otherwise. Unlike a commit, nothing clears it afterwards.
+export function beforeExecutor(input: {
+  draft: string;
+  list: ChangeList;
+  fullyIncluded: boolean;
+}): { id: string; comment: string } | null {
+  return input.fullyIncluded ? { id: input.list.id, comment: input.draft } : null;
 }
 
 // The texts come from VcsBundle (`commit.dialog.title`, `shelve.changes.action`,

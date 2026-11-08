@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { CONTENT_TITLE, type ContentId } from "../lib/tabs";
+  import { contentTitle, type ContentId, type ToolWindowId } from "../lib/tabs";
 
+  // The strip of the `Git` window, or of the `Commit` one in non-modal mode: `label` is the window's name.
   interface Props {
+    toolWindow: ToolWindowId;
+    label: string;
     contents: ContentId[];
     selected: ContentId;
     // `focus`: the content takes the focus, as on a click. Moving along the strip with the arrows
@@ -9,7 +12,7 @@
     onselect: (id: ContentId, focus: boolean) => void;
   }
 
-  let { contents, selected, onselect }: Props = $props();
+  let { toolWindow, label, contents, selected, onselect }: Props = $props();
 
   // The tabs of the `Version Control` window are not closable: the closable ones are those the user adds
   // (extra log tabs, file history), which are inside their own content.
@@ -25,7 +28,7 @@
   }
 </script>
 
-<div class="tabs" role="tablist" aria-label="Git">
+<div class="tabs" role="tablist" aria-label={label}>
   {#each contents as id, index (id)}
     <span class="tab" class:selected={id === selected}>
       <button
@@ -36,7 +39,7 @@
         onclick={() => id !== selected && onselect(id, true)}
         onkeydown={(event) => move(event, index)}
       >
-        {CONTENT_TITLE[id]}
+        {contentTitle(id, toolWindow)}
       </button>
     </span>
   {/each}

@@ -103,7 +103,7 @@ pub fn run_mutating_holding(repo: &Path, args: &[&str], lock: &File) -> Result<V
     })
 }
 
-fn retrying(mut attempt: impl FnMut() -> Result<Vec<u8>, GitError>) -> Result<Vec<u8>, GitError> {
+pub(crate) fn retrying<T>(mut attempt: impl FnMut() -> Result<T, GitError>) -> Result<T, GitError> {
     for _ in 0..LOCK_RETRIES {
         match attempt() {
             Err(error) if is_index_locked(&error) => thread::sleep(LOCK_RETRY_DELAY),

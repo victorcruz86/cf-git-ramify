@@ -20,6 +20,8 @@ pub mod merge;
 pub mod merge3;
 pub mod messages;
 pub mod operation;
+pub mod patch;
+pub mod patch_apply;
 pub mod preserve;
 pub mod pull;
 pub mod push;
@@ -28,8 +30,10 @@ pub mod remotes;
 pub mod rewrite;
 pub mod rollback;
 pub mod settings;
+pub mod shelf;
 pub mod snapshots;
 pub mod staging;
+pub mod stash;
 pub mod status;
 pub mod storage;
 pub mod task;
@@ -48,6 +52,7 @@ fn app_version() -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::AppState::default())
         .menu(commands::app_menu)
         .on_menu_event(|app, event| {
@@ -89,6 +94,7 @@ pub fn run() {
             log::commands::log_adjacent_rows,
             log::commands::log_current_branch,
             log::commands::clipboard_write,
+            log::commands::patch_clipboard,
             log::commands::log_refs_changed,
             log::commands::log_options_get,
             log::commands::log_options_set,
@@ -113,6 +119,19 @@ pub fn run() {
             vcs_commands::conflict_sides,
             vcs_commands::conflicts_accept,
             vcs_commands::conflict_resolve,
+            vcs_commands::stash_list,
+            vcs_commands::stash_changes,
+            vcs_commands::stash_file_sides,
+            vcs_commands::stash_save,
+            vcs_commands::stash_push_paths,
+            vcs_commands::stash_unstash,
+            vcs_commands::stash_drop,
+            vcs_commands::stash_clear,
+            vcs_commands::patch_plan,
+            vcs_commands::patch_apply,
+            vcs_commands::patch_conflict_resolve,
+            vcs_commands::patch_rollback,
+            vcs_commands::patch_preview,
             vcs_commands::merge_commit,
             vcs_commands::apply_commits,
             vcs_commands::rewrite_menu,
@@ -188,6 +207,7 @@ pub fn run() {
             vcs_commands::push_tags_set,
             vcs_commands::repo_settings_get,
             vcs_commands::protected_branches_set,
+            vcs_commands::clean_tree_set,
             vcs_commands::protected_patterns_check,
             vcs_commands::force_push_target_remember,
             vcs_commands::reset_mode_get,
@@ -203,12 +223,37 @@ pub fn run() {
             commands::diff_window_path,
             commands::diff_flushed,
             commands::merge_window_open,
+            commands::merge_window_open_contents,
             commands::merge_window_path,
+            commands::merge_window_contents,
             commands::merge_window_done,
             commands::merge_working_file,
             commands::merge_left,
             commands::merge_leave_received,
             commands::merge_window_ready,
+            commands::reveal_in_finder,
+            vcs_commands::patch_create,
+            vcs_commands::patch_settings_get,
+            vcs_commands::patch_show_in_finder_set,
+            vcs_commands::patch_paths,
+            vcs_commands::patch_app_settings_get,
+            vcs_commands::patch_storage_set,
+            vcs_commands::patch_on_the_fly_set,
+            vcs_commands::shelf_shelve,
+            vcs_commands::shelf_shelve_silently,
+            vcs_commands::shelf_settings_set,
+            vcs_commands::shelf_lists,
+            vcs_commands::shelf_sides,
+            vcs_commands::shelf_find_patches,
+            vcs_commands::shelf_delete,
+            vcs_commands::shelf_undo_delete,
+            vcs_commands::shelf_restore,
+            vcs_commands::shelf_rename,
+            vcs_commands::shelf_recycle,
+            vcs_commands::shelf_import_patches,
+            vcs_commands::shelf_import_idea,
+            vcs_commands::shelf_import_to_shelf,
+            vcs_commands::shelf_patch_create,
             commands::repo_status,
             commands::changelists_get,
             commands::changelists_create,
@@ -259,6 +304,9 @@ pub fn run() {
                     .state::<commands::AppState>()
                     .branch_sync
                     .visible();
+            }
+            if let WindowEvent::Focused(focused) = event {
+                commands::focus_changed(window.app_handle(), *focused);
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

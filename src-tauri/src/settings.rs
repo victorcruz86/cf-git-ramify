@@ -23,6 +23,16 @@ pub enum IncomingCheck {
     Never,
 }
 
+// `GitSaveChangesPolicy`: what `Clean working tree using:` saves the local changes with before Update,
+// a rebase, a smart checkout or a Smart Merge. Shelve is the default (`GitVcsOptions`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CleanTree {
+    Stash,
+    #[default]
+    Shelve,
+}
+
 // `UpdateMethod`, without `BRANCH_DEFAULT`: IntelliJ's interface does not offer it either.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -127,6 +137,21 @@ pub struct RepoSettings {
     pub force_push_targets: Vec<String>,
     pub merge: MergeSettings,
     pub rebase: RebaseSettings,
+    pub patch: PatchSettings,
+    // `Clean working tree using:`, per project in IntelliJ (`GitVcsSettings`).
+    pub clean_tree: CleanTree,
+    // The Shelf tab's options, per project (`ShelveChangesManager.State`).
+    pub shelf: ShelfSettings,
+}
+
+// `remove_strategy` (`Remove successfully applied files from the shelf`), `show_recycled`
+// (`Already Unshelved`) and the grouping of the Shelf tab (`groupingKeys`, empty by default).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ShelfSettings {
+    pub remove_strategy: bool,
+    pub show_recycled: bool,
+    pub group_by_directory: bool,
 }
 
 impl Default for RepoSettings {
@@ -136,8 +161,21 @@ impl Default for RepoSettings {
             force_push_targets: Vec::new(),
             merge: MergeSettings::default(),
             rebase: RebaseSettings::default(),
+            patch: PatchSettings::default(),
+            clean_tree: CleanTree::default(),
+            shelf: ShelfSettings::default(),
         }
     }
+}
+
+// What IntelliJ keeps per project for patches: `vcs.patch.path`, `vcs.patch.to.clipboard` and
+// `VcsConfiguration.SHOW_PATCH_IN_EXPLORER` (`None`: ask).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PatchSettings {
+    pub folder: Option<String>,
+    pub to_clipboard: bool,
+    pub show_in_finder: Option<bool>,
 }
 
 // `GitMergeSettings`: the branch and the options of the last Merge…, without the message.
@@ -284,6 +322,124 @@ pub fn remember_force_target(dir: &Path, remote: &str, branch: &str) -> io::Resu
         settings.force_push_targets.push(target);
     }
     save_repo(dir, &settings)
+}
+
+// `VcsApplicationSettings.PATCH_STORAGE_LOCATION`: the folder of the last patch, for the app.
+const PATCH_FILE_NAME: &str = "patch-settings.json";
+const PATCH_CORRUPT_FILE_NAME: &str = "patch-settings.json.corrupt";
+
+// What Patch File Settings starts with: the folder (the repository's, else the app's, else none:
+// the repository root), `To clipboard`, and `SHOW_PATCH_IN_EXPLORER` (`None`: ask).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchDefaults {
+    pub folder: Option<String>,
+    pub to_clipboard: bool,
+    pub show_in_finder: Option<bool>,
+}
+
+// `VcsApplicationSettings.PATCH_STORAGE_LOCATION` and `DETECT_PATCH_ON_THE_FLY`, kept apart from
+// `Settings`: the settings page saves the whole of those and would put back a folder it read before
+// a patch was written, or the checkbox of the clipboard dialog as it was.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct AppPatchSettings {
+    folder: Option<String>,
+    detect_patch_on_the_fly: bool,
+}
+
+// What the app keeps for patches: the folder `Select Patch File` starts in and `Analyze and apply
+// patch from clipboard on the fly` (false by default).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPatch {
+    pub folder: Option<String>,
+    pub detect_patch_on_the_fly: bool,
+}
+
+// What cannot be read leaves the defaults.
+pub fn app_patch(app_dir: &Path) -> AppPatch {
+    let app = load_app_patch(app_dir).unwrap_or_default();
+    AppPatch {
+        folder: filled(app.folder),
+        detect_patch_on_the_fly: app.detect_patch_on_the_fly,
+    }
+}
+
+fn save_app_patch(app_dir: &Path, change: impl FnOnce(&mut AppPatchSettings)) -> io::Result<()> {
+    let mut app = load_app_patch(app_dir)?;
+    change(&mut app);
+    fs::create_dir_all(app_dir)?;
+    let json = serde_json::to_vec_pretty(&app).map_err(io::Error::other)?;
+    storage::write_atomic(&app_dir.join(PATCH_FILE_NAME), &json)
+}
+
+// `ApplyPatchAction.actionPerformed`: the folder of the patch chosen in `Select Patch File`.
+pub fn remember_patch_storage(app_dir: &Path, folder: &Path) -> io::Result<()> {
+    let folder = folder.display().to_string();
+    save_app_patch(app_dir, |app| app.folder = Some(folder))
+}
+
+// The checkbox of Apply Patch from Clipboard.
+pub fn save_detect_patch_on_the_fly(app_dir: &Path, on: bool) -> io::Result<()> {
+    save_app_patch(app_dir, |app| app.detect_patch_on_the_fly = on)
+}
+
+fn load_app_patch(app_dir: &Path) -> io::Result<AppPatchSettings> {
+    storage::load_json(app_dir, PATCH_FILE_NAME, PATCH_CORRUPT_FILE_NAME)
+}
+
+// It never prevents making a patch: whatever cannot be read leaves the defaults.
+pub fn patch_defaults(app_dir: &Path, repo_dir: &Path) -> PatchDefaults {
+    let repo = load_repo(repo_dir).patch;
+    let app = load_app_patch(app_dir).unwrap_or_default();
+    PatchDefaults {
+        folder: filled(repo.folder).or(filled(app.folder)),
+        to_clipboard: repo.to_clipboard,
+        show_in_finder: repo.show_in_finder,
+    }
+}
+
+// `validateAndWritePatchToFile`: the folder of the patch just written, for this repository and for
+// the app, or no folder in either when it is the repository root (IntelliJ's default path).
+pub fn remember_patch_folder(
+    app_dir: &Path,
+    repo_dir: &Path,
+    folder: &Path,
+    repo: &Path,
+) -> io::Result<()> {
+    let stored = (folder != repo).then(|| folder.display().to_string());
+    let mut settings = try_load_repo(repo_dir)?;
+    settings.patch.folder = stored.clone();
+    save_repo(repo_dir, &settings)?;
+    save_app_patch(app_dir, |app| app.folder = stored)
+}
+
+// `vcs.patch.to.clipboard`, saved when Patch File Settings is accepted.
+pub fn remember_patch_to_clipboard(repo_dir: &Path, to_clipboard: bool) -> io::Result<()> {
+    let mut settings = try_load_repo(repo_dir)?;
+    settings.patch.to_clipboard = to_clipboard;
+    save_repo(repo_dir, &settings)
+}
+
+// The radio of `Clean working tree using:`, for this repository.
+pub fn save_clean_tree(repo_dir: &Path, clean_tree: CleanTree) -> io::Result<()> {
+    let mut settings = try_load_repo(repo_dir)?;
+    settings.clean_tree = clean_tree;
+    save_repo(repo_dir, &settings)
+}
+
+pub fn save_shelf_settings(repo_dir: &Path, shelf: ShelfSettings) -> io::Result<()> {
+    let mut settings = try_load_repo(repo_dir)?;
+    settings.shelf = shelf;
+    save_repo(repo_dir, &settings)
+}
+
+// `Don't ask again` of `Successfully created patch`: always reveal, or never.
+pub fn save_show_patch_in_finder(repo_dir: &Path, show: bool) -> io::Result<()> {
+    let mut settings = try_load_repo(repo_dir)?;
+    settings.patch.show_in_finder = Some(show);
+    save_repo(repo_dir, &settings)
 }
 
 #[cfg(test)]
@@ -655,6 +811,24 @@ mod tests {
     }
 
     #[test]
+    fn the_radio_saves_per_repository_and_defaults_to_shelve() {
+        let (one, other) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        save_protected_branches(one.path(), vec!["release".to_string()]).unwrap();
+        assert_eq!(load_repo(one.path()).clean_tree, CleanTree::Shelve);
+
+        save_clean_tree(one.path(), CleanTree::Stash).unwrap();
+
+        let saved = load_repo(one.path());
+        assert_eq!(saved.clean_tree, CleanTree::Stash);
+        assert_eq!(saved.protected_branches, ["release"]);
+        assert_eq!(load_repo(other.path()).clean_tree, CleanTree::Shelve);
+        let json = fs::read_to_string(one.path().join(REPO_FILE_NAME)).unwrap();
+        assert!(json.contains("\"cleanTree\": \"stash\""), "{json}");
+        save_clean_tree(one.path(), CleanTree::Shelve).unwrap();
+        assert_eq!(load_repo(one.path()).clean_tree, CleanTree::Shelve);
+    }
+
+    #[test]
     fn update_refs_is_remembered_per_repository() {
         let dir = TempDir::new().unwrap();
 
@@ -716,5 +890,113 @@ mod tests {
         assert!(merge.is_err());
         assert!(rebase.is_err());
         assert_eq!(fs::read(&file).unwrap(), b"{}");
+    }
+    // `vcs.patch.path` per repository, then `PATCH_STORAGE_LOCATION` for the app; writing to the
+    // repository root (the default) stores no folder in either (`validateAndWritePatchToFile`).
+    #[test]
+    fn the_patch_folder_is_remembered_per_repository_and_for_the_app() {
+        let app = TempDir::new().unwrap();
+        let one = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let root = Path::new("/work/repo");
+
+        assert_eq!(
+            patch_defaults(app.path(), one.path()),
+            PatchDefaults::default()
+        );
+        remember_patch_folder(
+            app.path(),
+            one.path(),
+            Path::new("/Users/me/Downloads/PATCHS"),
+            root,
+        )
+        .unwrap();
+
+        let here = patch_defaults(app.path(), one.path());
+        let elsewhere = patch_defaults(app.path(), other.path());
+        assert_eq!(here.folder.as_deref(), Some("/Users/me/Downloads/PATCHS"));
+        assert_eq!(
+            elsewhere.folder.as_deref(),
+            Some("/Users/me/Downloads/PATCHS")
+        );
+
+        remember_patch_folder(app.path(), other.path(), Path::new("/tmp/other"), root).unwrap();
+        assert_eq!(
+            patch_defaults(app.path(), one.path()).folder.as_deref(),
+            Some("/Users/me/Downloads/PATCHS")
+        );
+        assert_eq!(
+            patch_defaults(app.path(), TempDir::new().unwrap().path())
+                .folder
+                .as_deref(),
+            Some("/tmp/other")
+        );
+
+        remember_patch_folder(app.path(), one.path(), Path::new("/work/repo/"), root).unwrap();
+        assert_eq!(patch_defaults(app.path(), one.path()).folder, None);
+        assert_eq!(
+            patch_defaults(app.path(), other.path()).folder.as_deref(),
+            Some("/tmp/other")
+        );
+    }
+
+    #[test]
+    fn to_clipboard_and_show_in_finder_are_kept_with_the_rest() {
+        let app = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        save_protected_branches(dir.path(), vec!["release".to_string()]).unwrap();
+
+        remember_patch_to_clipboard(dir.path(), true).unwrap();
+        save_show_patch_in_finder(dir.path(), false).unwrap();
+        remember_patch_folder(app.path(), dir.path(), Path::new("/tmp/p"), Path::new("/r"))
+            .unwrap();
+
+        let defaults = patch_defaults(app.path(), dir.path());
+        assert!(defaults.to_clipboard);
+        assert_eq!(defaults.show_in_finder, Some(false));
+        assert_eq!(defaults.folder.as_deref(), Some("/tmp/p"));
+        assert_eq!(load_repo(dir.path()).protected_branches, ["release"]);
+
+        // `SHOW_PATCH_IN_EXPLORER` starts as null: the question is asked.
+        let fresh = TempDir::new().unwrap();
+        assert_eq!(
+            patch_defaults(app.path(), fresh.path()).show_in_finder,
+            None
+        );
+        assert!(!patch_defaults(app.path(), fresh.path()).to_clipboard);
+    }
+
+    // `VcsApplicationSettings.DETECT_PATCH_ON_THE_FLY` is false until the clipboard dialog's
+    // checkbox turns it on; `PATCH_STORAGE_LOCATION` is the folder of the last patch chosen in
+    // `Select Patch File`, for the app only. Neither loses what the other, or the patch folder of
+    // Create Patch, saved.
+    #[test]
+    fn detect_patch_on_the_fly_defaults_to_false_and_is_kept_with_the_folder() {
+        let app = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        assert_eq!(
+            app_patch(app.path()),
+            AppPatch {
+                folder: None,
+                detect_patch_on_the_fly: false
+            }
+        );
+
+        save_detect_patch_on_the_fly(app.path(), true).unwrap();
+        remember_patch_storage(app.path(), Path::new("/Users/me/Downloads/PATCHS")).unwrap();
+
+        let saved = app_patch(app.path());
+        assert!(saved.detect_patch_on_the_fly);
+        assert_eq!(saved.folder.as_deref(), Some("/Users/me/Downloads/PATCHS"));
+        let folder = Path::new("/tmp/p");
+        remember_patch_folder(app.path(), repo.path(), folder, Path::new("/r")).unwrap();
+        assert!(app_patch(app.path()).detect_patch_on_the_fly);
+        save_detect_patch_on_the_fly(app.path(), false).unwrap();
+        assert_eq!(app_patch(app.path()).folder.as_deref(), Some("/tmp/p"));
+        assert!(!app_patch(app.path()).detect_patch_on_the_fly);
+        // Choosing a patch to apply leaves the repository's own folder alone.
+        remember_patch_storage(app.path(), Path::new("/elsewhere")).unwrap();
+        let defaults = patch_defaults(app.path(), repo.path());
+        assert_eq!(defaults.folder.as_deref(), Some("/tmp/p"));
     }
 }

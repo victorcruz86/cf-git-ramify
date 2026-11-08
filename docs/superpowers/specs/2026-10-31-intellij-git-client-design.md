@@ -81,11 +81,11 @@ Measurement conditions: Apple Silicon Mac, one open window, a public repository 
 
 **Decided in phase 2** (plan `2026-11-01-phase-2-log-branches-and-remotes.md`, Decisions section; the user approved them with the plan) **[Claude's decision]**:
 
-1. **Only stash until phase 4.** `Clean working tree using` is Stash or Shelve, and in IntelliJ the default value is Shelve. The shelf arrives in phase 4, so everything is saved with `git stash`.
-2. **The "auto, always or never" setting does not exist in 2023.2.3.** The matrix was wrong: the row becomes `Clean working tree using`, with Stash fixed in this phase.
+1. **Only stash until phase 4.** `Clean working tree using` is Stash or Shelve, and in IntelliJ the default value is Shelve. The shelf arrives in phase 4, so everything is saved with `git stash`. *Overridden by phase 4 decision 9 (`Clean working tree using:` Shelve or Stash, Shelve by default, per repository).*
+2. **The "auto, always or never" setting does not exist in 2023.2.3.** The matrix was wrong: the row becomes `Clean working tree using`, with Stash fixed in this phase. *Overridden by phase 4 decision 9 (`Clean working tree using:` Shelve or Stash, Shelve by default, per repository).*
 3. **System credentials.** `Use credential helper` comes enabled, unlike in IntelliJ. Without Password Safe, the login dialog has no `Remember`: if there is a helper, git saves it.
-4. **Restoring after an error or a cancellation.** IntelliJ leaves the changes saved in those cases. Here they are restored if the repository went back to its clean state, because there is no stash interface until phase 4.
-5. **`Restore Changes` button.** If saved changes remain, the notification stays with that button, which does `git stash pop` of that entry. IntelliJ links to the shelf, which does not exist here.
+4. **Restoring after an error or a cancellation.** IntelliJ leaves the changes saved in those cases. Here they are restored if the repository went back to its clean state, because there is no stash interface until phase 4. *Overridden by phase 4 decision 10 (after an error or a cancel the changes stay saved, with `View saved changes…`; `Restore Changes` stays only for what earlier builds saved).*
+5. **`Restore Changes` button.** If saved changes remain, the notification stays with that button, which does `git stash pop` of that entry. IntelliJ links to the shelf, which does not exist here. *Overridden by phase 4 decision 10 (after an error or a cancel the changes stay saved, with `View saved changes…`; `Restore Changes` stays only for what earlier builds saved).*
 6. **Conflicts.** The app detects the state and leaves the repository as git leaves it, with `Abort`. Resolving them, `Continue` and `Skip` belong to phase 3.
 7. **GitHub protected-branch rules, to phase 4.** They need the Keychain token. Here there is a list of patterns, with `master` and `main`, saved per repository.
 8. **Filtering without stages.** IntelliJ asks for 5, 2,000 and then all the commits. Here everything is requested and shown when it finishes.
@@ -96,7 +96,7 @@ Measurement conditions: Apple Silicon Mac, one open window, a public repository 
 
 **Decided in phase 3** (plan `2026-11-02-phase-3-conflicts-and-rewriting.md`, Decisions section; the user approved them with the plan) **[Claude's decision]**:
 
-1. **Only stash until phase 4**, same as in phase 2. Rebase, Smart Merge and editing from the log save with `git stash`, with IntelliJ's messages (`Uncommitted changes before rebase`, `Uncommitted changes before Merge at <fecha>`). IntelliJ's default policy is Shelve.
+1. **Only stash until phase 4**, same as in phase 2. Rebase, Smart Merge and editing from the log save with `git stash`, with IntelliJ's messages (`Uncommitted changes before rebase`, `Uncommitted changes before Merge at <fecha>`). IntelliJ's default policy is Shelve. *Overridden by phase 4 decision 9 (`Clean working tree using:` Shelve or Stash, Shelve by default, per repository).*
 2. **`GIT_SEQUENCE_EDITOR` in addition to `GIT_EDITOR`.** IntelliJ only sets `GIT_EDITOR`, and a user's `sequence.editor` wins over it. Here both are set.
 3. **A single merge window.** IntelliJ opens one per file from the Commit view and a modal one from the Conflicts dialog. Here there is only one, and asking for another file while it is open brings it to the front without changing file. Two files cannot be resolved at the same time.
 4. **The diff from base to each side uses Myers (`similar`)**, the one `hunks.rs` already uses. IntelliJ uses its "fair" diff with line optimizations. The rest is ported as is: the merging of ranges, the type of each block and the automatic resolution. In ambiguous cases a block may start or end one line earlier or later than in IntelliJ.

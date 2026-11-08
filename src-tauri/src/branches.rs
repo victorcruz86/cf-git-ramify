@@ -377,7 +377,7 @@ fn smart(
     if update::stopped_midway(repo.path) {
         return Err(invalid(FINISH_FIRST.to_string()));
     }
-    let saved = preserve::save_with_index_copy(repo.ctx, repo.path, repo.data, title)?;
+    let saved = preserve::save_local(repo.ctx, repo.path, repo.data, title)?;
     let Some(stash) = saved else {
         return work();
     };
@@ -837,6 +837,7 @@ mod tests {
     use super::*;
     use crate::commands::{ApiError, RepoLocks};
     use crate::console::Console;
+    use crate::settings::CleanTree;
     use crate::snapshots;
     use crate::task::Runner;
     use crate::test_support::{in_task, TempRepo};
@@ -868,9 +869,12 @@ mod tests {
                 None,
                 Duration::from_secs(5),
             );
+            let data = TempDir::new().unwrap();
+            // The tests written before the shelf saver speak of the stash.
+            crate::settings::save_clean_tree(data.path(), CleanTree::Stash).unwrap();
             Self {
                 repo,
-                data: TempDir::new().unwrap(),
+                data,
                 console,
                 runner,
             }
@@ -1107,19 +1111,68 @@ mod tests {
     }
 
     #[test]
-    fn smart_checkout_records_what_does_not_come_back() {
+    // Decision 10: this build's stash leaves no record; one that an earlier build left is still
+    // found while its entry is in the stash.
+    fn smart_checkout_records_nothing_and_an_earlier_record_is_still_found() {
         let harness = two_branches();
         harness.write("a.txt", "local\n");
 
         let outcome = harness.run(|repo| checkout(repo, "other", CheckoutMode::Smart));
 
-        assert!(
-            matches!(outcome, Ok(CheckoutOutcome::Conflicts { .. })),
-            "{outcome:?}"
-        );
-        let pending = preserve::pending(harness.repo.path(), harness.data.path()).unwrap();
+        let Ok(CheckoutOutcome::Conflicts { stash, .. }) = outcome else {
+            panic!("{outcome:?}");
+        };
+        let (repo, data) = (harness.repo.path(), harness.data.path());
+        assert_eq!(preserve::pending(repo, data), Ok(Vec::new()));
+        preserve::record_earlier_build(data, &stash.sha, "Checkout", &stash.message);
+        let pending = preserve::pending(repo, data).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].title, "Checkout");
+        assert_eq!(pending[0].sha, stash.sha);
+    }
+
+    #[test]
+    fn smart_checkout_with_shelve() {
+        let harness = two_branches();
+        crate::settings::save_clean_tree(harness.data.path(), CleanTree::Shelve).unwrap();
+        harness.write("b.txt", "local\n");
+        harness.write("a.txt", "local\n");
+
+        let outcome = harness.run(|repo| checkout(repo, "other", CheckoutMode::Smart));
+
+        // `a.txt` clashes with `other`: it stays in the shelf, untouched on disk.
+        let Ok(CheckoutOutcome::Conflicts {
+            stash,
+            failure: None,
+        }) = outcome
+        else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(stash.kind, CleanTree::Shelve);
+        assert!(stash
+            .message
+            .starts_with("Uncommitted changes before Checkout at "));
+        assert_eq!(harness.git(&["branch", "--show-current"]).trim(), "other");
+        assert_eq!(harness.read("a.txt"), "other\n");
+        assert_eq!(harness.read("b.txt"), "local\n");
+        assert_eq!(harness.git(&["stash", "list"]), "");
+        let kept: Vec<_> = crate::shelf::list(harness.data.path())
+            .into_iter()
+            .filter(|list| !list.deleted)
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, stash.lists[0].name);
+        assert_eq!(
+            preserve::pending(harness.repo.path(), harness.data.path()),
+            Ok(Vec::new())
+        );
+
+        let clean = two_branches();
+        crate::settings::save_clean_tree(clean.data.path(), CleanTree::Shelve).unwrap();
+        clean.write("b.txt", "local\n");
+        let outcome = clean.run(|repo| checkout(repo, "other", CheckoutMode::Smart));
+        assert_eq!(outcome, Ok(CheckoutOutcome::Done));
+        assert_eq!(clean.read("b.txt"), "local\n");
     }
 
     #[test]

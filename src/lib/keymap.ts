@@ -6,7 +6,9 @@ export type ActionId =
   | "ChangesView.Move"
   | "ChangesView.Rename"
   | "ChangesView.Revert"
+  | "ChangesView.SaveToShelve"
   | "ChangesView.SetDefault"
+  | "ChangesView.ShelveSilently"
   | "CheckinProject"
   | "CollapseAll"
   | "CommitView.Commit"
@@ -38,6 +40,8 @@ const BINDINGS: Record<string, ActionId> = {
   // `Git.Stage.Add` uses the shortcut of `ChangesView.AddUnversioned`.
   "Alt+Meta+A": "ChangesView.AddUnversioned",
   "Meta+Shift+M": "ChangesView.Move",
+  // `ChangesView.SaveToShelve` has no shortcut: it is only in the keymap.
+  "Meta+Shift+H": "ChangesView.ShelveSilently",
   "Ctrl+M": "Vcs.ShowMessageHistory",
   "Ctrl+Alt+M": "Vcs.ToggleAmendCommitMode",
   F2: "ChangesView.Rename",
@@ -83,6 +87,11 @@ export function matchShortcut(event: KeyboardEvent): ActionId | null {
   return BINDINGS[chord(event)] ?? null;
 }
 
+// The chords of an action, as `matchShortcut` reads them (`Meta+Shift+H`).
+export function shortcutsOf(action: ActionId): string[] {
+  return Object.keys(BINDINGS).filter((chord) => BINDINGS[chord] === action);
+}
+
 export type BranchPanelActionId =
   | "Git.Log.Branches.Navigate.Log.To.Selected.Branch"
   | "Git.New.Branch.In.Log"
@@ -99,6 +108,25 @@ const BRANCH_PANEL_BINDINGS: Record<string, BranchPanelActionId> = {
 
 export function matchBranchPanelShortcut(event: KeyboardEvent): BranchPanelActionId | null {
   return BRANCH_PANEL_BINDINGS[chord(event)] ?? null;
+}
+
+export type ShelfActionId =
+  | "ChangesView.UnshelveSilently"
+  | "ShelveChanges.UnshelveWithDialog"
+  | "ShelvedChanges.Rename";
+
+// They apply with focus in the Shelf tab, whose tree gives the selection: `ChangesView.UnshelveSilently`
+// (`VcsActions.xml:239`), `ShelveChanges.UnshelveWithDialog` and `ShelvedChanges.Rename`
+// (`$default.xml:1128,1131`), with control and meta swapped for macOS.
+const SHELF_BINDINGS: Record<string, ShelfActionId> = {
+  "Alt+Meta+U": "ChangesView.UnshelveSilently",
+  "Meta+Shift+U": "ShelveChanges.UnshelveWithDialog",
+  F2: "ShelvedChanges.Rename",
+  "Shift+F6": "ShelvedChanges.Rename",
+};
+
+export function matchShelfShortcut(event: KeyboardEvent): ShelfActionId | null {
+  return SHELF_BINDINGS[chord(event)] ?? null;
 }
 
 export type LogActionId = "Git.Reword.Commit";

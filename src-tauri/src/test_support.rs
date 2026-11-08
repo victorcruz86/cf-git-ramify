@@ -9,6 +9,7 @@ use tempfile::TempDir;
 use crate::branches::Repo;
 use crate::commands::RepoLocks;
 use crate::console::Console;
+use crate::settings::CleanTree;
 use crate::snapshots;
 use crate::task::{Runner, TaskContext, TaskKind};
 
@@ -167,12 +168,20 @@ impl RepoHarness {
             binary,
             Duration::from_secs(5),
         );
-        Self {
+        let harness = Self {
             repo: TempRepo::new(),
             data: TempDir::new().unwrap(),
             console,
             runner,
-        }
+        };
+        // The tests written before the shelf saver speak of the stash; the ones of the shelf ask for it.
+        harness.clean_tree(CleanTree::Stash);
+        harness
+    }
+
+    // `Clean working tree using:` of this repository.
+    pub fn clean_tree(&self, clean_tree: CleanTree) {
+        crate::settings::save_clean_tree(self.data.path(), clean_tree).unwrap();
     }
 
     pub fn run<T: Send + 'static>(&self, work: impl FnOnce(&Repo) -> T + Send + 'static) -> T {

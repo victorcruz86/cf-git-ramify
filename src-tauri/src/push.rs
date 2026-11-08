@@ -1914,10 +1914,7 @@ mod tests {
 
     fn saved_with(restore: RestoreOutcome) -> UpdateResult {
         UpdateResult {
-            saved: Some(Saved {
-                sha: "abc".to_string(),
-                message: "saved".to_string(),
-            }),
+            saved: Some(Saved::stash("abc".to_string(), "saved".to_string())),
             restore: Some(restore),
             ..updated(1, ("a", "b"))
         }

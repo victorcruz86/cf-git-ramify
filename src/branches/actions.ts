@@ -22,6 +22,7 @@ import {
   type ApiError,
   type CheckoutMode,
   type CheckoutOutcome,
+  type CleanTree,
   type DeletedBranch,
   type DeletedRemote,
   type DeletedTag,
@@ -39,6 +40,8 @@ import {
 import { errorText } from "../lib/errors";
 import { dismiss, notify, type Notification } from "../lib/notifications";
 import { ELSEWHERE, rebaseStoppedNotification } from "../operation/operation";
+import { viewSavedChanges } from "../shelf/flow";
+import { requestTab } from "../lib/tabs";
 import {
   confirmPublished,
   finishRebase,
@@ -97,6 +100,8 @@ export type DialogRequest =
       operation: string;
       title: string;
       smart: string;
+      // The saver the dialog names; the dialogs fill it with the repository's.
+      saver?: CleanTree;
       // Without it forcing is not offered: Smart Merge.
       force: string | null;
       cancel: string;
@@ -123,6 +128,9 @@ export interface BranchUi {
   restored?: (kept: KeptChanges[], saving: Saving) => void;
   // The Conflicts dialog, for the `Resolve conflicts…` of the unstash notice.
   resolveConflicts?: () => Promise<unknown>;
+  // `View saved changes…` of a stash: the Stash tab, or the Unstash dialog without it. Without it,
+  // the Stash tab is asked for.
+  showStashes?: () => void;
   // `Update` of a branch: it is the Update Project flow, which lives in `src/update`.
   updateBranch?: (name: string) => Promise<void>;
   // The push dialog, which lives in `src/push`.
@@ -230,9 +238,18 @@ function problemRequest(operation: string, force: string, files: string[]): Dial
 const withFailure = (failure: string | null, text: string) =>
   failure ? `${failure}\n${text}` : text;
 
-// The stash is not named: `View saved changes…` comes with the Stash tab, and until then `git stash
-// list` shows it.
-function restoredWithConflicts(failure: string | null, resolve?: () => void): Notification {
+const VIEW_SAVED_CHANGES = "View saved changes…"; // G:399
+const placeOf = (saved: SavedChanges) => (saved.kind === "shelve" ? "shelf" : "stash");
+
+// `UnstashConflictResolver.notifyUnresolvedRemain` (G:398-401): the stash entry stays, with
+// `View saved changes…` and `Resolve conflicts…`.
+function restoredWithConflicts(
+  failure: string | null,
+  view: () => void,
+  resolve?: () => void,
+): Notification {
+  const actions = [{ label: VIEW_SAVED_CHANGES, run: view }];
+  if (resolve) actions.push({ label: "Resolve conflicts…", run: resolve });
   return {
     kind: "warning",
     sticky: true,
@@ -241,7 +258,21 @@ function restoredWithConflicts(failure: string | null, resolve?: () => void): No
       failure,
       "Your uncommitted changes were saved to stash.\nUnstash is not complete, you have unresolved merges in your working tree\nResolve conflicts and drop the stash.",
     ),
-    actions: resolve ? [{ label: "Resolve conflicts…", run: resolve }] : undefined,
+    actions,
+  };
+}
+
+// rama's own: an unshelve writes no conflict, so what conflicts stays in the shelf, untouched on disk.
+function shelvedWithConflicts(message: string, failure: string | null, view: () => void): Notification {
+  return {
+    kind: "warning",
+    sticky: true,
+    title: "Local changes were not restored",
+    body: withFailure(
+      failure,
+      `Some of your uncommitted changes conflict with the files now in the working tree and were left in the shelf: ${message}`,
+    ),
+    actions: [{ label: VIEW_SAVED_CHANGES, run: view }],
   };
 }
 
@@ -258,21 +289,22 @@ export function restoredWithoutIndex(message: string, failure: string | null): N
   };
 }
 
-function notRestored(message: string, reason: string): Notification {
+function notRestored(saved: SavedChanges, reason: string, view: () => void): Notification {
   return {
     kind: "error",
     sticky: true,
     title: "Local changes were not restored",
-    body: `${reason}\nThey are in the stash: ${message}`,
+    body: `${reason}\nThey are in the ${placeOf(saved)}: ${saved.message}`,
+    actions: [{ label: VIEW_SAVED_CHANGES, run: view }],
   };
 }
 
-function gone(message: string, failure: string | null): Notification {
+function gone(saved: SavedChanges, failure: string | null): Notification {
   return {
     kind: "error",
     sticky: true,
     title: "Local changes were not restored",
-    body: withFailure(failure, `They are no longer in the stash: ${message}`),
+    body: withFailure(failure, `They are no longer in the ${placeOf(saved)}: ${saved.message}`),
   };
 }
 
@@ -319,24 +351,30 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
     }
   }
 
-  // What is common to everything that switches branch. Stashed work that does not come back is only
+  const showStashes = () => (ui.showStashes ? ui.showStashes() : requestTab("stash"));
+  const viewing = (saved: SavedChanges) => () => viewSavedChanges(saved, showStashes);
+
+  // What is common to everything that switches branch. Saved work that does not come back is only
   // known from here.
   async function finish(outcome: Outcome, { success, operation, force, retry }: Finish) {
     if (outcome.kind === "done") {
       if (success) notify({ kind: "info", title: success });
+    } else if (outcome.kind === "conflicts" && outcome.stash.kind === "shelve") {
+      notify(shelvedWithConflicts(outcome.stash.message, outcome.failure, viewing(outcome.stash)));
     } else if (outcome.kind === "conflicts") {
       notify(
         restoredWithConflicts(
           outcome.failure,
+          viewing(outcome.stash),
           ui.resolveConflicts ? () => void ui.resolveConflicts?.() : undefined,
         ),
       );
     } else if (outcome.kind === "restoredWithoutIndex") {
       notify(restoredWithoutIndex(outcome.stash.message, outcome.failure));
     } else if (outcome.kind === "notRestored") {
-      notify(notRestored(outcome.stash.message, outcome.reason));
+      notify(notRestored(outcome.stash, outcome.reason, viewing(outcome.stash)));
     } else if (outcome.kind === "gone") {
-      notify(gone(outcome.stash.message, outcome.failure));
+      notify(gone(outcome.stash, outcome.failure));
     } else if (outcome.kind === "overwritten") {
       const how = await ui.ask<CheckoutMode>(problemRequest(operation, force, outcome.files));
       if (how) await retry(how);
@@ -383,7 +421,7 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
     const stoppedHere = (outcome: RebaseOutcome, saved: SavedChanges[]) => {
       if (ui.rebaseStopped) ui.rebaseStopped(outcome, saved);
       else {
-        const stopped = rebaseStoppedNotification(outcome, false, undefined, saved.length > 0);
+        const stopped = rebaseStoppedNotification(outcome, false, undefined, saved);
         if (stopped) card(stopped, started);
       }
     };

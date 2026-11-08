@@ -1,0 +1,37 @@
+{
+  "about": "The name prefix of a patch file (src/patch/flow.ts patchNamePrefix) and of a shelved list (src-tauri/src/shelf.rs shorten_and_sanitize): IntelliJ's shortenAndSanitize, with a surrogate pair the cut would split left out whole. Both test suites read these cases.",
+  "cases": [
+    {
+      "message": "",
+      "prefix": "unnamed"
+    },
+    {
+      "message": "  ",
+      "prefix": "__"
+    },
+    {
+      "message": "a/b\\c:d*e?f\"g<h>i|j;k.l m\tn",
+      "prefix": "a_b_c_d_e_f_g_h_i_j_k_l_m_n"
+    },
+    {
+      "message": "a\u00f1\ud83d\ude00\u00a0b\u2003c",
+      "prefix": "a\u00f1\ud83d\ude00\u00a0b_c"
+    },
+    {
+      "message": "Fix v1.2: a\u0001b\u3000c\u2007d\u202fe\u0085f",
+      "prefix": "Fix_v1_2__a_b_c\u2007d\u202fe\u0085f"
+    },
+    {
+      "message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "prefix": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y",
+      "prefix": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y",
+      "prefix": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00"
+    }
+  ]
+}

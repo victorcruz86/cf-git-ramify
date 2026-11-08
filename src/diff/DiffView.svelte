@@ -1,15 +1,12 @@
 <script lang="ts">
-  import { MergeView } from "@codemirror/merge";
-  import { EditorState, type Extension } from "@codemirror/state";
-  import { EditorView, lineNumbers } from "@codemirror/view";
+  import type { MergeView } from "@codemirror/merge";
   import { onDestroy } from "svelte";
   import { fileSides, type ApiError, type ChangedFile } from "../lib/api";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
-  import { setWrap, softWrap, wrapping } from "./editor";
-  import { languageFor } from "./language";
+  import { setWrap } from "./editor";
   import { inGutter, loadWrap, softWrapItem, storeWrap } from "./options";
   import { sideMessage, sideText, unchangedText } from "./sides";
-  import { diffTheme } from "./theme";
+  import { createTextsView } from "./textsView";
 
   interface Props {
     hash: string;
@@ -50,29 +47,12 @@
         sideMessage(sides.new) ??
         unchangedText(sides, "the first parent");
       if (!notice) {
-        view = createView(sideText(sides.old), sideText(sides.new), target.path);
+        view = createTextsView(host, sideText(sides.old), sideText(sides.new), target.path, wrap);
       }
       onopened?.();
     } catch (failure) {
       if (token === request) showError(failure);
     }
-  }
-
-  function createView(oldText: string, newText: string, path: string): MergeView {
-    const extensions: Extension[] = [
-      lineNumbers(),
-      diffTheme,
-      EditorState.readOnly.of(true),
-      EditorView.editable.of(false),
-      wrapping.of(softWrap(wrap)),
-      languageFor(path),
-    ];
-    return new MergeView({
-      a: { doc: oldText, extensions },
-      b: { doc: newText, extensions },
-      parent: host,
-      collapseUnchanged: { margin: 3, minSize: 8 },
-    });
   }
 
   // Both sides wrap together, without being rebuilt; MergeView measures its own spacers.

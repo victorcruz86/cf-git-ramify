@@ -26,7 +26,7 @@
     type InteractiveRebaseRequest,
   } from "../log/editing";
   import InteractiveRebaseDialog from "../rebase/InteractiveRebaseDialog.svelte";
-  import type { KeptChanges, RebasePlan, RepoInfo } from "../lib/api";
+  import { repoSettingsGet, type CleanTree, type KeptChanges, type RebasePlan, type RepoInfo } from "../lib/api";
   import ConfirmDialog from "../operation/ConfirmDialog.svelte";
   import { operationFlow, type ConfirmRequest } from "../operation/operation";
   import { pushFlow, type PushDialogRequest } from "../push/model";
@@ -46,6 +46,11 @@
   import PublishedCommitsDialog from "./PublishedCommitsDialog.svelte";
   import NewBranchDialog from "./NewBranchDialog.svelte";
   import RenameBranchDialog from "./RenameBranchDialog.svelte";
+  import YesNoDialog from "../remotes/ConfirmDialog.svelte";
+  import { stashFlow, type StashRequest } from "../stash/flow";
+  import StashDialog from "../stash/StashDialog.svelte";
+  import UnstashAsDialog from "../stash/UnstashAsDialog.svelte";
+  import UnstashDialog from "../stash/UnstashDialog.svelte";
   import ResetDialog from "./ResetDialog.svelte";
   import ResetHeadDialog from "./ResetHeadDialog.svelte";
   import TagDialog from "./TagDialog.svelte";
@@ -61,7 +66,8 @@
     | ChangelistRequest
     | CommitMessageRequest
     | DropConfirmRequest
-    | InteractiveRebaseRequest;
+    | InteractiveRebaseRequest
+    | StashRequest;
 
   interface Props {
     onviewcommits?: (range: [string, string]) => void;
@@ -69,29 +75,45 @@
     ondefineremote?: () => Promise<boolean>;
     // The Commit view, for the cherry-pick or revert that was resolved with the staging area on.
     onshowcommit?: () => void;
+    // `Git.Show.Stash`, which `Unstash Changes…` tries first: `false` without the Stash tab.
+    onshowstash?: () => boolean;
   }
 
-  let { onviewcommits, ondefineremote, onshowcommit }: Props = $props();
+  let { onviewcommits, ondefineremote, onshowcommit, onshowstash }: Props = $props();
 
   // The dialogs of the branch operations, for the log and the branches popup. It does not live inside
   // the log: an operation reloads it, and the dialog that follows must not go away with it.
   let open = $state.raw<{ request: Request; settle: (answer: unknown) => void } | null>(null);
   const request = $derived(open?.request);
 
-  const ask = <T,>(asked: Request) =>
+  const show = <T,>(asked: Request) =>
     new Promise<T | null>((resolve) => {
       // A notification can open another one on top: the previous one counts as cancelled.
       open?.settle(null);
       open = { request: asked, settle: (answer) => resolve(answer as T | null) };
     });
 
+  // The repository's `Clean working tree using:`, which the Smart dialog names (G:377-380). What
+  // cannot be read is the default.
+  const savedWith = (): Promise<CleanTree> =>
+    repoSettingsGet()
+      .then((settings) => settings.cleanTree ?? "shelve")
+      .catch(() => "shelve");
+
+  const ask = async <T,>(asked: Request): Promise<T | null> =>
+    show<T>(asked.kind === "problem" ? { ...asked, saver: await savedWith() } : asked);
+
   // What `rebase::Process` saved and comes back when the stopped rebase finishes or is aborted.
   const REBASE_SAVING: Saving = { operation: "rebase", from: "HEAD" };
   const conflicts = conflictsFlow({ ask });
+  // `View saved changes…` of a stash (`GitStashChangesSaver.showSavedChanges`): the Stash tab while it
+  // is there, otherwise the Unstash dialog.
+  const showStashes = () => void stash.unstashChanges();
   const operation = operationFlow({
     ask,
     resolveConflicts: conflicts.resolveConflicts,
     restoreSaved: (saved) => update.restoreSaved(saved, REBASE_SAVING),
+    showStashes,
   });
   // What an operation saved and did not come back whole: the Update notices, with `Restore Changes`.
   const restored = (kept: KeptChanges[], saving: Saving) => update.showRestored(kept, saving);
@@ -108,6 +130,7 @@
     ask,
     viewCommits: (range) => onviewcommits?.(range),
     abortOperation: operation.abortOperation,
+    showStashes,
   });
   const pushing = pushFlow({
     ask,
@@ -120,6 +143,7 @@
   const actions = branchActions({
     ask,
     resolveConflicts: () => conflicts.resolveConflicts(),
+    showStashes,
     rebaseStopped: (outcome, saved) => operation.notifyRebaseStopped(outcome, false, saved),
     rebaseConflicts: (saved) => operation.resolveStoppedRebase(saved),
     restored,
@@ -165,6 +189,13 @@
     restored,
   });
 
+  // Stash Changes… and Unstash Changes… of the Git menu, with the Conflicts dialog of an unstash.
+  const stash = stashFlow({
+    ask,
+    resolveConflicts: conflicts.resolveConflicts,
+    showStash: () => onshowstash?.() ?? false,
+  });
+
   function answer(value: unknown) {
     open?.settle(value);
     open = null;
@@ -185,6 +216,10 @@
   export const { merge, rebase } = git;
   // The Conflicts dialog: the Git menu, the node link and the notifications go through here.
   export const { resolveConflicts } = conflicts;
+  // `Git.Stash` and `Git.Unstash`, and what the Stash tab does with one entry.
+  export const { stashChanges, unstashChanges, unstashAs } = stash;
+  export const unstashEntry = stash.unstash;
+  export const dropStash = stash.drop;
   export const continueRebase = () => operation.continueRebase();
   // After `repo-changed`: what was saved for a stopped rebase comes back if that rebase is gone, and
   // the Undo of a rewrite that is no longer valid expires.
@@ -202,6 +237,7 @@
     update.repositoryChanged(info);
     operation.repositoryChanged(info);
     git.repositoryChanged(info);
+    stash.repositoryChanged(info);
     // The Conflicts dialog belonged to the previous repository: it will not receive `merge-done`,
     // because the merge window is destroyed when another one opens. It closes, and what it was
     // waiting for does not continue.
@@ -209,7 +245,19 @@
     // The Merge… and Rebase… dialogs belonged to this one: their HEAD and their branches are no longer
     // valid.
     const kind = open?.request.kind;
-    const own = ["conflicts", "merge", "rebase", "changelist", "commitMessage", "dropConfirm", "interactiveRebase"];
+    const own = [
+      "conflicts",
+      "merge",
+      "rebase",
+      "changelist",
+      "commitMessage",
+      "dropConfirm",
+      "interactiveRebase",
+      "stash",
+      "unstash",
+      "unstashAs",
+      "stashConfirm",
+    ];
     if (kind && own.includes(kind)) {
       answer(null);
     }
@@ -273,6 +321,14 @@
   <PullDialog {...request} onanswer={answer} />
 {:else if request?.kind === "push"}
   <PushDialog {...request} onanswer={answer} />
+{:else if request?.kind === "stash"}
+  <StashDialog {...request} onanswer={answer} />
+{:else if request?.kind === "unstash"}
+  <UnstashDialog {...request} onanswer={answer} />
+{:else if request?.kind === "unstashAs"}
+  <UnstashAsDialog {...request} onanswer={answer} />
+{:else if request?.kind === "stashConfirm"}
+  <YesNoDialog title={request.title} message={request.message} onanswer={answer} />
 {:else if request?.kind === "pushRejected"}
   <PushRejectedDialog {...request} onanswer={answer} />
 {/if}

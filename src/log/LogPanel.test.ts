@@ -1885,7 +1885,11 @@ test("a_file_menu_offers_revert_and_cherry_pick_selected_changes", async () => {
   const menu = await fileMenu("a.txt");
 
   const labels = within(menu).getAllByRole("menuitem").map((item) => item.textContent?.trim());
-  expect(labels).toEqual(["Revert Selected Changes", "Cherry-Pick Selected Changes"]);
+  expect(labels).toEqual([
+    "Revert Selected Changes",
+    "Cherry-Pick Selected Changes",
+    "Create Patch...",
+  ]);
   await fireEvent.click(within(menu).getByRole("menuitem", { name: "Revert Selected Changes" }));
   expect(onvcs).toHaveBeenCalledWith({
     kind: "applyPaths",
@@ -1893,6 +1897,30 @@ test("a_file_menu_offers_revert_and_cherry_pick_selected_changes", async () => {
     selection: [{ hash: HASH_A, base: "f".repeat(40), paths: ["src/a.txt"] }],
     hashes: [HASH_A],
   });
+});
+
+// `Vcs.RepositoryChangesBrowserMenu` has `Create Patch...` (no Copy as Patch): the chosen files with
+// the base the panel shows.
+test("create_patch_of_the_changes_tree_takes_the_chosen_files", async () => {
+  mock({
+    commit_changes_of: () => [group([file("src/a.txt"), file("src/b.txt", "R", "src/old.txt")])],
+  });
+  const oncreatepatch = vi.fn();
+  await panel({ oncreatepatch });
+  await selectRow(0);
+  await within(changes()).findByRole("treeitem", { name: "a.txt" });
+
+  await fireEvent.click(within(changes()).getByRole("treeitem", { name: "a.txt" }));
+  await fireEvent.click(within(changes()).getByRole("treeitem", { name: "b.txt" }), { metaKey: true });
+  const menu = await fileMenu("b.txt");
+  expect(within(menu).queryByRole("menuitem", { name: "Copy as Patch to Clipboard" })).toBeNull();
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Create Patch..." }));
+
+  const chosen = oncreatepatch.mock.calls[0][0] as { file: { path: string; oldPath: string | null }; hash: string; base: string }[];
+  expect(chosen.map(({ file, hash, base }) => [file.path, file.oldPath, hash, base])).toEqual([
+    ["src/a.txt", null, HASH_A, "f".repeat(40)],
+    ["src/b.txt", "src/old.txt", HASH_A, "f".repeat(40)],
+  ]);
 });
 
 test("cherry_pick_selected_changes_does_not_revert", async () => {

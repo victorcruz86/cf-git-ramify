@@ -609,7 +609,7 @@ test("what_was_saved_before_asking_about_the_merges_is_reported", async () => {
   const stop: UpdateResult = {
     ...UPDATED,
     outcome: { kind: "rebasingMergeCommits", reason: { branch: "feature" } },
-    saved: { sha: "abc", message: "saved" },
+    saved: { kind: "stash" as const, sha: "abc", message: "saved", lists: [] },
     restore: { kind: "restoredWithoutIndex" },
   };
   const backend = api({

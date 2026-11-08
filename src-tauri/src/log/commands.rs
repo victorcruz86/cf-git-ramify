@@ -20,12 +20,14 @@ use crate::log::refs::{self, GitRef, RefKind};
 use crate::log::store::{self, CommitStore, Person};
 use crate::log::view::{Permanent, View, ViewPatch, ViewSpec};
 use crate::task::{Runner, TaskContext, TaskId, TaskKind};
+use crate::worktree_diff::content_hash;
 
 const FIRST_VIEW: u32 = 1;
 const FIRST_TAB: u32 = 0;
 const FILTERING: &str = "Applying Filters…";
 const LOADING_CHANGES: &str = "Loading Commit Changes";
 const CLIPBOARD: &str = "/usr/bin/pbcopy";
+const CLIPBOARD_READER: &str = "/usr/bin/pbpaste";
 
 // What does not change while the log is open. A task keeps this to work without holding
 // `state.log` locked, which the scroll depends on.
@@ -472,6 +474,11 @@ pub fn refs_of(repo: &OpenRepo) -> Vec<LogRef> {
 }
 
 // `pbcopy` reads in the environment's encoding, and an app opened from Finder has none.
+// The clipboard of Copy as Patch and Create Patch.
+pub(crate) fn copy_to_clipboard(text: &str) -> io::Result<()> {
+    copy_with(CLIPBOARD, text)
+}
+
 fn copy_with(program: &str, text: &str) -> io::Result<()> {
     let mut child = Command::new(program)
         .env("LC_CTYPE", "UTF-8")
@@ -485,6 +492,20 @@ fn copy_with(program: &str, text: &str) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!("{program}: {status}")))
+    }
+}
+
+// `pbpaste` writes in the environment's encoding too. What is not UTF-8 is shown replaced, as the
+// text it is: whoever reads it (Apply Patch from Clipboard) only takes text.
+fn paste_with(program: &str) -> io::Result<String> {
+    let output = Command::new(program)
+        .env("LC_CTYPE", "UTF-8")
+        .stdin(Stdio::null())
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(io::Error::other(format!("{program}: {}", output.status)))
     }
 }
 
@@ -627,6 +648,40 @@ pub async fn log_adjacent_rows(
 pub async fn clipboard_write(text: String) -> Result<(), ApiError> {
     blocking_api(move || copy_with(CLIPBOARD, &text).map_err(|error| failed(error.to_string())))
         .await
+}
+
+// What Apply Patch from Clipboard needs of the clipboard. `length` is in UTF-16 units, as Java's
+// `String.length()` (0: no text). `patch` is the text, only when `PatchReader.isPatchContent` says
+// it is a patch, so that a large text that is not one does not travel. With a `limit`
+// (`ClipboardAnalyzeListener.MAX_SIZE`), a text that long is not looked at, and a shorter one
+// comes with its hash, which the on-the-fly check remembers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardPatch {
+    pub length: usize,
+    pub hash: Option<String>,
+    pub patch: Option<String>,
+}
+
+fn clipboard_patch(text: String, limit: Option<usize>) -> ClipboardPatch {
+    let length = text.encode_utf16().count();
+    let within = limit.is_none_or(|limit| length < limit);
+    let hash = (length > 0 && within && limit.is_some()).then(|| content_hash(text.as_bytes()));
+    let patch = (length > 0 && within && crate::patch::is_patch(text.as_bytes())).then_some(text);
+    ClipboardPatch {
+        length,
+        hash,
+        patch,
+    }
+}
+
+#[tauri::command]
+pub async fn patch_clipboard(limit: Option<usize>) -> Result<ClipboardPatch, ApiError> {
+    blocking_api(move || {
+        let text = paste_with(CLIPBOARD_READER).map_err(|error| failed(error.to_string()))?;
+        Ok(clipboard_patch(text, limit))
+    })
+    .await
 }
 
 // Without an open log there is nothing to refresh.
@@ -958,6 +1013,79 @@ mod tests {
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
 
         assert!(copy_with(program.to_str().unwrap(), "x").is_err());
+    }
+
+    #[test]
+    fn paste_with_returns_utf8() {
+        let dir = TempDir::new().unwrap();
+        let program = dir.path().join("pbpaste");
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf '%s:año\\nsecond\\n' \"$LC_CTYPE\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let text = paste_with(program.to_str().unwrap()).unwrap();
+
+        assert_eq!(text, "UTF-8:año\nsecond\n");
+    }
+
+    #[test]
+    fn paste_with_reports_failure() {
+        let dir = TempDir::new().unwrap();
+        let program = dir.path().join("pbpaste");
+        fs::write(&program, "#!/bin/sh\nexit 3\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(paste_with(program.to_str().unwrap()).is_err());
+    }
+
+    // Apply Patch from Clipboard: the text travels only when `PatchReader.isPatchContent` says it
+    // is a patch. Its length is in UTF-16 units, as `String.length()`. With a limit (the
+    // on-the-fly check's 100 KB), a text that long is not looked at, and a shorter one comes with
+    // its hash, so that the check skips a text it has already seen.
+    #[test]
+    fn the_clipboard_patch_is_given_only_when_it_is_one() {
+        let patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n";
+
+        let found = clipboard_patch(patch.to_string(), None);
+        assert_eq!(found.patch.as_deref(), Some(patch));
+        assert_eq!(found.length, patch.len());
+        assert_eq!(found.hash, None);
+        let prose = clipboard_patch("añ😀 just words".to_string(), Some(100));
+        assert_eq!(prose.patch, None);
+        assert_eq!(prose.length, 15);
+        assert_eq!(prose.hash, Some(content_hash("añ😀 just words".as_bytes())));
+        assert_eq!(clipboard_patch(String::new(), Some(100)).hash, None);
+        assert_eq!(clipboard_patch(String::new(), None).length, 0);
+        let over = clipboard_patch(patch.to_string(), Some(patch.len()));
+        assert_eq!((over.patch, over.hash), (None, None));
+        let under = clipboard_patch(patch.to_string(), Some(patch.len() + 1));
+        assert_eq!(under.patch.as_deref(), Some(patch));
+        assert_eq!(under.hash, Some(content_hash(patch.as_bytes())));
+    }
+
+    // Review Focus 3: 20 MB of text that is not a patch answers at once. It takes about 0.1 s in a
+    // debug build on a quiet machine; the bound is 5 s so that a suite under load does not fail it,
+    // while a freeze or a quadratic scan (minutes on 20 MB) still does.
+    #[test]
+    fn a_20_mb_clipboard_that_is_not_a_patch_answers_at_once() {
+        let line = "--- this line looks like a header but nothing follows it, with words\n";
+        let text = line.repeat(20 * 1024 * 1024 / line.len() + 1);
+        assert!(text.len() >= 20 * 1024 * 1024);
+        let length = text.len();
+
+        let started = std::time::Instant::now();
+        let found = clipboard_patch(text, None);
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(found.patch, None);
+        assert_eq!(found.length, length);
     }
 
     #[test]

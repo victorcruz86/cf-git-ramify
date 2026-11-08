@@ -230,7 +230,7 @@ test("if a snapshot of the stage is saved it can be restored", async () => {
   await fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
 
   await waitFor(() =>
-    expect(calls("snapshots_restore")).toEqual([["snapshots_restore", { id: "snapshot" }]]),
+    expect(calls("snapshots_restore")).toEqual([["snapshots_restore", { id: "snapshot", expectedRepo: "/repo" }]]),
   );
 });
 
@@ -432,7 +432,7 @@ test("⌥⌘Z in Unstaged goes back to what is in the stage without a dialog and
   expect(calls("rollback_files")).toHaveLength(0);
   await fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
   await waitFor(() =>
-    expect(calls("snapshots_restore")).toEqual([["snapshots_restore", { id: "snapshot" }]]),
+    expect(calls("snapshots_restore")).toEqual([["snapshots_restore", { id: "snapshot", expectedRepo: "/repo" }]]),
   );
 });
 
@@ -709,4 +709,104 @@ test("staging_a_normal_file_does_not_offer_the_conflict_actions", async () => {
 
   expect(within(menu).queryByRole("menuitem", { name: "Merge…" })).toBeNull();
   expect(within(menu).getAllByRole("menuitem")[0].textContent).toContain("Stage");
+});
+
+// `Git.Stage.Stash.Files`, after Unstage and before Rollback, with the chosen paths.
+test("stash_files_of_the_tree_stashes_the_chosen_paths", async () => {
+  await listenToTasks();
+  mockCommands({ stash_push_paths: task });
+  await open();
+
+  await fireEvent.contextMenu(rows("c.txt")[0]);
+  const menu = await screen.findByRole("menu");
+  const labels = within(menu)
+    .getAllByRole("menuitem")
+    .map((item) => item.textContent?.replace(/⌥⌘./, "").trim());
+  expect(labels.slice(labels.indexOf("Unstage"), labels.indexOf("Rollback") + 1)).toEqual([
+    "Unstage",
+    "Stash Files",
+    "Rollback",
+  ]);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Stash Files" }));
+
+  await waitFor(() => expect(calls("stash_push_paths")).toHaveLength(1));
+  expect(calls("stash_push_paths")[0][1]).toEqual({ paths: ["c.txt"] });
+});
+
+// `Git.Stash.Silently` of the toolbar: `stash save` without a message.
+test("stash_silently_saves_without_a_message", async () => {
+  await listenToTasks();
+  mockCommands({ stash_save: task });
+  await open();
+
+  await fireEvent.click(screen.getByRole("button", { name: "Stash Silently" }));
+
+  await waitFor(() => expect(calls("stash_save")).toHaveLength(1));
+  expect(calls("stash_save")[0][1]).toEqual({ message: "", keepIndex: false });
+});
+
+// `GitStageCreatePatchActionProvider`, after Compare HEAD, Staged and Local Versions: HEAD→index for
+// a Staged node, index→disk for an Unstaged or Untracked one, HEAD→disk for both. `Create Patch from
+// Local Changes...` does not exist with the staging area.
+test("staging_copy_as_patch_follows_the_head_index_disk_rule", async () => {
+  await listenToTasks();
+  mockCommands({ patch_create: task });
+  await open();
+
+  await fireEvent.contextMenu(rows("a.txt")[0]);
+  let menu = await screen.findByRole("menu");
+  const labels = within(menu)
+    .getAllByRole("menuitem")
+    .map((item) => item.textContent?.replace(/[⌥⌘]+./, "").trim());
+  expect(labels.slice(labels.indexOf(THREE), labels.indexOf(THREE) + 3)).toEqual([
+    THREE,
+    "Create Patch...",
+    "Copy as Patch to Clipboard",
+  ]);
+  expect(labels).not.toContain("Create Patch from Local Changes...");
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy as Patch to Clipboard" }));
+  await waitFor(() => expect(calls("patch_create")).toHaveLength(1));
+  expect((calls("patch_create")[0][1] as { entries: unknown[] }).entries).toEqual([
+    { path: "a.txt", oldPath: null, before: { kind: "head" }, after: { kind: "index" } },
+  ]);
+
+  // The Unstaged node of `a.txt`, then both of its nodes, then a new file.
+  await fireEvent.click(rows("a.txt")[1]);
+  await fireEvent.contextMenu(rows("a.txt")[1]);
+  menu = await screen.findByRole("menu");
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy as Patch to Clipboard" }));
+  await waitFor(() => expect(calls("patch_create")).toHaveLength(2));
+  expect((calls("patch_create")[1][1] as { entries: unknown[] }).entries).toEqual([
+    { path: "a.txt", oldPath: null, before: { kind: "index" }, after: { kind: "disk" } },
+  ]);
+
+  await fireEvent.click(rows("a.txt")[0], { metaKey: true });
+  await fireEvent.click(rows("c.txt")[0], { metaKey: true });
+  await fireEvent.contextMenu(rows("c.txt")[0]);
+  menu = await screen.findByRole("menu");
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy as Patch to Clipboard" }));
+  await waitFor(() => expect(calls("patch_create")).toHaveLength(3));
+  expect(calls("patch_create")[2][1]).toEqual({
+    entries: [
+      { path: "a.txt", oldPath: null, before: { kind: "head" }, after: { kind: "disk" } },
+      { path: "c.txt", oldPath: null, before: { kind: "index" }, after: { kind: "disk" } },
+    ],
+    options: { basePath: "/repo", reverse: false, message: null },
+    to: { kind: "clipboard" },
+    remember: false,
+    expectedRepo: "/repo",
+  });
+});
+
+// isVisible = isEnabled: a conflict alone gives neither item.
+test("a_conflict_alone_offers_no_patch_items", async () => {
+  mockCommands({
+    repo_status: () => [change("u.txt", "unmerged", false, true)],
+  });
+  await open();
+
+  await fireEvent.contextMenu(screen.getAllByRole("treeitem", { name: "u.txt" })[0]);
+  const menu = await screen.findByRole("menu");
+
+  expect(within(menu).queryByRole("menuitem", { name: /Patch/ })).toBeNull();
 });

@@ -484,6 +484,15 @@ export interface RepoSettings {
   merge: { branch: string | null; options: MergeOption[] };
   // `GitRebaseSettings`: the flags and the base (the new one if there was `--onto`, otherwise the upstream).
   rebase: { options: RebaseFlag[]; newBase: string | null };
+  cleanTree: CleanTree;
+  shelf?: ShelfSettings;
+}
+
+// `remove_strategy`, `show_recycled` and the grouping of the Shelf tab, per repository.
+export interface ShelfSettings {
+  removeStrategy: boolean;
+  showRecycled: boolean;
+  groupByDirectory: boolean;
 }
 
 export type BadFileNameProblem = "reserved" | "invalidChar";
@@ -526,9 +535,15 @@ export const diffFlushed = (saved: boolean) => invoke<void>("diff_flushed", { sa
 // Decision 3: with the merge window open, it brings it to the front with the file it already had.
 export const mergeWindowOpen = (path: string) => invoke<void>("merge_window_open", { path });
 export const mergeWindowPath = () => invoke<string | null>("merge_window_path");
-// Finishes the merge window: the main one receives `merge-done` and the window is destroyed.
-export const mergeWindowDone = (result: MergeResult) =>
-  invoke<void>("merge_window_done", { result });
+// The contents mode: three texts with no file in conflict behind them. With the window already open it
+// is refused. Its `merge-done` arrives through `onContentsMergeDone`, with this `id`.
+export const mergeWindowOpenContents = (input: MergeContents) =>
+  invoke<void>("merge_window_open_contents", { input });
+export const mergeWindowContents = () => invoke<MergeContents | null>("merge_window_contents");
+// Finishes the merge window: the main one receives `merge-done` and the window is destroyed. `content`
+// is the result of the contents mode; a conflict is saved by the window itself.
+export const mergeWindowDone = (result: MergeResult, content?: string) =>
+  invoke<void>("merge_window_done", content === undefined ? { result } : { result, content });
 export const mergeWorkingFile = (path: string) =>
   invoke<WorkingFile>("merge_working_file", { path });
 // `merge-leave` is answered in two steps: the acknowledgement right away, and then `closed` if the merge can be
@@ -616,7 +631,9 @@ export const messagesPush = (message: string) => invoke<void>("messages_push", {
 // An executable `pre-commit` or `commit-msg`: only then is `Run Git hooks` offered.
 export const repoHasCommitHooks = () => invoke<boolean>("repo_has_commit_hooks");
 export const snapshotsList = () => invoke<Snapshot[]>("snapshots_list");
-export const snapshotsRestore = (id: string) => invoke<string>("snapshots_restore", { id });
+// `expectedRepo`: the repository the copy was taken in; another one open says whose it is.
+export const snapshotsRestore = (id: string, expectedRepo?: string) =>
+  invoke<string>("snapshots_restore", expectedRepo ? { id, expectedRepo } : { id });
 export const perfEnabled = () => invoke<boolean>("perf_enabled");
 export const perfReport = (json: string) => invoke<void>("perf_report", { json });
 export const appVersion = () => invoke<string>("app_version");
@@ -692,9 +709,24 @@ export type CheckoutMode = "plain" | "smart" | "force";
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 export type Overwrite = "no" | "try" | "drop";
 
+// `Clean working tree using:` (`GitSaveChangesPolicy`), per repository.
+export type CleanTree = "stash" | "shelve";
+
+// A system list of the shelf: its name in the store, what the user sees (`<message> [<list>]`) and
+// the changelist it came from (`null` with the staging area).
+export interface SavedList {
+  name: string;
+  description: string;
+  changelist: string | null;
+}
+
+// What a saver kept: the stash entry by `sha`, or the shelved `lists`. A record of an earlier build
+// is a stash entry.
 export interface SavedChanges {
+  kind: CleanTree;
   sha: string;
   message: string;
+  lists: SavedList[];
 }
 
 export type CheckoutOutcome =
@@ -1041,11 +1073,36 @@ export interface ConflictSides {
 export type ConflictSide = "yours" | "theirs";
 
 // How the merge window ended, with the side as the user sees it.
-export type MergeResult = "resolved" | "yours" | "theirs" | "cancelled";
+// `abort` and `skip`: the answers of a patch conflict's `Abort…`.
+export type MergeResult = "resolved" | "yours" | "theirs" | "cancelled" | "abort" | "skip";
 
 export interface MergeDone {
   path: string;
   result: MergeResult;
+}
+
+// What the contents mode of the merge window shows. `path` only picks the syntax highlighting.
+export interface MergeContents {
+  id: string;
+  // The window's title.
+  title: string;
+  // Left, center and right.
+  titles: [string, string, string];
+  left: string;
+  base: string;
+  right: string;
+  path: string;
+  // A patch conflict: Cancel is `Abort…`, which asks `Abort and Rollback`, `Skip` or `Continue
+  // Resolve`.
+  abort?: boolean;
+}
+
+// `content` is the result, with `\n` line breaks, unless it was cancelled: Accept Left and Accept Right
+// give that side's text.
+export interface ContentsMergeDone {
+  id: string;
+  result: MergeResult;
+  content?: string;
 }
 
 // The working file on disk: `hash` like that of `ConflictSides`, and its dominant line break.
@@ -1084,6 +1141,220 @@ export const conflictsAccept = (paths: string[], side: ConflictSide) =>
 // `expectedHash` is the `hash` of `conflictSides`: if the file changed since then, it fails.
 export const conflictResolve = (path: string, content: string, expectedHash: string) =>
   invoke<number>("conflict_resolve", { path, content, expectedHash });
+// The stash. An entry is named by its `sha`: the backend looks up its `stash@{n}` when it acts and
+// refuses one that is gone. Each command launches a task; the result arrives with `taskResult`.
+export interface StashEntry {
+  sha: string;
+  // As git gives them: the commit it was made on, then the index and the untracked files.
+  parents: string[];
+  // Author time, in milliseconds.
+  time: number;
+  // The `n` of `stash@{n}` when it was listed.
+  index: number;
+  // The message without the hash it starts with.
+  subject: string;
+  branch: string | null;
+  // What git wrote: `WIP on main` and the rest of the message.
+  prefix: string | null;
+  message: string;
+}
+
+export interface StashGroup {
+  // `Index on main`, `Untracked files on main`.
+  title: string;
+  sha: string;
+  files: ChangedFile[];
+}
+
+export interface StashChanges {
+  files: ChangedFile[];
+  groups: StashGroup[];
+}
+
+export type Unstashed =
+  | { kind: "applied" }
+  | { kind: "indexConflict"; reason: string }
+  | { kind: "conflicts" }
+  | { kind: "untracked"; reason: { files: string[] } }
+  | { kind: "localChanges"; reason: { files: string[] } }
+  | { kind: "failed"; reason: string };
+
+export const stashList = () => invoke<number>("stash_list");
+export const stashSave = (message: string, keepIndex: boolean) =>
+  invoke<number>("stash_save", { message, keepIndex });
+// `Stash Files` of the staging area: these paths, untracked ones included.
+export const stashPushPaths = (paths: string[]) => invoke<number>("stash_push_paths", { paths });
+export const stashUnstash = (
+  sha: string,
+  pop: boolean,
+  reinstateIndex: boolean,
+  branch: string | null,
+  expectedHead: string,
+) => invoke<number>("stash_unstash", { sha, pop, reinstateIndex, branch, expectedHead });
+export const stashDrop = (sha: string) => invoke<number>("stash_drop", { sha });
+export const stashClear = () => invoke<number>("stash_clear");
+export const stashChanges = (sha: string) => invoke<number>("stash_changes", { sha });
+// `sha` is the stash's or that of one of its groups.
+export const stashFileSides = (sha: string, path: string, oldPath: string | null) =>
+  invoke<number>("stash_file_sides", { sha, path, oldPath });
+
+// The shelf (`src-tauri/src/shelf.rs`). A list as the store keeps it: `name` is its folder,
+// `description` what the user sees, `dateMs` the epoch milliseconds.
+export interface ShelvedBinary {
+  before: string | null;
+  after: string | null;
+  shelved: string | null;
+}
+
+export interface ShelvedList {
+  name: string;
+  description: string;
+  dateMs: number;
+  recycled: boolean;
+  toDelete: boolean;
+  deleted: boolean;
+  patch: string;
+  binaries: ShelvedBinary[];
+}
+
+// One change to shelve: HEAD against the whole file as git would store it, or against only the
+// chosen hunks and lines (`selection`).
+export interface ShelveEntry {
+  path: string;
+  oldPath: string | null;
+  selection: LineSelection[] | null;
+}
+
+export interface ShelveGroup {
+  name: string;
+  entries: ShelveEntry[];
+}
+
+// `snapshot` is the copy taken before rolling back; `rollbackError` what could not be rolled back;
+// `skipped` the paths the shelf did not store (a folder, a submodule), which were left as they are.
+export type Shelved =
+  | { kind: "onlyDirectories" }
+  | {
+      kind: "done";
+      list: ShelvedList;
+      snapshot: string | null;
+      rollbackError: string | null;
+      skipped: string[];
+    };
+
+// `failed`: the changelists that could not be shelved, each with why.
+export interface ShelvedSilently {
+  lists: ShelvedList[];
+  failed: { name: string; reason: string }[];
+  snapshot: string | null;
+  rollbackError: string | null;
+  skipped: string[];
+}
+
+// Tasks whose values are a `Shelved` and a `ShelvedSilently`. `expectedRepo` is the repository the
+// changes were read from: with another one open, nothing is done.
+export const shelfShelve = (
+  entries: ShelveEntry[],
+  description: string,
+  rollback: boolean,
+  expectedRepo: string,
+) => invoke<number>("shelf_shelve", { entries, description, rollback, expectedRepo });
+export const shelfShelveSilently = (lists: ShelveGroup[], rollback: boolean, expectedRepo: string) =>
+  invoke<number>("shelf_shelve_silently", { lists, rollback, expectedRepo });
+
+// The Shelf tab (`src-tauri/src/shelf/tab.rs`). A file of a list goes by the shelf's own paths:
+// `before: null` is a new file, `after: null` a deleted one.
+export interface ShelfFile {
+  before: string | null;
+  after: string | null;
+  binary: boolean;
+}
+
+export interface ShelfChange {
+  file: ShelfFile;
+  path: string;
+  oldPath: string | null;
+  status: string;
+}
+
+// A list with its changes, or the error its patch gave (`Cannot load patch file: …`).
+export interface ShelfEntry {
+  list: ShelvedList;
+  changes: ShelfChange[];
+  error: string | null;
+}
+
+// The files chosen in one list.
+export interface ListFiles {
+  name: string;
+  files: ShelfFile[];
+}
+
+// What `Undo` of `Shelf Deletion` gives back, with the date each list had.
+export interface Restorable {
+  name: string;
+  dateMs: number;
+}
+
+export interface ShelfDeleted {
+  restorable: Restorable[];
+  files: number;
+  lists: number;
+  first: string | null;
+  // What could not be deleted, each with why; the rest was deleted.
+  errors: string[];
+}
+
+export interface ImportedPatches {
+  lists: ShelvedList[];
+  errors: string[];
+}
+
+export interface ShelfImported {
+  added: number;
+  skipped: number;
+}
+
+export interface ShelfSides {
+  left: Side;
+  right: Side;
+  titles: [string, string];
+}
+
+// Tasks. `expectedRepo` is the repository the tab showed: with another one open, nothing is done.
+export const shelfLists = () => invoke<number>("shelf_lists");
+export const shelfSides = (name: string, file: ShelfFile, withLocal: boolean) =>
+  invoke<number>("shelf_sides", { name, file, withLocal });
+export const shelfFindPatches = (paths: string[]) => invoke<number>("shelf_find_patches", { paths });
+export const shelfDelete = (lists: string[], files: ListFiles[], expectedRepo: string) =>
+  invoke<number>("shelf_delete", { lists, files, expectedRepo });
+export const shelfUndoDelete = (lists: Restorable[], expectedRepo: string) =>
+  invoke<number>("shelf_undo_delete", { lists, expectedRepo });
+export const shelfRestore = (names: string[], expectedRepo: string) =>
+  invoke<number>("shelf_restore", { names, expectedRepo });
+export const shelfRename = (name: string, description: string, expectedRepo: string) =>
+  invoke<number>("shelf_rename", { name, description, expectedRepo });
+export const shelfRecycle = (name: string, files: ShelfFile[], expectedRepo: string) =>
+  invoke<number>("shelf_recycle", { name, files, expectedRepo });
+export const shelfImportPatches = (files: string[], expectedRepo: string) =>
+  invoke<number>("shelf_import_patches", { files, expectedRepo });
+export const shelfImportIdea = (expectedRepo: string) =>
+  invoke<number>("shelf_import_idea", { expectedRepo });
+export const shelfImportToShelf = (
+  source: PatchInput,
+  mapping: PathMapping,
+  selected: string[],
+  expectedRepo: string,
+) => invoke<number>("shelf_import_to_shelf", { source, mapping, selected, expectedRepo });
+export const shelfPatchCreate = (
+  chosen: ListFiles[],
+  options: PatchOptions,
+  to: PatchTarget,
+  remember: boolean,
+  expectedRepo: string,
+) => invoke<number>("shelf_patch_create", { chosen, options, to, remember, expectedRepo });
+export const shelfSettingsSet = (shelf: ShelfSettings) => invoke<void>("shelf_settings_set", { shelf });
+
 // Cherry-Pick and Revert Commit of the log.
 export type ApplyKind = "cherryPick" | "revert";
 
@@ -1266,6 +1537,7 @@ export const repoSettingsGet = () => invoke<RepoSettings>("repo_settings_get");
 // The error of the first pattern of the `;`-separated field that does not compile, or `null`.
 export const protectedPatternsCheck = (text: string) =>
   invoke<string | null>("protected_patterns_check", { text });
+export const cleanTreeSet = (cleanTree: CleanTree) => invoke<void>("clean_tree_set", { cleanTree });
 export const protectedBranchesSet = (patterns: string[]) =>
   invoke<string[]>("protected_branches_set", { patterns });
 export const forcePushTargetRemember = (remote: string, branch: string) =>
@@ -1306,12 +1578,240 @@ export const initRepository = (path: string, confirmed: boolean) =>
 // `false`: the file does not exist and nothing was done.
 export const openExcludeFile = () => invoke<boolean>("open_exclude_file");
 export const openInNewWindow = (path: string) => invoke<void>("open_in_new_window", { path });
+// Finder with the file selected. `path` must be absolute.
+export const revealInFinder = (path: string) => invoke<void>("reveal_in_finder", { path });
+
+// Copy as Patch and Create Patch (`src-tauri/src/patch/create.rs`). A version of a file: `disk` is
+// what `git add` would store now, `selection` HEAD with the chosen lines of the disk.
+export type PatchVersion =
+  | { kind: "head" }
+  | { kind: "index" }
+  | { kind: "disk" }
+  | { kind: "revision"; hash: string }
+  | { kind: "selection"; selection: LineSelection[] };
+
+// `before: null` is a new file and `after: null` a deleted one. HEAD and commits are read at
+// `oldPath` when there is one, the index and the disk at `path`.
+export interface PatchEntry {
+  path: string;
+  oldPath: string | null;
+  before: PatchVersion | null;
+  after: PatchVersion | null;
+}
+
+// `Base path:` (absolute), `Reverse patch` and the message of the `Subject:` header.
+export interface PatchOptions {
+  basePath: string;
+  reverse: boolean;
+  message: string | null;
+}
+
+export type PatchTarget = { kind: "file"; path: string } | { kind: "clipboard" };
+
+// What Patch File Settings starts with. `folder: null` is the repository root;
+// `showInFinder: null` asks (`SHOW_PATCH_IN_EXPLORER`).
+export interface PatchDefaults {
+  folder: string | null;
+  toClipboard: boolean;
+  showInFinder: boolean | null;
+}
+
+// The two fields of Patch File Settings with `~` expanded, and whether they exist.
+export interface PatchPaths {
+  file: string;
+  fileExists: boolean;
+  base: string;
+  baseExists: boolean;
+}
+
+// The file written (`null` for the clipboard) and the recoverable copy of a worktree file it
+// replaced.
+export interface PatchCreated {
+  file: string | null;
+  snapshot: string | null;
+}
+
+// A task whose value is a `PatchCreated`. `remember` saves `To
+// clipboard` and the folder, as Patch File Settings does. `expectedRepo` is the repository the
+// changes were read from: the patch is made from it even if another one has been opened since.
+export const patchCreate = (
+  entries: PatchEntry[],
+  options: PatchOptions,
+  to: PatchTarget,
+  remember: boolean,
+  expectedRepo: string,
+) => invoke<number>("patch_create", { entries, options, to, remember, expectedRepo });
+export const patchSettingsGet = (repo: string) =>
+  invoke<PatchDefaults>("patch_settings_get", { repo });
+export const patchShowInFinderSet = (repo: string, show: boolean) =>
+  invoke<void>("patch_show_in_finder_set", { repo, show });
+export const patchPaths = (file: string, base: string) =>
+  invoke<PatchPaths>("patch_paths", { file, base });
+
+// Apply Patch and Apply Patch from Clipboard (`src-tauri/src/patch_apply.rs`). Each command reads
+// the patch again from its source; a relative file path is taken from the repository root.
+// A shelved list is read with its stored bases, only `files` when given; its binary files come
+// after the patch's files in the plan.
+export type PatchInput =
+  | { kind: "file"; path: string }
+  | { kind: "text"; text: string }
+  | { kind: "shelf"; name: string; files: ShelfFile[] | null };
+
+// `Remove/Restore Leading Directory` and `Map Base Directory…` per file of the patch, by its index:
+// `strip` leading folders taken from its path and `base`, a folder relative to the repository root.
+export interface FileMapping {
+  strip: number;
+  base: string;
+}
+
+export interface PathMapping {
+  files: FileMapping[];
+}
+
+// `missing`: the file to change, move or delete is not there; `missingBase`: its changes do not
+// match and there is no base to merge with (it will fail); `exists`: the file to create, or the
+// target of a move, is already there; `invalid`: the patch may not touch it (`error` says why).
+export type PlannedStatus =
+  | "applicable"
+  | "alreadyApplied"
+  | "missingBase"
+  | "missing"
+  | "exists"
+  | "invalid";
+
+export type PlannedKind = "added" | "modified" | "deleted" | "moved";
+
+// One file of the patch. `path` is the target, by which the dialog chooses it; `hashes` are what
+// the plan read (`absent` for no file), sent back so that a file changed since is not written.
+export interface PlannedFile {
+  index: number;
+  path: string;
+  before: string | null;
+  after: string | null;
+  original: string;
+  strip: number;
+  maxStrip: number;
+  kind: PlannedKind;
+  binary: boolean;
+  base: boolean;
+  status: PlannedStatus;
+  error: string | null;
+  hashes: Record<string, string>;
+  // For a shelved list, which of its files this is.
+  shelf?: ShelfFile | null;
+  // An invalid binary file of a shelved list that HEAD changed since it was shelved: the Unshelve
+  // dialog offers `Overwrite` for it.
+  overwritable?: boolean;
+}
+
+export interface ApplyPlan {
+  subject: string | null;
+  message: string | null;
+  author: { name: string; email: string } | null;
+  additionalInfoError: string | null;
+  // The patch cannot be read (`Cannot read patch {0}: {1}` is the dialog's); then there are no files.
+  readError: string | null;
+  files: PlannedFile[];
+}
+
+// `ApplyPatchStatus`, from the least to the most severe.
+export type ApplyStatus = "skip" | "success" | "alreadyApplied" | "partial" | "failure" | "abort";
+
+// A file for the merge window: the texts with `\n`, and the hash of the local file as it was read.
+export interface PatchConflict {
+  path: string;
+  base: string;
+  local: string;
+  patched: string;
+  localHash: string;
+  movedTo: string | null;
+  newMode: number | null;
+}
+
+// `status` leaves out the conflicts, whose outcomes the caller folds in.
+export interface PatchApplyResult {
+  snapshot: string | null;
+  status: ApplyStatus;
+  failed: string[];
+  conflicts: PatchConflict[];
+  messages: string[];
+}
+
+export interface ApplyChoice {
+  selected: string[];
+  overwrite: string[];
+  expected: Record<string, string>;
+}
+
+export interface PatchResolved {
+  hash: string;
+  messages: string[];
+}
+
+// `Show Difference` of one file.
+export interface PatchPreview {
+  before: string;
+  after: string;
+  titles: [string, string];
+}
+
+// The clipboard for Apply Patch from Clipboard. `length` is in UTF-16 units (0: no text); `patch`
+// is the text only when it looks like a patch. With a `limit`, a text that long is not looked at
+// and a shorter one comes with its `hash`.
+export interface ClipboardPatch {
+  length: number;
+  hash: string | null;
+  patch: string | null;
+}
+
+// `PATCH_STORAGE_LOCATION` and `DETECT_PATCH_ON_THE_FLY`.
+export interface AppPatch {
+  folder: string | null;
+  detectPatchOnTheFly: boolean;
+}
+
+// Tasks: the plan is an `ApplyPlan`, applying a `PatchApplyResult`, a resolved conflict a
+// `PatchResolved`, a rollback the id of the copy taken before it, a preview a `PatchPreview`.
+// `expectedHead` is the HEAD the dialog saw: if it changed, nothing is written.
+export const patchPlan = (source: PatchInput, mapping: PathMapping | null) =>
+  invoke<number>("patch_plan", { source, mapping });
+export const patchApply = (
+  source: PatchInput,
+  mapping: PathMapping,
+  choice: ApplyChoice,
+  expectedHead: string,
+) => invoke<number>("patch_apply", { source, mapping, choice, expectedHead });
+export const patchConflictResolve = (conflict: PatchConflict, content: string) =>
+  invoke<number>("patch_conflict_resolve", {
+    path: conflict.path,
+    content,
+    localHash: conflict.localHash,
+    movedTo: conflict.movedTo,
+    newMode: conflict.newMode,
+  });
+export const patchRollback = (snapshot: string) => invoke<number>("patch_rollback", { snapshot });
+export const patchPreview = (source: PatchInput, mapping: PathMapping, index: number) =>
+  invoke<number>("patch_preview", { source, mapping, index });
+export const patchClipboard = (limit: number | null) =>
+  invoke<ClipboardPatch>("patch_clipboard", { limit });
+export const patchAppSettingsGet = () => invoke<AppPatch>("patch_app_settings_get");
+export const patchStorageSet = (folder: string) => invoke<void>("patch_storage_set", { folder });
+export const patchOnTheFlySet = (on: boolean) => invoke<void>("patch_on_the_fly_set", { on });
 export const branchCurrent = () => invoke<string | null>("branch_current");
 export const branchTrackers = (remoteBranch: string) =>
   invoke<string[]>("branch_trackers", { remoteBranch });
 export const branchUnmergedCommits = (base: string, tip: string) =>
   invoke<LostCommit[]>("branch_unmerged_commits", { base, tip });
-export const onRepoChanged = (handler: () => void) => listen("repo-changed", handler);
+// What changed since the previous signal: `stash`, that the watcher saw `refs/stash` or its reflog
+// change in that quiet period; `shelf`, that a command wrote the open repository's shelf. A signal
+// from the interface carries no payload, which counts as neither.
+export interface RepoChange {
+  stash: boolean;
+  shelf: boolean;
+}
+const NOTHING_KNOWN: RepoChange = { stash: false, shelf: false };
+export const onRepoChanged = (handler: (change: RepoChange) => void) =>
+  listen<RepoChange | null>("repo-changed", (event) => handler({ ...NOTHING_KNOWN, ...event?.payload }));
 // Changelists do not go through the watcher: whoever changes them notifies the other window.
 export const notifyRepoChanged = () => emit("repo-changed");
 
@@ -1377,12 +1877,22 @@ export const onDiffOpen = (handler: (path: string) => void) =>
 export const onDiffClose = (handler: () => void) => listen("diff-close", handler);
 // Another repository is going to replace this one: save and reply with `diffFlushed`.
 export const onDiffFlush = (handler: () => void) => listen("diff-flush", handler);
+// The app as a whole gained or lost the focus: moving between its own windows is neither.
+export const onAppActivated = (handler: () => void) => listen("app-activated", handler);
+export const onAppDeactivated = (handler: () => void) => listen("app-deactivated", handler);
 // Closing the merge window is its Cancel.
 export const onMergeClose = (handler: () => void) => listen("merge-close", handler);
 // Another repository or quitting the app would throw the merge away: it must be answered with `mergeLeft`.
 export const onMergeLeave = (handler: () => void) => listen("merge-leave", handler);
+// Each mode hears only its own: a conflict comes with `path`, the contents mode with `id`.
 export const onMergeDone = (handler: (done: MergeDone) => void) =>
-  listen<MergeDone>("merge-done", (event) => handler(event.payload));
+  listen<MergeDone | ContentsMergeDone>("merge-done", (event) => {
+    if ("path" in event.payload) handler(event.payload);
+  });
+export const onContentsMergeDone = (handler: (done: ContentsMergeDone) => void) =>
+  listen<MergeDone | ContentsMergeDone>("merge-done", (event) => {
+    if ("id" in event.payload) handler(event.payload);
+  });
 
 export interface TaskEvent {
   id: number;

@@ -16,7 +16,7 @@ use crate::operation;
 use crate::preserve::{self, RestoreOutcome, Saved};
 use crate::push;
 use crate::rewrite;
-use crate::settings;
+use crate::settings::{self, CleanTree};
 use crate::snapshots;
 use crate::task::GitOutput;
 use crate::update;
@@ -349,7 +349,9 @@ pub struct Process<'a, 'b> {
 const SAVE_TITLE: &str = "rebase";
 // `stash.changes.message` with `rebase.operation.name`.
 const SAVE_MESSAGE: &str = "Uncommitted changes before rebase";
+// `rebase.notification.failed.stash.text` and `.shelf.text` (G:298, G:297).
 const STASH_FAILED: &str = "Could not stash local uncommitted changes:";
+const SHELVE_FAILED: &str = "Could not shelve local uncommitted changes:";
 const RESTORE_LATER_FIRST: &str =
     "The changes saved after these were not restored: restore them first.";
 const REMOTES: &str = "refs/remotes/";
@@ -366,7 +368,15 @@ impl<'a, 'b> Process<'a, 'b> {
 
     fn save(&self) -> Result<Option<Saved>, GitError> {
         let repo = self.repo;
-        preserve::save_with_index_copy_as(repo.ctx, repo.path, repo.data, SAVE_TITLE, SAVE_MESSAGE)
+        preserve::save_local_as(repo.ctx, repo.path, repo.data, SAVE_TITLE, SAVE_MESSAGE)
+    }
+
+    fn save_failed(&self, error: GitError) -> String {
+        let failed = match preserve::saver(self.repo.data) {
+            CleanTree::Stash => STASH_FAILED,
+            CleanTree::Shelve => SHELVE_FAILED,
+        };
+        format!("{failed}\n{}", branches::text_of(error))
     }
 
     // `GitRebaseUtils.rebase` and `GitRebaseProcess.doRebase`. `before` runs once it is seen that the rebase can
@@ -387,7 +397,7 @@ impl<'a, 'b> Process<'a, 'b> {
         match initially {
             Ok(first) => saved.extend(first),
             Err(GitError::Cancelled) => return Err(GitError::Cancelled),
-            Err(error) => return Ok(Rebased::refused(NOT_STARTED, stash_failed(error))),
+            Err(error) => return Ok(Rebased::refused(NOT_STARTED, self.save_failed(error))),
         }
         let result = self.rebase(args, &mut saved);
         // With the rebase halfway, `pop` would get mixed up with it: what was saved waits for it to finish.
@@ -431,7 +441,7 @@ impl<'a, 'b> Process<'a, 'b> {
                         Ok(Some(again)) => saved.push(again),
                         Ok(None) => return Ok(Outcome::Failed(text)),
                         Err(GitError::Cancelled) => return Err(GitError::Cancelled),
-                        Err(error) => return Ok(Outcome::Failed(stash_failed(error))),
+                        Err(error) => return Ok(Outcome::Failed(self.save_failed(error))),
                     }
                 }
             }
@@ -456,10 +466,6 @@ impl Kept {
             Some(RestoreOutcome::Restored | RestoreOutcome::Gone)
         )
     }
-}
-
-fn stash_failed(error: GitError) -> String {
-    format!("{STASH_FAILED}\n{}", branches::text_of(error))
 }
 
 // From the last saved to the first, each on top of what the previous one left. After one that does not come back
@@ -825,9 +831,25 @@ pub fn rebase(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_failed_stash_says_could_not_stash() {
-        let text = stash_failed(GitError::Io("boom".into()));
-        assert!(text.starts_with("Could not stash local uncommitted changes:\n"), "{text}");
+    fn a_failed_save_says_could_not_stash_or_shelve() {
+        let harness = RepoHarness::new();
+        let failed = |harness: &RepoHarness| {
+            harness.run(|repo| {
+                Process::new(repo, repo.ctx.asking_editor())
+                    .save_failed(GitError::Io("boom".into()))
+            })
+        };
+        let text = failed(&harness);
+        assert!(
+            text.starts_with("Could not stash local uncommitted changes:\n"),
+            "{text}"
+        );
+        harness.clean_tree(CleanTree::Shelve);
+        let text = failed(&harness);
+        assert!(
+            text.starts_with("Could not shelve local uncommitted changes:\n"),
+            "{text}"
+        );
     }
 
     use super::*;
@@ -924,6 +946,32 @@ mod tests {
         assert_eq!(rebased.saved.len(), 1);
         assert_eq!(rebased.saved[0].restore, None);
         assert_eq!(harness.git(&["show", "stash@{0}:a.txt"]), "local\n");
+        assert!(harness.in_git_dir("rebase-merge"));
+    }
+
+    #[test]
+    fn rebase_with_shelve_says_local_changes_were_shelved_before_rebase_with_view_shelf() {
+        let harness = stopped_by_conflict();
+        harness.clean_tree(CleanTree::Shelve);
+        harness.write("a.txt", "local\n");
+
+        let rebased = harness
+            .run(|repo| rebase_onto(repo, "main", "side"))
+            .unwrap();
+
+        assert_eq!(rebased.outcome, Outcome::Conflicts);
+        assert_eq!(rebased.saved.len(), 1);
+        assert_eq!(rebased.saved[0].restore, None);
+        let saved = &rebased.saved[0].saved;
+        assert_eq!(saved.kind, CleanTree::Shelve);
+        assert_eq!(saved.message, "Uncommitted changes before rebase");
+        assert_eq!(
+            saved.lists[0].description,
+            "Uncommitted changes before rebase [Changes]"
+        );
+        assert_eq!(stash_count(&harness), 0);
+        let patch = crate::shelf::load_patch(harness.data.path(), &saved.lists[0].name).unwrap();
+        assert_eq!(patch.files.len(), 1);
         assert!(harness.in_git_dir("rebase-merge"));
     }
 
@@ -1551,7 +1599,7 @@ mod tests {
             preserve::pending(harness.path(), harness.data.path())
                 .unwrap()
                 .len(),
-            1
+            0
         );
 
         harness.git(&["checkout", "-q", "--", "a.txt"]);

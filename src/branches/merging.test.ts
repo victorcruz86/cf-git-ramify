@@ -15,8 +15,8 @@ import PublishedCommitsDialog from "./PublishedCommitsDialog.svelte";
 
 const HEAD = "a1b2c3d4".repeat(5);
 const STATE: RepoState = { operation: null, branch: "main", label: "main", head: HEAD };
-const SAVED = { sha: "abc", message: "Uncommitted changes before rebase" };
-const MERGE_SAVED = { sha: "def", message: "Uncommitted changes before Merge at today" };
+const SAVED = { kind: "stash" as const, sha: "abc", message: "Uncommitted changes before rebase", lists: [] };
+const MERGE_SAVED = { kind: "stash" as const, sha: "def", message: "Uncommitted changes before Merge at today", lists: [] };
 const DONE: RebaseRun = { outcome: { kind: "done" }, title: null, saved: [] };
 const MERGED = {
   outcome: {
@@ -243,6 +243,7 @@ describe("merge", () => {
         force: null,
         cancel: "Don't Merge",
         files: ["a.txt"],
+        saver: "stash",
         onanswer: vi.fn(),
       },
     );

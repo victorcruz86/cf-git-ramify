@@ -512,6 +512,253 @@ document), under this license:
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
   THE SOFTWARE.
 
+Ported code: patches
+--------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/patch/                    platform/vcs-impl: PatchReader (parseAllPatches,
+                                          AdditionalInfoParser, PatchContentParser,
+                                          isPatchContent), PatchFileHeaderParser,
+                                          GitPatchParser, BinaryPatchContentParser (structure
+                                          only), UnifiedDiffWriter, GitPatchWriter,
+                                          BinaryPatchWriter (headers only), PatchWriter (order
+                                          of the parts), TextPatchBuilder, IdeaTextPatchBuilder
+                                          (version ids), CharsetEP, BaseRevisionTextPatchEP,
+                                          ShelveChangesManager (baseRevisionsOfDvcsIntoContext,
+                                          isBig), VcsFileUtil (unescapeGitPath); platform/
+                                          vcs-api: TextFilePatch (isNewFile, isDeletedFile),
+                                          PatchHunk, VcsConfiguration
+                                          (ourMaximumFileForBaseRevisionSize); platform/util:
+                                          StringUtil (escapeStringCharacters,
+                                          unescapeStringCharacters, isPrintableUnicode),
+                                          LineTokenizer (tokenizeIntoList); VcsBundle (texts);
+                                          tests from platform/platform-tests: PatchBuilderTest,
+                                          PatchReaderTest, PatchTextDetectionTest; from
+                                          platform/vcs-tests: CreateApplyPatchSymmetryTest
+  src-tauri/src/patch/create.rs           platform/vcs-impl: CreatePatchCommitExecutor
+                                          (validateAndWritePatchToFile, writePatchToClipboard),
+                                          PatchWriter (writePatches, writeAsPatchToClipboard);
+                                          git4idea: GitStageCreatePatchActionProvider (the
+                                          versions of a staged change)
+  src/patch/flow.ts                       platform/vcs-impl: CreatePatchFromChangesAction,
+                                          CreatePatchCommitExecutor (getAdditionalConfigurationUI,
+                                          execute, checkIsFileValid, showDialog),
+                                          CreatePatchConfigurationPanel (validateFields),
+                                          PatchNameChecker, ShelveChangesManager
+                                          (suggestPatchName, shortenAndSanitize), ChangesUtil
+                                          (findCommonAncestor); platform/util-rt: PathUtilRt
+                                          (suggestFileName); platform/util: FileUtil
+                                          (findSequentFile, isAncestor); git4idea:
+                                          GitStageCreatePatchActionProvider; VcsBundle,
+                                          IdeBundle, IdeCoreBundle and CommonBundle (texts)
+  src/patch/PatchSettingsDialog.svelte    platform/vcs-impl: CreatePatchConfigurationPanel,
+                                          SessionDialog
+  src/patch/CreatedPatchDialog.svelte     platform/vcs-impl: CreatePatchCommitExecutor
+                                          (showDialog)
+
+The line diff of patch/build.rs is the Myers algorithm of the similar library, not IntelliJ's
+ByLine.compare; where two alignments tie, the hunks may differ. The `GIT binary patch` sections
+are git's own output, not IntelliJ's encoding.
+
+  src-tauri/src/patch_apply.rs            platform/vcs-impl: PatchApplier
+                                          (executePatchGroup, nonWriteActionPreCheck,
+                                          executeWritable, applyList,
+                                          applyAdditionalPatchData), PathsVerifier (the checks
+                                          of added, deleted, moved and modified files,
+                                          doMoveIfNeeded), TriggerAdditionOrDeletion,
+                                          ApplyPatchAction (applyContent), ApplyTextFilePatch,
+                                          ApplyFilePatchBase, PlainSimplePatchApplier,
+                                          ApplyPatchForBaseRevisionTexts,
+                                          DefaultPatchBaseVersionProvider (the revision
+                                          pattern), AbstractFilePatchInProgress
+                                          (StripCapablePath, PatchStrippable), ApplyPatchStatus;
+                                          platform/vcs-api: TextFilePatch
+                                          (getSingleHunkPatchText), PatchHunk (getText);
+                                          VcsBundle (texts); tests from platform/platform-tests:
+                                          ApplyPatchTest, ApplyPatchStatusTest
+
+The offset search of patch_apply.rs (each whole hunk within 1000 lines of its stated line) is
+rama's own, between PlainSimplePatchApplier and GenericPatchApplier; binary entries are applied
+by git.
+
+  src/patch/flow.ts (applyFlow, clipboardWatcher), src/patch/ApplyPatchDialog.svelte,
+  src/patch/applyModel.ts, src/patch/ApplyPatchDiff.svelte, src/patch/OverwriteDialog.svelte,
+  src/patch/PartlyFailedDialog.svelte, src/patch/PatchDialogs.svelte (the apply dialogs)
+                                          platform/vcs-impl: ApplyPatchAction (actionPerformed,
+                                          applyContent), ApplyPatchFromClipboardAction,
+                                          PatchClipboardListener, ApplyPatchDifferentiatedDialog
+                                          (MapDirectory, StripUp, StripDown, ResetStrip,
+                                          ZeroStrip, NewBaseSelector, MyChangeNodeDecorator,
+                                          MyShowDiff), AbstractFilePatchInProgress,
+                                          FilePatchStatus, PatchApplier (executePatchGroup,
+                                          showError), UndoApplyPatchDialog,
+                                          PatchDiffRequestFactory (getPresentablePath),
+                                          AbstractVcsHelperImpl (selectFilePathsToProcess),
+                                          CommitLegendPanel, ChangeListChooserPanel;
+                                          platform/platform-impl: ClipboardAnalyzeListener;
+                                          VcsBundle and IdeBundle (texts)
+  src-tauri/src/log/commands.rs (patch_clipboard)
+                                          platform/vcs-impl: PatchClipboardListener, PatchReader
+                                          (isPatchContent); platform/platform-impl:
+                                          ClipboardAnalyzeListener (MAX_SIZE)
+  src-tauri/src/patch_apply.rs (preview)  platform/vcs-impl: ChangeDiffRequestProducer (the
+                                          titles of Show Difference)
+  src/merge/MergeWindow.svelte (contents mode and Abort Patch)
+                                          platform/diff-impl: TextMergeRequestImpl (applyResult);
+                                          platform/vcs-impl: ApplyPatchAction (applyContent);
+                                          VcsBundle (texts)
+
+Ported code: stash
+------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/stash.rs                  git4idea: GitStashUtils (loadStashStack,
+                                          createStashHandler, createUnstashHandler,
+                                          createStashPushHandler), GitStashOperations
+                                          (unstash, loadStashChanges, dropStashWithConfirmation,
+                                          clearStashesWithConfirmation),
+                                          UnstashMergeDialogCustomizer, StashInfo (subject,
+                                          branchName), GitSimpleEventDetector (unstash events),
+                                          GitStashProvider (toChangeObjects); GitBundle (texts)
+  src/stash/flow.ts                       git4idea: GitStash, GitUnstash, GitStashOperations
+                                          (runStashInBackground, showSuccessNotification,
+                                          unstash), UnstashConflictResolver,
+                                          GitStashSilentlyAction, GitStageStashFilesAction,
+                                          GitUntrackedFilesHelper,
+                                          LocalChangesWouldBeOverwrittenHelper, validators
+                                          (validateName); GitBundle and VcsBundle (texts)
+  src/stash/StashDialog.svelte            git4idea: GitStashDialog and its .form
+  src/stash/UnstashDialog.svelte          git4idea: GitUnstashDialog and its .form
+  src/stash/UnstashAsDialog.svelte        git4idea: GitUnstashAsDialog, with both checkboxes
+                                          bound to their own option
+  src/lib/icons/stash.svg                 platform/icons/src/expui/vcs/stash_dark.svg
+  src/stash/savedPatches.ts, src/stash/SavedPatchesView.svelte, src/stash/SavedChangesList.svelte,
+  src/stash/SavedDiffPane.svelte, src/stash/SavedDiffDialog.svelte
+                                          platform/vcs-impl: SavedPatchesUi, SavedPatchesProvider,
+                                          SavedPatchesTree (MySpeedSearch),
+                                          SavedPatchesChangesBrowser (buildTreeModelSync,
+                                          selectPatchObject), CombinedSpeedSearch,
+                                          SavedPatchesDiffPreview (its Soft-Wrap place),
+                                          ChangeDiffRequestProducer (getRevisionTitle),
+                                          ChangesBrowserBase (showStandaloneDiff); VcsBundle and
+                                          ActionsBundle (texts)
+  src/stash/StashTab.svelte, src/stash/stashChanges.ts
+                                          git4idea: GitStashProvider (StashObject,
+                                          toChangeObjects), GitStashBranchComponent,
+                                          GitStashOperations (viewStash, unstash);
+                                          platform/vcs-impl: ShowDiffWithLocalAction
+                                          (getChangeWithLocal); GitBundle, VcsBundle and DiffBundle
+                                          (texts)
+  src/App.svelte (the stash list) and src-tauri/src/watch.rs (touches_stash)
+                                          git4idea: GitStashTracker (when the list is read again,
+                                          and its error node)
+  src/stash/StashViewDialog.svelte        platform/vcs-impl: ChangeListViewerDialog
+
+Ported code: shelf
+------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/shelf.rs                  platform/vcs-impl: ShelveChangesManager
+                                          (createShelfFromChanges, shelveBinaryFile,
+                                          generateUniqueSchemePatchDir, suggestPatchName,
+                                          shortenAndSanitize, migrateOldShelfInfo,
+                                          readOneShelvedChangeList, saveRemainingPatchesIfNeeded,
+                                          saveRemainingAndRecycleOthers,
+                                          createChangelistCopyWithChanges, copyBinaryFiles,
+                                          recycleChangeList, markChangeListAsDeleted,
+                                          deleteShelves, restoreList, renameChangeList,
+                                          deleteResources, markDeletedSystemUnshelved,
+                                          cleanDeletedOlderOneWeek, importChangeLists),
+                                          ShelvedChangeList (readExternal, writeExternal),
+                                          ShelvedBinaryFile, PatchNameChecker (MAX);
+                                          platform/util-rt: PathUtilRt (suggestFileName);
+                                          platform/util: FileUtil (findSequentFile), JDOMUtil
+                                          (escapeText); platform/projectModel-impl:
+                                          JbXmlOutputter (the printing of an element); tests from
+                                          platform/vcs-tests: ShelveChangesManagerMigrationTest,
+                                          UnshelvedChangelistsCleaningTest, ShelveChangesManagerTest
+  src-tauri/src/idea_import.rs (read_shelf_settings, shelf_folder)
+                                          platform/vcs-api: VcsConfiguration
+                                          (USE_CUSTOM_SHELF_PATH, CUSTOM_SHELF_PATH);
+                                          platform/vcs-impl: ShelveChangesManager (getShelfPath,
+                                          getDefaultShelfPath)
+  src-tauri/src/commands.rs (clean_shelf) platform/vcs-impl: ShelveChangesManager (projectOpened
+                                          and the daily scheduleWithFixedDelay)
+  src-tauri/src/vcs_commands.rs (shelve, shelve_silently, shelf_shelve, shelf_shelve_silently)
+                                          platform/vcs-impl: ShelveChangesManager (shelveChanges,
+                                          createShelfFromChanges, shelveChangesInSeparatedLists,
+                                          rollbackChangesAfterShelve), ShelveChangesCommitExecutor,
+                                          ChangesUtil (hasFileChanges)
+  src/shelf/flow.ts                       platform/vcs-impl: ShelveChangesCommitExecutor
+                                          (ShelveChangesCommitSession.execute),
+                                          ShelveSilentlyAction, ShelveChangesManager
+                                          (shelveSilentlyUnderProgress,
+                                          shelveChangesInSeparatedLists), ChangeListManagerImpl
+                                          (scheduleAutomaticEmptyChangeListDeletion); VcsBundle
+                                          (texts)
+  src-tauri/src/preserve.rs (saver, save_local) and src-tauri/src/preserve/shelve.rs (shelve_as,
+  unshelve_saved)
+                                          git4idea: GitChangesSaver (getSaver),
+                                          GitShelveChangesSaver (rollbackChanges, showSavedChanges),
+                                          GitSaveChangesPolicy, GitVcsOptions;
+                                          platform/vcs-impl: VcsShelveChangesSaver (save, load),
+                                          ChangeListUtil (createSystemShelvedChangeListName)
+  src-tauri/src/shelf/unshelve.rs         platform/vcs-impl: ShelveChangesManager
+                                          (unshelveChangeList), VcsShelveUtils (doSystemUnshelve),
+                                          ShelvedBinaryFilePatch
+  src/shelf/flow.ts (viewSavedChanges), src/update/flow.ts, src/branches/actions.ts and
+  src/operation/operation.ts (the saved-changes notifications)
+                                          git4idea: GitChangesSaver
+                                          (notifyLocalChangesAreNotRestored),
+                                          GitShelveChangesSaver and GitStashChangesSaver
+                                          (showSavedChanges), GitRebaseProcess (VIEW_STASH_ACTION),
+                                          GitRebaseUtils (mentionLocalChangesRemainingInStash);
+                                          GitBundle (texts)
+  src/settings/SettingsView.svelte (Clean working tree using:)
+                                          git4idea: GitVcsPanel; GitBundle (texts)
+  src-tauri/src/shelf/unshelve.rs (recycle_applied)
+                                          platform/vcs-impl: ShelveChangesManager
+                                          (updateListAfterUnshelve, saveRemainingPatchesIfNeeded)
+  src-tauri/src/shelf/tab.rs              platform/vcs-impl: ShelvedChangesViewManager
+                                          (MyShelvedTreeModelBuilder, deleteShelves,
+                                          UndoShelfDeletionAction), ShelveChangesManager
+                                          (deleteShelves, removeChangesFromChangeList,
+                                          restoreList, gatherPatchFiles, importChangeLists,
+                                          importFilePatches), RestoreShelvedChange,
+                                          ImportToShelfExecutor, ShelvedWrapperDiffRequestProducer,
+                                          DiffShelvedChangesActionProvider, PatchFileType
+  src-tauri/src/patch_apply.rs (PatchInput::Shelf, mapped_patch)
+                                          platform/vcs-impl: UnshelveWithDialogAction
+                                          (MyUnshelveDialog), ShelvedBinaryFilePatch,
+                                          ImportToShelfExecutor
+  src/shelf/ShelfTab.svelte, src/shelf/shelfTree.ts
+                                          platform/vcs-impl: ShelvedChangesViewManager
+                                          (ShelfToolWindowPanel, ShelfTree, ShelvedListNode,
+                                          ShelvedChangeNode, ShelveRenameTreeCellEditor,
+                                          getSelectedChangesOrAll), ShowHideRecycledAction,
+                                          RenameShelvedChangeListAction, ChangesBrowserNode
+                                          (getCountText); VcsActions.xml (ShelvedChangesToolbar,
+                                          ShelvedChangesPopupMenu); VcsBundle and ActionsBundle
+                                          (texts)
+  src/shelf/flow.ts (shelfTabFlow), src/shelf/dialogs.ts, src/shelf/ShelfDialogs.svelte,
+  src/shelf/UnshelveListDialog.svelte, src/shelf/settings.ts
+                                          platform/vcs-impl: UnshelveWithDialogAction,
+                                          UnshelveSilentlyAction, ShelveChangesManager
+                                          (unshelveSilentlyAsynchronously), ImportIntoShelfAction,
+                                          ShelvedChangesViewManager (constructDeleteSuccessfully-
+                                          Message), ChangeListUtil (getPredefinedChangeList,
+                                          getChangeListNameForUnshelve), ChangeListChooserPanel;
+                                          VcsBundle (texts)
+  src/patch/ApplyPatchDialog.svelte, src/patch/flow.ts and src/patch/applyModel.ts (UNSHELVE
+  mode, Import to Shelf)                  platform/vcs-impl: ApplyPatchDifferentiatedDialog,
+                                          UnshelveWithDialogAction, PatchApplier
+                                          (getRemainingPatches), ImportToShelfExecutor; VcsBundle
+                                          (texts)
+  src/lib/icons/unshelve.svg              platform/icons/src/expui/vcs/unshelve_dark.svg
+
 Test data: src-tauri/src/log/testdata/
 --------------------------------------
 
@@ -521,6 +768,32 @@ Test data: src-tauri/src/log/testdata/
                                  com/intellij/vcs/log/graph/linearBek/ (BekTest.kt,
                                  LinearBekTest.kt, LinearBekExpandTest.kt), in the text format
                                  of those tests
+
+Test data: src-tauri/testdata/patch/
+------------------------------------
+
+Copied at the tag idea/241.14494.240 from platform/platform-tests/testData/diff/, with the
+same layout:
+
+  testdata/patch/patch/*                copied from diff/patch/ (the before/, after/ and
+                                        expected.patch of each case of PatchBuilderTest, and
+                                        the two .gitattributes files)
+  testdata/patch/patchReader/*          copied from diff/patchReader/ (the test.patch of each
+                                        case of PatchReaderTest)
+  testdata/patch/patchTextDetection/*   copied from diff/patchTextDetection/ (the test.patch of
+                                        each case of PatchTextDetectionTest)
+  testdata/patch/applyPatch/*           copied from diff/applyPatch/ (the apply.patch, before/
+                                        and after/ of each case of ApplyPatchTest)
+
+This data keeps its original license (Apache 2.0).
+
+Test data: src-tauri/testdata/shelf/
+------------------------------------
+
+Copied at the tag idea/241.14494.240 from platform/vcs-tests/testData/shelf/, with the same
+layout: the before.xml, before/ and after/ of each case of ShelveChangesManagerMigrationTest and
+UnshelvedChangelistsCleaningTest, and the shelvedChangeLists/ folder of
+ShelveChangesManagerTest.
 
 This data keeps its original license (Apache 2.0).
 

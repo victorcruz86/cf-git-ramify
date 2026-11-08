@@ -33,6 +33,8 @@ import {
   type UpdateResult,
 } from "../lib/api";
 import { restoredWithoutIndex } from "../branches/actions";
+import { viewSavedChanges } from "../shelf/flow";
+import { requestTab } from "../lib/tabs";
 import type { PublishedRequest, Saving } from "../branches/merging";
 import { ABORTED } from "../operation/operation";
 import { errorText } from "../lib/errors";
@@ -61,9 +63,14 @@ export async function whileFetching<T>(work: () => Promise<T>): Promise<T> {
 const UPDATE_CANCELED = "Update canceled";
 const PULL_FAILED = "Git Pull failed";
 const PARTIALLY_UPDATED = "Project Partially Updated";
-const NOT_RESTORED = "Local changes were not restored";
-const UPDATE_INCOMPLETE =
-  "Before update your uncommitted changes were saved to stash.\nUpdate is not complete, you have unresolved merges in your working tree\nResolve conflicts, complete update and restore changes manually.";
+// GitBundle (G:n is its line), with `<br/>` as line breaks.
+const NOT_RESTORED = "Local changes were not restored"; // G:364
+export const VIEW_SAVED_CHANGES = "View saved changes…"; // G:365, G:399
+// `restore.notification.failed.shelf.message` and `.stash.message` (G:362, G:363).
+const updateIncomplete = (place: string) =>
+  `Before update your uncommitted changes were saved to ${place}.\nUpdate is not complete, you have unresolved merges in your working tree\nResolve conflicts, complete update and restore changes manually.`;
+// Where a saver keeps the changes, as G:362 and G:363 name it.
+export const placeOf = (saved: SavedChanges | null) => (saved?.kind === "shelve" ? "shelf" : "stash");
 const RESTORE_CONFLICTS =
   "Uncommitted changes that were saved before Update have conflicts with files from Remote";
 const RESTORE_BLOCKED =
@@ -109,6 +116,9 @@ export interface UpdateUi {
   // Abort with IntelliJ's confirmation and the HEAD that was seen (`src/operation`). `false`: it was
   // not aborted. Without it, `Abort` goes straight to `update_abort`.
   abortOperation?: (operation: Operation) => Promise<boolean>;
+  // `View saved changes…` of a stash: the Stash tab, or the Unstash dialog without it. Without it,
+  // the Stash tab is asked for.
+  showStashes?: () => void;
 }
 
 export interface UpdateApi {
@@ -183,17 +193,18 @@ function stillSaved({ saved, restore }: Unfinished): boolean {
 const conflictsWith = ({ operation, from }: Saving) =>
   `Uncommitted changes that were saved before ${operation} have conflicts with files from ${from}`;
 
-function restoreProblem(restore: RestoreOutcome | null, saving?: Saving): string {
+function restoreProblem(restore: RestoreOutcome | null, place: string, saving?: Saving): string {
   if (restore?.kind === "failed") return restore.reason;
   if (restore?.kind === "conflicts") return saving ? conflictsWith(saving) : RESTORE_CONFLICTS;
   if (restore?.kind === "restoreBlocked") {
     return `${restore.reason.files.join("\n")}\n${RESTORE_BLOCKED}`;
   }
-  return UPDATE_INCOMPLETE;
+  return updateIncomplete(place);
 }
 
+// rama's own last line: which entry or lists hold them.
 const notRestoredBody = ({ saved, restore, saving }: Unfinished) =>
-  `${restoreProblem(restore, saving)}\nThey are in the stash: ${saved?.message}`;
+  `${restoreProblem(restore, placeOf(saved), saving)}\nThey are in the ${placeOf(saved)}: ${saved?.message}`;
 
 // What is needed to go on with what was saved, whether it comes from an update or from opening the
 // repository.
@@ -202,6 +213,8 @@ type Unfinished = Pick<UpdateResult, "saved" | "restore" | "inProgress"> & {
   operation?: Operation;
   // Another operation (a rebase, a Smart Merge) saved it, not Update.
   saving?: Saving;
+  // A record of an earlier build, found on opening: it keeps `Restore Changes` (decision 10).
+  pending?: boolean;
 };
 
 export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
@@ -211,9 +224,10 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
   const cards = new Set<number>();
   const card = (notification: Notification) => cards.add(notify(notification));
   // Goes up when the repository changes. What finishes afterwards belonged to the previous one, and
-  // `Abort` and company would act on the open one: its card comes back with the annotation, when it
-  // is reopened.
+  // `Abort` and company would act on the open one: its card says where the changes are, without
+  // buttons.
   let generation = 0;
+  const showStashes = () => (ui.showStashes ? ui.showStashes() : requestTab("stash"));
 
   // A cancellation is not a failure: whoever cancelled already knows.
   async function attempt<T>(failure: string, work: () => Promise<T>): Promise<T | null> {
@@ -227,13 +241,14 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
     }
   }
 
-  // What was saved does not appear anywhere else in the app until phase 4: after each button that does
-  // not bring it back, the notification comes out again. If it is closed, the annotation brings it
-  // back on open.
+  // `GitChangesSaver.notifyLocalChangesAreNotRestored`: the changes stay saved and `View saved
+  // changes…` shows them (decision 10). A record of an earlier build keeps `Restore Changes`, and
+  // after each try that does not bring it back the notification comes out again.
   function notifyNotRestored(update: Unfinished) {
-    const actions: Notification["actions"] = [
-      { label: "Restore Changes", run: () => restoreChanges(update) },
-    ];
+    const saved = update.saved as SavedChanges;
+    const actions: Notification["actions"] = update.pending
+      ? [{ label: "Restore Changes", run: () => restoreChanges(update) }]
+      : [{ label: VIEW_SAVED_CHANGES, run: () => viewSavedChanges(saved, showStashes) }];
     if (update.inProgress) actions.push({ label: "Abort", run: () => abort(update) });
     card({
       kind: "warning",
@@ -301,7 +316,9 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
         } catch (error) {
           restore = { kind: "failed", reason: errorText(error) };
         }
-        if (!NOT_SAVED_ANY_MORE.includes(restore.kind)) stopped = restoreProblem(restore, saving);
+        if (!NOT_SAVED_ANY_MORE.includes(restore.kind)) {
+          stopped = restoreProblem(restore, placeOf(entry), saving);
+        }
       }
       kept.unshift({ saved: entry, restore });
     }
@@ -431,12 +448,17 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
     if (outcome.kind === "success") notifySummary(update);
   }
 
-  // Without buttons: what is left to do comes back when that repository is reopened.
+  // Without buttons: they would act on the open repository. Nothing offers the saved changes on
+  // reopening (decision 10), so the card says where they are, in the words of G:362 and G:398.
   function notifyElsewhere(update: UpdateResult) {
+    const { saved } = update;
     notify({
       kind: stillSaved(update) ? "warning" : "info",
       title: "The update of the previous repository finished",
-      body: stillSaved(update) ? "Its saved changes will be offered when you reopen it." : undefined,
+      body:
+        stillSaved(update) && saved
+          ? `Your uncommitted changes were saved to ${placeOf(saved)}: ${saved.message}`
+          : undefined,
     });
   }
 
@@ -621,8 +643,8 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
     else notify({ kind: "info", title: "Fetch Successful", body });
   }
 
-  // `repo_open` already left in `pending` only what is still in the stash. A half-done operation with
-  // nothing saved is also offered to abort: otherwise, `Abort` only appeared with a stash entry.
+  // `repo_open` already left in `pending` only what is still in the stash: records of earlier builds,
+  // and of the stash saver. A half-done operation with nothing saved is also offered to abort.
   function repositoryChanged({ pending, state }: RepoInfo) {
     generation += 1;
     cards.forEach(dismiss);
@@ -632,10 +654,11 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
     const inProgress = operation === "merging" || operation === "rebasing";
     for (const { sha, title, message } of pending) {
       notifyNotRestored({
-        saved: { sha, message },
+        saved: { kind: "stash", sha, message, lists: [] },
         restore: { kind: "failed", reason: `Your changes were saved before ${title}.` },
         inProgress,
         operation: inProgress ? operation : undefined,
+        pending: true,
       });
     }
     if (pending.length === 0 && inProgress) {

@@ -14,7 +14,7 @@ use crate::git::{self, GitError};
 use crate::operation;
 use crate::preserve::{self, RestoreOutcome, Saved};
 use crate::rebase;
-use crate::settings::UpdateMethod;
+use crate::settings::{CleanTree, UpdateMethod};
 use crate::snapshots;
 use crate::task::TaskContext;
 
@@ -182,9 +182,14 @@ pub(crate) fn failed(title: &str, text: impl Into<String>) -> UpdateResult {
     }
 }
 
-fn save_failed(reason: &str) -> UpdateResult {
+// `save.notification.failed.stash.text` and `.shelf.text` (G:374, G:373).
+fn save_failed(saver: CleanTree, reason: &str) -> UpdateResult {
+    let place = match saver {
+        CleanTree::Stash => "stash",
+        CleanTree::Shelve => "shelf",
+    };
     let text = format!(
-        "Tried to save uncommitted changes in stash before Update, but failed with an error.\n{reason}"
+        "Tried to save uncommitted changes in {place} before Update, but failed with an error.\n{reason}"
     );
     failed(SAVE_FAILED, text)
 }
@@ -520,13 +525,14 @@ pub(crate) fn with_counts(
     }
 }
 
-// Decision 4: also after an error or a cancellation, if git was not left half-done. Not with the
-// operation half-done: `pop` would mix with the conflicts, and nothing is lost in the stash.
+// Decision 10: only after a successful update, as `GitUpdateProcess` decides for
+// `GitPreservingProcess`. After an error or a cancel the changes stay saved, and the notification
+// offers `View saved changes…`.
 fn finish(repo: &Repo, step: Step, saved: Option<Saved>) -> UpdateResult {
     let in_progress = stopped_midway(repo.path);
     let restore = saved
         .as_ref()
-        .filter(|_| !in_progress)
+        .filter(|_| matches!(step, Step::Updated) && !in_progress)
         .map(|saved| preserve::restore_tracked(repo.ctx, repo.data, saved));
     let result: UpdateResult = match step {
         Step::Updated => Outcome::Success.into(),
@@ -596,11 +602,18 @@ fn with_lock(
         merge_touches_changes(ctx, &tracked, &changed)?
     };
     let saved = if save {
-        match preserve::save_with_index_copy(ctx, repo.path, repo.data, UPDATE) {
+        let message = preserve::dated(UPDATE);
+        match preserve::save_local_keeping(ctx, repo.path, repo.data, UPDATE, &message) {
             Ok(saved) => saved,
-            Err(GitError::Cancelled) => return Err(GitError::Cancelled),
-            Err(error) => {
-                return Ok(save_failed(&branches::text_of(error)));
+            Err(failed) if failed.error == GitError::Cancelled => return Err(GitError::Cancelled),
+            // What it saved before failing stays saved, and is named (`View saved changes…`).
+            Err(failed) => {
+                let saver = preserve::saver(repo.data);
+                let result = save_failed(saver, &branches::text_of(failed.error));
+                return Ok(UpdateResult {
+                    saved: failed.saved.map(|saved| *saved),
+                    ..result
+                });
             }
         }
     } else {
@@ -704,9 +717,15 @@ pub fn with_matching(ctx: &TaskContext, result: UpdateResult, paths: &[String]) 
 mod tests {
     #[test]
     fn a_failed_save_is_titled_could_not_save_uncommitted_changes() {
-        let result = save_failed("boom");
-        assert_eq!(result.title.as_deref(), Some("Could not save uncommitted changes"));
+        let result = save_failed(CleanTree::Stash, "boom");
+        assert_eq!(
+            result.title.as_deref(),
+            Some("Could not save uncommitted changes")
+        );
         assert!(format!("{result:?}").contains("Tried to save uncommitted changes in stash"));
+        let shelf = save_failed(CleanTree::Shelve, "boom");
+        assert!(format!("{shelf:?}")
+            .contains("Tried to save uncommitted changes in shelf before Update"));
     }
 
     use super::*;
@@ -793,11 +812,14 @@ mod tests {
                 binary,
                 Duration::from_secs(5),
             );
+            let data = TempDir::new().unwrap();
+            // The tests written before the shelf saver speak of the stash.
+            crate::settings::save_clean_tree(data.path(), CleanTree::Stash).unwrap();
             Self {
                 repo,
                 colleague,
                 _origin: origin,
-                data: TempDir::new().unwrap(),
+                data,
                 scripts,
                 locks,
                 console,
@@ -1713,7 +1735,8 @@ mod tests {
     }
 
     #[test]
-    fn unversioned_that_would_be_overwritten_gives_error_and_restores() {
+    // Decision 10: after an error the changes stay saved, as in `GitUpdateProcess`.
+    fn unversioned_that_would_be_overwritten_gives_error_and_keeps_the_changes_saved() {
         let harness = Harness::new();
         harness.colleague.commit("new.txt", b"theirs\n", "new");
         harness.incoming("a.txt", "1\n2\nremote\n");
@@ -1731,10 +1754,11 @@ mod tests {
             Some("Untracked Files Prevent Merge")
         );
         assert!(!result.in_progress);
-        assert_eq!(result.restore, Some(RestoreOutcome::Restored));
+        assert_eq!(result.restore, None);
+        assert!(result.still_saved());
         assert_eq!(harness.read("new.txt"), "mine\n");
-        assert_eq!(harness.read("a.txt"), "local\n2\n3\n");
-        assert_eq!(harness.stash_count(), 0);
+        assert_eq!(harness.read("a.txt"), "1\n2\n3\n");
+        assert_eq!(harness.git(&["show", "stash@{0}:a.txt"]), "local\n2\n3\n");
     }
 
     #[test]
@@ -1759,7 +1783,8 @@ mod tests {
             result.title.as_deref(),
             Some("Local Changes Prevent from Merge")
         );
-        assert_eq!(result.restore, Some(blocked("a.txt")));
+        // Decision 10: after the error the changes stay saved; Devin's version stays on disk.
+        assert_eq!(result.restore, None);
         assert_eq!(harness.read("a.txt"), "devin\n");
         assert_eq!(harness.git(&["show", "stash@{0}:a.txt"]), "local\n2\n3\n");
     }
@@ -1778,6 +1803,112 @@ mod tests {
         assert_eq!(result.restore, Some(blocked("new.txt")));
         assert_eq!(harness.read("new.txt"), "devin\n");
         assert_eq!(harness.git(&["show", "stash@{0}:new.txt"]), "mine\n");
+    }
+
+    fn shelving() -> Harness {
+        let harness = Harness::new();
+        crate::settings::save_clean_tree(harness.data.path(), CleanTree::Shelve).unwrap();
+        harness
+    }
+
+    fn alive_shelves(harness: &Harness) -> Vec<crate::shelf::ShelvedList> {
+        crate::shelf::list(harness.data.path())
+            .into_iter()
+            .filter(|list| !list.recycled && !list.deleted)
+            .collect()
+    }
+
+    #[test]
+    fn update_with_shelve_saves_one_shelf_per_list_and_restores_into_it() {
+        let harness = shelving();
+        harness.write("a.txt", "local\n2\n3\n");
+        harness.write("b.txt", "local b\n");
+        let mut lists = crate::changelists::Changelists::load(harness.data.path());
+        let other = lists.create("Other").unwrap();
+        lists.move_paths(&["b.txt".to_string()], &other).unwrap();
+        lists.save(harness.data.path()).unwrap();
+        harness.incoming("a.txt", "1\n2\nremote\n");
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        let saved = result.saved.unwrap();
+        assert_eq!(saved.kind, CleanTree::Shelve);
+        let names: Vec<String> = saved
+            .lists
+            .iter()
+            .map(|list| list.description.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                format!("{} [Changes]", saved.message),
+                format!("{} [Other]", saved.message)
+            ]
+        );
+        assert_eq!(result.restore, Some(RestoreOutcome::Restored));
+        assert_eq!(harness.read("a.txt"), "local\n2\nremote\n");
+        assert_eq!(harness.read("b.txt"), "local b\n");
+        assert_eq!(harness.stash_count(), 0);
+        assert_eq!(alive_shelves(&harness), []);
+        let lists = crate::changelists::Changelists::load(harness.data.path());
+        assert_eq!(lists.list_for("b.txt"), other);
+        assert!(!harness.ran("stash"));
+    }
+
+    // A save that fails while it rolls back still names what it saved: the lists hold the changes,
+    // and the card offers `View saved changes…`.
+    #[test]
+    fn a_save_that_fails_after_a_partial_rollback_still_says_what_was_saved() {
+        let harness = Harness::wrapping("*\" restore \"*)\n  echo boom >&2\n  exit 1\n  ;;");
+        crate::settings::save_clean_tree(harness.data.path(), CleanTree::Shelve).unwrap();
+        harness.write("a.txt", "local\n2\n3\n");
+        harness.incoming("a.txt", "1\n2\nremote\n");
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(
+            result.title.as_deref(),
+            Some("Could not save uncommitted changes")
+        );
+        assert!(format!("{result:?}").contains("boom"));
+        let saved = result.saved.clone().unwrap();
+        assert_eq!(saved.kind, CleanTree::Shelve);
+        assert_eq!(result.restore, None);
+        assert!(result.still_saved());
+        assert_eq!(alive_shelves(&harness).len(), 1);
+        assert_eq!(harness.read("a.txt"), "local\n2\n3\n");
+    }
+
+    // Review Focus 4: the changes stay in the shelf, with nothing to restore by hand.
+    #[test]
+    fn a_stopped_update_leaves_the_shelf_and_offers_view_saved_changes() {
+        let harness = shelving();
+        harness.diverged_on_a_txt();
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Conflicts);
+        assert!(result.in_progress);
+        assert_eq!(result.restore, None);
+        assert!(result.still_saved());
+        let saved = result.saved.unwrap();
+        assert_eq!(saved.kind, CleanTree::Shelve);
+        let kept = alive_shelves(&harness);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, saved.lists[0].name);
+        assert!(kept[0].description.ends_with(" [Changes]"));
+        assert_eq!(harness.stash_count(), 0);
+        // Nothing is recorded for `Restore Changes`: that button is for the stashes of earlier builds.
+        assert_eq!(
+            preserve::pending(harness.repo.path(), harness.data.path()),
+            Ok(Vec::new())
+        );
+
+        harness.in_repo(abort).unwrap();
+        let outcome = harness.in_repo(move |repo| restore_requested(repo, &saved));
+        assert_eq!(outcome, RestoreOutcome::Restored);
+        assert_eq!(harness.read("a.txt"), "mine\n2\nlocal\n");
     }
 
     #[test]
@@ -1830,6 +1961,11 @@ mod tests {
         let harness = Harness::new();
         harness.diverged_on_a_txt();
         let saved = harness.update(UpdateMethod::Merge).saved.unwrap();
+        // This build records nothing; an earlier one did, for `Restore Changes`.
+        let none = preserve::pending(harness.repo.path(), harness.data.path());
+        assert_eq!(none, Ok(Vec::new()));
+        let data = harness.data.path();
+        preserve::record_earlier_build(data, &saved.sha, "Update", &saved.message);
 
         let pending = preserve::pending(harness.repo.path(), harness.data.path()).unwrap();
 
@@ -1892,7 +2028,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_merge_does_reset_merge_and_restores() {
+    fn cancelling_merge_does_reset_merge_and_keeps_the_changes_saved() {
         let harness = Harness::wrapping(
             "*\" merge origin/main \"*)\n  git \"$@\"\n  : > \"{mark}\"\n  sleep 30\n  ;;",
         );
@@ -1906,9 +2042,9 @@ mod tests {
         assert!(harness.ran("reset --merge"));
         assert!(!harness.in_git_dir("MERGE_HEAD"));
         assert_eq!(harness.head(), head);
-        assert_eq!(result.restore, Some(RestoreOutcome::Restored));
-        assert_eq!(harness.read("a.txt"), "mine\n2\nlocal\n");
-        assert_eq!(harness.stash_count(), 0);
+        assert_eq!(result.restore, None);
+        assert_eq!(harness.read("a.txt"), "mine\n2\n3\n");
+        assert_eq!(harness.stash_count(), 1);
         assert_eq!(snapshots::list(harness.data.path()).len(), 1);
     }
 
@@ -1932,18 +2068,19 @@ mod tests {
         assert_eq!(result.outcome, Outcome::Cancelled);
         assert!(!result.in_progress);
         assert_eq!(harness.head(), head);
-        assert_eq!(result.restore, Some(RestoreOutcome::Restored));
-        assert_eq!(harness.read("a.txt"), "1\n2\nlocal\n");
+        // Decision 10: the changes stay saved after a cancel.
+        assert_eq!(result.restore, None);
+        assert_eq!(harness.read("a.txt"), "1\n2\n3\n");
+        assert_eq!(harness.git(&["show", "stash@{0}:a.txt"]), "1\n2\nlocal\n");
         assert_eq!(harness.read("another.txt"), "untouched\n");
-        assert_eq!(harness.stash_count(), 0);
         let status = harness
             .repo
             .git(&["status", "--porcelain", "--untracked-files=no"]);
-        assert_eq!(status.trim(), "M a.txt");
+        assert_eq!(status.trim(), "");
     }
 
     #[test]
-    fn cancelling_rebase_does_abort_and_restores() {
+    fn cancelling_rebase_does_abort_and_keeps_the_changes_saved() {
         let harness = Harness::wrapping(
             "*\" rebase origin/main \"*)\n  git \"$@\"\n  : > \"{mark}\"\n  sleep 30\n  ;;",
         );
@@ -1957,9 +2094,9 @@ mod tests {
         assert!(harness.ran("rebase --abort"));
         assert!(!harness.in_git_dir("rebase-merge"));
         assert_eq!(harness.head(), head);
-        assert_eq!(result.restore, Some(RestoreOutcome::Restored));
-        assert_eq!(harness.read("a.txt"), "mine\n2\nlocal\n");
-        assert_eq!(harness.stash_count(), 0);
+        assert_eq!(result.restore, None);
+        assert_eq!(harness.read("a.txt"), "mine\n2\n3\n");
+        assert_eq!(harness.stash_count(), 1);
     }
 
     #[test]

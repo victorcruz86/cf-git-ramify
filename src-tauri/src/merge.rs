@@ -278,7 +278,7 @@ pub fn smart_merge(
     if update::stopped_midway(repo.path) {
         return run_merge(repo, branch, &[], None).map(unsaved);
     }
-    let saved = preserve::save_with_index_copy(repo.ctx, repo.path, repo.data, MERGE_TITLE)?;
+    let saved = preserve::save_local(repo.ctx, repo.path, repo.data, MERGE_TITLE)?;
     let result = run_merge(repo, branch, &[], None);
     let Some(stash) = saved else {
         return result.map(unsaved);
@@ -1003,8 +1003,9 @@ mod tests {
         assert_eq!(requested, refused);
         assert_eq!(harness.git(&["rev-parse", "stash@{0}"]).trim(), saved.sha);
         assert_eq!(harness.read("a.txt"), "one\n2\n3\n");
+        // The entry stays in the stash; this build records nothing for `Restore Changes`.
         let pending = preserve::pending(harness.path(), harness.data.path()).unwrap();
-        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.len(), 0);
     }
 
     #[test]
@@ -1230,7 +1231,7 @@ mod tests {
             preserve::pending(harness.path(), harness.data.path())
                 .unwrap()
                 .len(),
-            1
+            0
         );
 
         // And even if it reached git: `pop` refuses and the entry stays.

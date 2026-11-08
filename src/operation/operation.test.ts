@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import type { Aborted, Operation, RebaseOutcome, RepoInfo, RepoState } from "../lib/api";
 import { dismiss, notifications, type Shown } from "../lib/notifications";
+import { takeShelfTabRequest } from "../shelf/flow";
 import { conflictsFlow, type ConflictsApi, type ConflictsRequest, type ResolveOptions } from "../conflicts/flow";
 import {
   ABORTED,
@@ -589,7 +590,7 @@ describe("stopped rebase", () => {
 });
 
 describe("what was saved before the rebase", () => {
-  const SAVED = { sha: "abc", message: "Uncommitted changes before rebase" };
+  const SAVED = { kind: "stash" as const, sha: "abc", message: "Uncommitted changes before rebase", lists: [] };
 
   test("stopped_with_saved_changes_says_so", () => {
     const flow = operationFlow(ui());
@@ -600,8 +601,39 @@ describe("what was saved before the rebase", () => {
       title: "Rebase stopped due to conflicts",
       body: "Local changes were stashed before rebase.",
     });
-    const failed = rebaseStoppedNotification({ kind: "failed", reason: "bad" }, false, undefined, true);
+    const failed = rebaseStoppedNotification({ kind: "failed", reason: "bad" }, false, undefined, [SAVED]);
     expect(failed?.body).toBe("bad\nLocal changes were stashed before rebase.");
+  });
+
+  // G:316 and G:291 (G:317 and G:292 for the stash), `View …` last, as `VIEW_STASH_ACTION` is added.
+  test("rebase_with_shelve_says_local_changes_were_shelved_before_rebase_with_view_shelf", () => {
+    const message = "Uncommitted changes before rebase";
+    const shelved = {
+      kind: "shelve" as const,
+      sha: "",
+      message,
+      lists: [{ name: "Uncommitted_changes_before_rebase", description: `${message} [Changes]`, changelist: "default" }],
+    };
+    const showStashes = vi.fn();
+    const flow = operationFlow(ui(true, { showStashes }));
+    takeShelfTabRequest();
+
+    flow.notifyRebaseStopped(CONFLICTS, false, [shelved]);
+
+    expect(last().body).toBe("Local changes were shelved before rebase.");
+    expect(last().actions?.map(({ label }) => label)).toEqual(["Resolve…", "Continue", "Abort", "View Shelf…"]);
+    last().actions?.[3].run();
+    expect(takeShelfTabRequest()).toEqual({ select: "Uncommitted_changes_before_rebase" });
+    expect(showStashes).not.toHaveBeenCalled();
+
+    flow.notifyRebaseStopped({ kind: "failed", reason: "bad" }, false, [SAVED]);
+    expect(last().body).toBe("bad\nLocal changes were stashed before rebase.");
+    expect(last().actions?.map(({ label }) => label)).toEqual(["Retry", "Abort", "View Stash…"]);
+    last().actions?.[2].run();
+    expect(showStashes).toHaveBeenCalledTimes(1);
+    // The one of the previous repository carries no buttons.
+    const elsewhere = rebaseStoppedNotification(CONFLICTS, false, undefined, [shelved]);
+    expect(elsewhere?.actions).toBeUndefined();
   });
 
   test("when_the_stopped_rebase_finishes_it_gives_back_what_was_saved", async () => {

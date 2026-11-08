@@ -843,7 +843,7 @@ test("rollback_confirms_and_offers_to_restore", async () => {
   await fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
 
   await waitFor(() => expect(calls("snapshots_restore")).toHaveLength(1));
-  expect(calls("snapshots_restore")[0][1]).toEqual({ id: "snapshot-1" });
+  expect(calls("snapshots_restore")[0][1]).toEqual({ id: "snapshot-1", expectedRepo: "/repo" });
 });
 
 test("closing_the_rollback_dialog_touches_nothing", async () => {
@@ -1024,7 +1024,8 @@ test("the_menu_only_offers_what_applies", async () => {
   expect(
     within(listMenu).getByRole("menuitem", { name: "Import Changelists from .idea" }),
   ).toBeTruthy();
-  expect(within(listMenu).queryByRole("menuitem", { name: /Shelve/ })).toBeNull();
+  // `ChangesViewPopupMenu` is the same in either commit interface.
+  expect(within(listMenu).getByRole("menuitem", { name: "Shelve Changes..." })).toBeTruthy();
 });
 
 test("import_changelists", async () => {
@@ -1296,7 +1297,7 @@ test("restore_saved_snapshots", async () => {
   await fireEvent.click(within(dialog).getByRole("button", { name: "Restore" }));
 
   await waitFor(() => expect(calls("snapshots_restore")).toHaveLength(1));
-  expect(calls("snapshots_restore")[0][1]).toEqual({ id: "s1" });
+  expect(calls("snapshots_restore")[0][1]).toEqual({ id: "s1", expectedRepo: "/repo" });
 });
 
 function deferred<T>() {
@@ -1475,7 +1476,7 @@ test("each_rollback_restores_its_own_snapshot", async () => {
   await fireEvent.click(restores[0]);
 
   await waitFor(() => expect(calls("snapshots_restore")).toHaveLength(1));
-  expect(calls("snapshots_restore")[0][1]).toEqual({ id: "snapshot-2" });
+  expect(calls("snapshots_restore")[0][1]).toEqual({ id: "snapshot-2", expectedRepo: "/repo" });
 });
 
 test("a_repeated_notice_without_action_still_appears_only_once", async () => {

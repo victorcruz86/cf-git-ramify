@@ -13,6 +13,7 @@ use crate::git::{self, GitError};
 use crate::merge3::{self, Block, Whitespace};
 use crate::operation::{self, Operation};
 use crate::snapshots;
+use crate::stash;
 use crate::storage;
 use crate::task::TaskContext;
 use crate::worktree_diff;
@@ -500,9 +501,19 @@ impl Flow {
     }
 }
 
-pub fn session(ctx: &TaskContext) -> Result<Session, GitError> {
-    let repo = ctx.repo();
-    let flow = flow(repo)?;
+// `UnstashMergeDialogCustomizer`: with an operation in progress the conflicts are that operation's.
+fn unstash_texts(repo: &Repo, flow: &Flow) -> Option<stash::ConflictTexts> {
+    if flow.operation.is_some() {
+        return None;
+    }
+    stash::conflict_texts(repo.path, repo.data)
+}
+
+// `repo.data` says whether the conflicts are those of the last unstash, which has its own texts.
+pub fn session(repo: &Repo) -> Result<Session, GitError> {
+    let flow = flow(repo.path)?;
+    let unstash = unstash_texts(repo, &flow);
+    let repo = repo.path;
     let reversed = flow.operation == Some(Operation::Rebasing);
     let conflicts = stages(repo)?
         .into_iter()
@@ -513,7 +524,7 @@ pub fn session(ctx: &TaskContext) -> Result<Session, GitError> {
         reversed,
         yours_column: flow.yours_column(),
         theirs_column: flow.theirs_column(),
-        description: flow.description(),
+        description: unstash.map_or_else(|| flow.description(), |texts| texts.description),
     })
 }
 
@@ -592,10 +603,12 @@ fn text_of(version: &Version) -> Option<&str> {
     }
 }
 
-pub fn sides(ctx: &TaskContext, path: &str) -> Result<Sides, GitError> {
-    let repo = ctx.repo();
-    snapshots::check_path(repo, path).map_err(bad_path)?;
-    let flow = flow(repo)?;
+pub fn sides(repo: &Repo, path: &str) -> Result<Sides, GitError> {
+    let ctx = repo.ctx;
+    snapshots::check_path(repo.path, path).map_err(bad_path)?;
+    let flow = flow(repo.path)?;
+    let unstash = unstash_texts(repo, &flow);
+    let repo = repo.path;
     let reversed = flow.operation == Some(Operation::Rebasing);
     let Some(mask) = stages(repo)?.get(path).copied() else {
         return Err(invalid(format!("\"{path}\" {NOT_IN_CONFLICT}")));
@@ -634,7 +647,10 @@ pub fn sides(ctx: &TaskContext, path: &str) -> Result<Sides, GitError> {
         base,
         yours,
         theirs,
-        titles: flow.titles(repo)?,
+        titles: match unstash {
+            Some(texts) => texts.titles,
+            None => flow.titles(repo)?,
+        },
         hash,
         reversed,
         blocks,
@@ -700,7 +716,9 @@ pub fn accept(repo: &Repo, paths: &[String], side: Side) -> Result<(), GitError>
     branches::copy_before(repo, reason, |root| Ok(on_disk(root, &targets)))?;
     each_chunk(repo.ctx, &["checkout", flag], &keep)?;
     each_chunk(repo.ctx, &["add", "--ignore-errors", "-A", "-f"], &keep)?;
-    each_chunk(repo.ctx, &["rm"], &remove)
+    each_chunk(repo.ctx, &["rm"], &remove)?;
+    stash::forget_resolved(repo.path, repo.data);
+    Ok(())
 }
 
 // Saves `content` as the result of `path` and marks it resolved. `expected_hash` is that of `sides`:
@@ -735,6 +753,7 @@ pub fn resolve(
     }
     storage::write_atomic_with(&full, content, permissions).map_err(git::io_error)?;
     each_chunk(repo.ctx, &["add", "-f"], &wanted)?;
+    stash::forget_resolved(repo.path, repo.data);
     Ok(())
 }
 
@@ -747,12 +766,12 @@ mod tests {
     use std::fs;
 
     fn session_of(harness: &RepoHarness) -> Session {
-        harness.run(|repo| session(repo.ctx)).unwrap()
+        harness.run(session).unwrap()
     }
 
     fn sides_of(harness: &RepoHarness, path: &str) -> Sides {
         let path = path.to_string();
-        harness.run(move |repo| sides(repo.ctx, &path)).unwrap()
+        harness.run(move |repo| sides(repo, &path)).unwrap()
     }
 
     fn accept_in(harness: &RepoHarness, paths: &[&str], side: Side) -> Result<(), GitError> {
@@ -1087,9 +1106,7 @@ mod tests {
         let harness = merging();
         harness.write("clean.txt", "x\n");
 
-        let error = harness
-            .run(|repo| sides(repo.ctx, "clean.txt"))
-            .unwrap_err();
+        let error = harness.run(|repo| sides(repo, "clean.txt")).unwrap_err();
 
         assert!(matches!(error, GitError::Io(_)), "{error:?}");
     }

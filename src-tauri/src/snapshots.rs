@@ -84,14 +84,16 @@ fn git_failure(error: GitError) -> io::Error {
 }
 
 // The path must be relative and without `..`, must not enter `.git` and must not leave the repository through a
-// symbolic link in an intermediate folder. The last component is not followed: a link is
-// treated as a link.
+// symbolic link in an intermediate folder: the real path of its folder must stay inside the
+// repository and outside `.git`. The last component is not followed: a link is treated as a
+// link, wherever it points (a committed `hooks -> .git/hooks` is copied, staged and committed
+// as a link). Whoever writes through a final link must refuse it itself.
 pub fn check_path(repo: &Path, path: &str) -> io::Result<()> {
     let relative = Path::new(path);
     let mut count = 0;
     for component in relative.components() {
         match component {
-            Component::Normal(name) if !name.eq_ignore_ascii_case(".git") => count += 1,
+            Component::Normal(name) if !is_git_dir(name) => count += 1,
             _ => {
                 return Err(invalid(format!(
                     "The path \"{path}\" is not valid inside the repository"
@@ -104,9 +106,11 @@ pub fn check_path(repo: &Path, path: &str) -> io::Result<()> {
     }
 
     let root = fs::canonicalize(repo)?;
+    let into_git = || invalid(format!("The path \"{path}\" goes into .git"));
     let mut probe = repo.join(relative.parent().unwrap_or(Path::new("")));
     loop {
         match fs::canonicalize(&probe) {
+            Ok(real) if in_git(&root, &real) => return Err(into_git()),
             Ok(real) if real.starts_with(&root) => return Ok(()),
             Ok(_) => {
                 return Err(invalid(format!(
@@ -135,6 +139,18 @@ pub fn check_path(repo: &Path, path: &str) -> io::Result<()> {
             Err(error) => return Err(error),
         }
     }
+}
+
+fn is_git_dir(name: &std::ffi::OsStr) -> bool {
+    name.eq_ignore_ascii_case(".git")
+}
+
+// Inside the repository's `.git` (or a nested one).
+fn in_git(root: &Path, real: &Path) -> bool {
+    real.strip_prefix(root).is_ok_and(|rest| {
+        rest.components()
+            .any(|part| matches!(part, Component::Normal(name) if is_git_dir(name)))
+    })
 }
 
 fn changed_names(
@@ -256,6 +272,19 @@ pub fn stored(dir: &Path, id: &str, path: &str, staged: bool) -> Option<PathBuf>
         .iter()
         .position(|entry| entry.path == path)?;
     Some(slot(&folder, staged, index))
+}
+
+// Where each file of a snapshot is stored, from one read of its manifest.
+pub fn stored_files(dir: &Path, id: &str) -> io::Result<BTreeMap<String, PathBuf>> {
+    check_id(id)?;
+    let folder = snapshots_root(dir).join(id);
+    let manifest = read_manifest(&folder)?;
+    Ok(manifest
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.path.clone(), slot(&folder, false, index)))
+        .collect())
 }
 
 #[cfg(unix)]
@@ -1112,6 +1141,29 @@ mod tests {
         assert_eq!(fs::read(&secret).unwrap(), b"secret");
     }
 
+    // A link is copied as a link, wherever it points: a committed `hooks -> .git/hooks` is the
+    // user's file like any other.
+    #[test]
+    fn a_link_into_git_is_kept_as_a_link() {
+        let repo = TempRepo::new();
+        let dir = TempDir::new().unwrap();
+        symlink(".git/hooks", repo.path().join("hooks")).unwrap();
+        repo.git(&["add", "hooks"]);
+        repo.git(&["commit", "-q", "-m", "link"]);
+
+        check_path(repo.path(), "hooks").unwrap();
+        let id = create(dir.path(), repo.path(), &paths(&["hooks"]), "test").unwrap();
+        let copy = stored(dir.path(), &id, "hooks", false).unwrap();
+        assert_eq!(fs::read_link(copy).unwrap(), Path::new(".git/hooks"));
+        assert_eq!(list(dir.path())[0].entries[0].kind, EntryKind::Symlink);
+
+        // Staged through the usual helper.
+        fs::remove_file(repo.path().join("hooks")).unwrap();
+        symlink(".git/info", repo.path().join("hooks")).unwrap();
+        crate::staging::stage(repo.path(), dir.path(), &paths(&["hooks"])).unwrap();
+        assert_eq!(repo.git(&["diff", "--cached", "--name-only"]), "hooks\n");
+    }
+
     #[test]
     fn paths_outside_the_repository_are_rejected() {
         let repo = TempRepo::new();
@@ -1119,6 +1171,8 @@ mod tests {
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("x.txt"), "outside").unwrap();
         symlink(outside.path(), repo.path().join("outlink")).unwrap();
+        // A link to `.git`, and a link that is itself a file of `.git`.
+        symlink(".git", repo.path().join("gitlink")).unwrap();
         fs::create_dir(repo.path().join("sub")).unwrap();
 
         let invalid = [
@@ -1130,6 +1184,8 @@ mod tests {
             "outlink/new/x.txt",
             ".git/config",
             "sub/.git/config",
+            "gitlink/config",
+            "gitlink/hooks/new",
         ];
         for path in invalid {
             let error = check_path(repo.path(), path).unwrap_err();

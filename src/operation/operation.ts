@@ -18,13 +18,19 @@ import type { ConflictsResult, ResolveOptions } from "../conflicts/flow";
 import { errorText } from "../lib/errors";
 import { dismiss, notify, type Notification } from "../lib/notifications";
 import type { MenuItem } from "../lib/menu";
+import { requestTab } from "../lib/tabs";
 import { taskResult } from "../lib/tasks";
+import { viewSavedChanges } from "../shelf/flow";
 
 export const ELSEWHERE = "This happened in the previous repository.";
 const NO_REBASE = "No rebase in progress";
 const RESOLVE_ELSEWHERE = "Resolve the conflicts outside, then choose Continue.";
-// `rebase.notification.saved.local.changes.part.stash.text`.
+// `rebase.notification.saved.local.changes.part.stash.text` and `.shelf.text` (G:317, G:316).
 export const STASHED = "Local changes were stashed before rebase.";
+export const SHELVED = "Local changes were shelved before rebase.";
+// `rebase.notification.action.view.stash.text` and `.shelf.text` (G:292, G:291).
+export const VIEW_STASH = "View Stash…";
+export const VIEW_SHELF = "View Shelf…";
 
 // `abort.operation.*.name`, and `StringUtil.capitalizeWords(name, true)` for the titles.
 const NAMES: Record<Operation, string> = {
@@ -138,6 +144,9 @@ export interface OperationUi {
   // Give back what was saved before the rebase when it finishes or is aborted, with the Update notices if it
   // does not come back. Without it, it stays in the stash.
   restoreSaved?: (saved: SavedChanges[]) => Promise<void>;
+  // `View Stash…`: the Stash tab, or the Unstash dialog without it. Without it, the Stash tab is
+  // asked for.
+  showStashes?: () => void;
 }
 
 export interface OperationApi {
@@ -160,24 +169,32 @@ export interface StoppedHandlers {
   resolve(): void;
   resume(): void;
   abort(): void;
+  // `VIEW_STASH_ACTION`: what was saved before the rebase (`GitChangesSaver.showSavedChanges`).
+  viewSaved?(): void;
 }
 
 const withNote = (body: string | undefined) => (body ? `${body}\n${ELSEWHERE}` : ELSEWHERE);
 
 // `GitRebaseProcess.notifyNotAllConflictsResolved`, `showStoppedForEditingMessage`, `showFatalError`
 // and `showUntrackedFilesError`. `continuing`: the rebase was already in progress (`Continue rebase failed`).
-// Without `handlers` it carries no buttons: it is the one of the previous repository. `stashed`: there are changes saved
-// before the rebase (`mentionLocalChangesRemainingInStash`).
+// Without `handlers` it carries no buttons: it is the one of the previous repository. `saved`: the changes saved
+// before the rebase (`mentionLocalChangesRemainingInStash`), with `View Stash…` or `View Shelf…` last.
 export function rebaseStoppedNotification(
   outcome: RebaseOutcome,
   continuing: boolean,
   handlers?: StoppedHandlers,
-  stashed = false,
+  saved: SavedChanges[] = [],
 ): Notification | null {
   const notification = stoppedNotification(outcome, continuing, handlers);
-  if (!notification || !stashed) return notification;
+  if (!notification || saved.length === 0) return notification;
+  const shelved = saved[0].kind === "shelve";
+  const mention = shelved ? SHELVED : STASHED;
   const { body } = notification;
-  return { ...notification, body: body ? `${body}\n${STASHED}` : STASHED };
+  const view = handlers?.viewSaved;
+  const actions = notification.actions && view
+    ? [...notification.actions, { label: shelved ? VIEW_SHELF : VIEW_STASH, run: () => view() }]
+    : notification.actions;
+  return { ...notification, body: body ? `${body}\n${mention}` : mention, actions };
 }
 
 function stoppedNotification(
@@ -258,6 +275,7 @@ export function operationFlow(ui: OperationUi, api: OperationApi = backend) {
   let repository = "";
   // `GitRebaseSpec.getSaver`: what the stopped rebase saved when it started, until it finishes or is aborted.
   let saved: SavedChanges[] = [];
+  const showStashes = () => (ui.showStashes ? ui.showStashes() : requestTab("stash"));
 
   function show(notification: Notification | null, started: number) {
     if (!notification) return;
@@ -396,7 +414,7 @@ export function operationFlow(ui: OperationUi, api: OperationApi = backend) {
       await rebased(started);
       if (generation === started) await restoreSaved();
     } else if (outcome.kind === "conflicts") await onconflicts();
-    else show(rebaseStoppedNotification(outcome, true, handlers(), saved.length > 0), started);
+    else show(rebaseStoppedNotification(outcome, true, handlers(), saved), started);
   }
 
   // `Continue` of the notification: IntelliJ also uses it for `Retry`.
@@ -427,6 +445,9 @@ export function operationFlow(ui: OperationUi, api: OperationApi = backend) {
       },
       resume: () => void continueRebase(),
       abort: () => void abortOperation("rebasing"),
+      viewSaved: () => {
+        if (saved.length > 0) viewSavedChanges(saved[0], showStashes);
+      },
     };
   }
 
@@ -438,8 +459,7 @@ export function operationFlow(ui: OperationUi, api: OperationApi = backend) {
     kept?: SavedChanges[],
   ) {
     if (kept) saved = kept;
-    const stashed = saved.length > 0;
-    show(rebaseStoppedNotification(outcome, continuing, handlers(), stashed), generation);
+    show(rebaseStoppedNotification(outcome, continuing, handlers(), saved), generation);
   }
 
   return {

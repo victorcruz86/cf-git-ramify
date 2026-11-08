@@ -3,12 +3,15 @@ import { get } from "svelte/store";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { open as chooseNative } from "@tauri-apps/plugin-dialog";
 import App from "./App.svelte";
 import { closeCommitDialog, openCommitDialog, requestCommit } from "./commit/dialogStore";
 import { dismiss, notifications } from "./lib/notifications";
 import { requestTab } from "./lib/tabs";
+import { answerPatchDialog, applyInProgress } from "./patch/flow";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
   emit: vi.fn(async () => {}),
@@ -44,6 +47,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   get(notifications).forEach(({ id }) => dismiss(id));
+  // A patch dialog left open by a failed test would be the next one's.
+  answerPatchDialog(null);
 });
 
 const INFO = {
@@ -109,6 +114,7 @@ function mockApp(commands: Record<string, () => unknown> = {}) {
     log_refs_changed: () => false,
     repo_state: () => INFO.state,
     git_menu_enable: () => undefined,
+    stash_list: finishing(STASH_LIST_TASK, []),
     ...commands,
   });
 }
@@ -2284,4 +2290,638 @@ test("without_an_operation_the_widget_is_not_in_the_toolbar", async () => {
 
   expect(screen.queryByRole("button", { name: "Continue Rebase" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Abort Merge" })).toBeNull();
+});
+
+// `stash_list` is a task: its result arrives through `task-changed`.
+const STASH_LIST_TASK = 4242;
+const STASH = {
+  sha: "5".repeat(40),
+  parents: ["h".repeat(40)],
+  time: 1_700_000_000_000,
+  index: 0,
+  subject: "my work",
+  branch: "main",
+  prefix: "On main",
+  message: "my work",
+};
+
+// The watcher's payload when `refs/stash` or its reflog changed in that quiet period.
+const STASH_TOUCHED = { stash: true, shelf: false };
+// What `repo-changed` says after a command wrote the open repository's shelf.
+const SHELF_TOUCHED = { stash: false, shelf: true };
+
+const stashCommands = (list: () => unknown[]) => ({
+  stash_list: () => {
+    deliver("task-changed", taskDone(STASH_LIST_TASK, list()));
+    return STASH_LIST_TASK;
+  },
+  stash_changes: finishing(4243, { files: [], groups: [] }),
+});
+
+test("the_stash_tab_appears_with_the_first_stash_and_leaves_with_the_last", async () => {
+  let stashes: unknown[] = [];
+  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO, ...stashCommands(() => stashes) });
+  render(App);
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+  await waitFor(() => expect(calls("stash_list").length).toBeGreaterThan(0));
+  expect(within(strip).queryByRole("tab", { name: "Stash" })).toBeNull();
+
+  stashes = [STASH];
+  deliver("repo-changed", STASH_TOUCHED);
+
+  const tab = await within(strip).findByRole("tab", { name: "Stash" });
+  expect(within(strip).getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual([
+    "Local Changes",
+    "Stash",
+    "Log",
+    "Console",
+  ]);
+  expect(tab.getAttribute("aria-selected")).toBe("false");
+  await fireEvent.click(tab);
+  expect(tab.getAttribute("aria-selected")).toBe("true");
+  expect(await screen.findByRole("treeitem", { name: "my work" })).toBeTruthy();
+
+  stashes = [];
+  deliver("repo-changed", STASH_TOUCHED);
+
+  await waitFor(() => expect(within(strip).queryByRole("tab", { name: "Stash" })).toBeNull());
+  expect(within(strip).getByRole("tab", { name: "Local Changes" }).getAttribute("aria-selected")).toBe(
+    "true",
+  );
+  // It comes back unselected: the selection does not wait for it.
+  stashes = [STASH];
+  deliver("repo-changed", STASH_TOUCHED);
+  const back = await within(strip).findByRole("tab", { name: "Stash" });
+  expect(back.getAttribute("aria-selected")).toBe("false");
+});
+
+test("the_window_label_follows_the_window", async () => {
+  let stashes: unknown[] = [];
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    log_open: () => ({ viewId: 1, count: 0 }),
+    ...stashCommands(() => stashes),
+  });
+  render(App);
+  await screen.findByRole("textbox", { name: "Commit Message" });
+  // A single content: the Commit window shows no strip.
+  expect(screen.queryByRole("tablist", { name: "Commit" })).toBeNull();
+
+  stashes = [STASH];
+  deliver("repo-changed", STASH_TOUCHED);
+
+  const commit = await screen.findByRole("tablist", { name: "Commit" });
+  expect(within(commit).getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual([
+    "Commit",
+    "Stash",
+  ]);
+  expect(screen.queryByRole("tablist", { name: "Git" })).toBeNull();
+  const stripe = screen.getByRole("tablist", { name: "Tool windows" });
+  await fireEvent.click(within(stripe).getByRole("tab", { name: "Git" }));
+  const git = screen.getByRole("tablist", { name: "Git" });
+  expect(within(git).getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual([
+    "Log",
+    "Console",
+  ]);
+  expect(screen.queryByRole("tablist", { name: "Commit" })).toBeNull();
+});
+
+test("unstash_changes_shows_the_stash_tab_and_opens_the_dialog_only_without_stashes", async () => {
+  let stashes: unknown[] = [STASH];
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    branch_list: () => ({ local: [], remote: [], recent: [], current: "main", previous: null }),
+    ...stashCommands(() => stashes),
+  });
+  render(App);
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+  const tab = await within(strip).findByRole("tab", { name: "Stash" });
+
+  deliver("git-action", "Git.Unstash");
+
+  await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
+  expect(screen.queryByRole("dialog", { name: "Unstash Changes" })).toBeNull();
+
+  stashes = [];
+  deliver("repo-changed", STASH_TOUCHED);
+  await waitFor(() => expect(within(strip).queryByRole("tab", { name: "Stash" })).toBeNull());
+  deliver("git-action", "Git.Unstash");
+
+  expect(await screen.findByRole("dialog", { name: "Unstash Changes" })).toBeTruthy();
+});
+
+// `GitStashTracker`: the list is read again only when the stash ref changed, not on every save.
+test("a_worktree_save_does_not_read_the_stash_list_and_a_stash_push_does", async () => {
+  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO, ...stashCommands(() => [STASH]) });
+  render(App);
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+  await within(strip).findByRole("tab", { name: "Stash" });
+  expect(calls("stash_list")).toHaveLength(1);
+  const states = calls("repo_state").length;
+
+  deliver("repo-changed", { stash: false, shelf: false });
+  await waitFor(() => expect(calls("repo_state").length).toBeGreaterThan(states));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(calls("stash_list")).toHaveLength(1);
+
+  deliver("repo-changed", STASH_TOUCHED);
+  await waitFor(() => expect(calls("stash_list")).toHaveLength(2));
+});
+
+// `SHELF_TOPIC`: the lists are read again only when a command wrote the store, not on every save
+// of a file in the repository.
+test("a_worktree_save_does_not_read_the_shelf_and_a_change_to_the_store_does", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
+    shelf_lists: () => {
+      deliver("task-changed", taskDone(4320, [SHELF_LIST]));
+      return 4320;
+    },
+  });
+  render(App);
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+  await within(strip).findByRole("tab", { name: "Shelf" });
+  expect(calls("shelf_lists")).toHaveLength(1);
+  const states = calls("repo_state").length;
+
+  deliver("repo-changed", { stash: false, shelf: false });
+  deliver("repo-changed", null);
+  await waitFor(() => expect(calls("repo_state").length).toBeGreaterThan(states + 1));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(calls("shelf_lists")).toHaveLength(1);
+
+  deliver("repo-changed", SHELF_TOUCHED);
+  await waitFor(() => expect(calls("shelf_lists")).toHaveLength(2));
+});
+
+// `GitStashTracker.Stashes.Error` keeps the tab, with the error as its only node.
+test("a_stash_list_that_fails_shows_an_error_node", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    stash_list: () => {
+      throw { kind: "git", message: "fatal: bad stash" };
+    },
+  });
+  render(App);
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+
+  await fireEvent.click(await within(strip).findByRole("tab", { name: "Stash" }));
+
+  const list = screen.getByRole("tree", { name: "Stashes" });
+  expect(within(list).getByText("fatal: bad stash")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+// `VcsShowToolWindowTabAction` at the level of the app: active and selected does nothing (rama
+// has no hidden tool window), active elsewhere selects, inactive activates the tab.
+test("show_git_stash_selects_activates_or_leaves_the_tab", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    log_open: () => ({ viewId: 1, count: 0 }),
+    ...stashCommands(() => [STASH]),
+  });
+  render(App);
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+  const tab = await within(strip).findByRole("tab", { name: "Stash" });
+  await fireEvent.click(tab);
+  const list = await screen.findByRole("tree", { name: "Stashes" });
+  await waitFor(() => expect(document.activeElement).toBe(list));
+
+  deliver("git-action", "Git.Show.Stash");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(tab.getAttribute("aria-selected")).toBe("true");
+  expect(document.activeElement).toBe(list);
+
+  const log = within(strip).getByRole("tab", { name: "Log" });
+  await fireEvent.click(log);
+  log.focus();
+  deliver("git-action", "Git.Show.Stash");
+  await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
+
+  const path = screen.getByLabelText("Repository path");
+  path.focus();
+  deliver("git-action", "Git.Show.Stash");
+  await waitFor(() => expect(document.activeElement).toBe(list));
+});
+
+// `ChangesView.CreatePatch` of the Git menu: the Create Patch dialog with the active list, whose
+// `Create Patch…` opens Patch File Settings on top of it. With the staging area it does nothing.
+test("the_git_menu_create_patch_opens_create_patch_then_patch_file_settings", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    ...DIALOG_COMMANDS,
+    messages_push: () => undefined,
+    changelists_set_comment: () => LISTS,
+    patch_settings_get: () => ({ folder: null, toClipboard: false, showInFinder: null }),
+    patch_paths: () => ({ file: "/repo/a/m.patch", fileExists: false, base: "/repo/a", baseExists: true }),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  deliver("git-action", "ChangesView.CreatePatch");
+
+  const dialog = await screen.findByRole("dialog", { name: "Create Patch" });
+  expect(await within(dialog).findByRole("treeitem", { name: "a.txt" })).toBeTruthy();
+  await fireEvent.input(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
+    target: { value: "m" },
+  });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Create Patch…" }));
+
+  const settings = await screen.findByRole("dialog", { name: "Patch File Settings" });
+  expect((within(settings).getByRole("textbox", { name: "To file:" }) as HTMLInputElement).value).toBe(
+    "/repo/a/m.patch",
+  );
+  // On top: it comes after the Create Patch dialog in the document.
+  expect(dialog.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await fireEvent.click(within(settings).getByRole("button", { name: "Cancel" }));
+  expect(screen.getByRole("dialog", { name: "Create Patch" })).toBeTruthy();
+});
+
+test("the_git_menu_create_patch_does_nothing_with_the_staging_area", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => ({ ...SETTINGS, nonModalCommit: true, stagingArea: true }),
+    branch_list: () => ({ local: [], remote: [], recent: [], current: null, previous: null }),
+  });
+  render(App);
+  await screen.findByText("0.0.1");
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+
+  deliver("git-action", "ChangesView.CreatePatch");
+  // Waiting for the New Branch dialog, which comes after a round trip to the backend, gives Create
+  // Patch the same time to show its dialog: it did not.
+  deliver("git-action", "Git.CreateNewBranch");
+  await screen.findByRole("dialog", { name: "Create New Branch" });
+
+  expect(screen.queryByRole("dialog", { name: "Create Patch" })).toBeNull();
+});
+
+// `ChangesView.Shelve` of the Git menu: the Shelve Changes dialog, which shelves what it includes
+// with rollback, from the repository it was opened in. Not with the staging area.
+test("the_git_menu_shelve_changes_opens_shelve_changes_and_shelves_the_included_part", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    ...DIALOG_COMMANDS,
+    messages_push: () => undefined,
+    changelists_set_comment: () => LISTS,
+    shelf_shelve: () => 9,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  deliver("git-action", "ChangesView.Shelve");
+
+  const dialog = await screen.findByRole("dialog", { name: "Shelve Changes" });
+  expect(await within(dialog).findByRole("treeitem", { name: "a.txt" })).toBeTruthy();
+  await fireEvent.input(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
+    target: { value: "Later" },
+  });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Shelve Changes" }));
+
+  await waitFor(() => expect(calls("shelf_shelve")).toHaveLength(1));
+  expect(calls("shelf_shelve")[0][1]).toEqual({
+    entries: [{ path: "a.txt", oldPath: null, selection: null }],
+    description: "Later",
+    rollback: true,
+    expectedRepo: "/repo/a",
+  });
+  expect(screen.queryByRole("dialog", { name: "Shelve Changes" })).toBeNull();
+});
+
+// P26: rama's own `Import Shelf from .idea…` of Git › Uncommitted Changes runs the Shelf tab's
+// import, also while the shelf is empty and the tab is not there; the lists it adds bring the tab.
+test("the_git_menu_import_shelf_from_idea_imports_while_the_shelf_is_empty", async () => {
+  let lists: unknown[] = [];
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
+    shelf_lists: () => {
+      deliver("task-changed", taskDone(4330, lists));
+      return 4330;
+    },
+    shelf_import_idea: () => {
+      lists = [SHELF_LIST];
+      deliver("task-changed", taskDone(4331, { added: 1, skipped: 0 }));
+      deliver("repo-changed", SHELF_TOUCHED);
+      return 4331;
+    },
+  });
+  render(App);
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+  await waitFor(() => expect(calls("shelf_lists")).toHaveLength(1));
+  expect(within(strip).queryByRole("tab", { name: "Shelf" })).toBeNull();
+
+  deliver("git-action", "Shelf.ImportFromIdea");
+
+  await waitFor(() => expect(calls("shelf_import_idea")).toHaveLength(1));
+  expect(calls("shelf_import_idea")[0][1]).toEqual({ expectedRepo: "/repo/a" });
+  expect(await within(strip).findByRole("tab", { name: "Shelf" })).toBeTruthy();
+});
+
+// Finding 8: `ChangesView.Revert` of Git › Uncommitted Changes is Local Changes' Rollback.
+test("the_git_menu_rollback_opens_the_rollback_of_local_changes", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  deliver("git-action", "ChangesView.Revert");
+
+  const dialog = await screen.findByRole("dialog", { name: "Rollback Changes" });
+  expect(within(dialog).getByRole("checkbox", { name: "a.txt" })).toHaveProperty("checked", true);
+});
+
+test("the_git_menu_shelve_changes_does_nothing_with_the_staging_area", async () => {
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    settings_get: () => ({ ...SETTINGS, nonModalCommit: true, stagingArea: true }),
+    branch_list: () => ({ local: [], remote: [], recent: [], current: null, previous: null }),
+  });
+  render(App);
+  await screen.findByText("0.0.1");
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+
+  deliver("git-action", "ChangesView.Shelve");
+  deliver("git-action", "Git.CreateNewBranch");
+  await screen.findByRole("dialog", { name: "Create New Branch" });
+
+  expect(screen.queryByRole("dialog", { name: "Shelve Changes" })).toBeNull();
+});
+
+// `Vcs.Show.Shelf` (`VcsShowToolWindowTabAction`): nothing without the tab; otherwise it shows the
+// tab, and the step that would hide it leaves it as it is.
+const SHELF_LIST = {
+  list: {
+    name: "Fix_it",
+    description: "Fix it",
+    dateMs: 1_700_000_000_000,
+    recycled: false,
+    toDelete: false,
+    deleted: false,
+    patch: "/data/shelf/Fix_it/shelved.patch",
+    binaries: [],
+  },
+  changes: [{ file: { before: "a.txt", after: "a.txt", binary: false }, path: "a.txt", oldPath: null, status: "M" }],
+  error: null,
+};
+
+test("show_shelf_toggles", async () => {
+  const { takeShelfTabRequest } = await import("./shelf/flow");
+  takeShelfTabRequest();
+  let lists: unknown[] = [];
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
+    shelf_lists: () => {
+      deliver("task-changed", taskDone(4300, lists));
+      return 4300;
+    },
+    shelf_sides: finishing(4301, { left: { kind: "text", content: "" }, right: { kind: "text", content: "" }, titles: ["", ""] }),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+
+  // No list, no tab: the action does nothing and leaves nothing behind.
+  deliver("git-action", "Vcs.Show.Shelf");
+  expect(within(strip).queryByRole("tab", { name: "Shelf" })).toBeNull();
+  expect(takeShelfTabRequest()).toBeNull();
+
+  lists = [SHELF_LIST];
+  deliver("repo-changed", SHELF_TOUCHED);
+  const tab = await within(strip).findByRole("tab", { name: "Shelf" });
+  expect(within(strip).getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual([
+    "Local Changes",
+    "Shelf",
+    "Log",
+    "Console",
+  ]);
+  expect(tab.getAttribute("aria-selected")).toBe("false");
+
+  deliver("git-action", "Vcs.Show.Shelf");
+  await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
+  const tree = screen.getByRole("tree", { name: "Shelf" });
+  await waitFor(() => expect(document.activeElement).toBe(tree));
+  // In front with the focus inside: the hiding step, which rama has not, changes nothing.
+  deliver("git-action", "Vcs.Show.Shelf");
+  expect(tab.getAttribute("aria-selected")).toBe("true");
+
+  // A request with a list (after Shelve Changes) selects it.
+  await fireEvent.click(within(strip).getByRole("tab", { name: "Local Changes" }));
+  const { showShelf } = await import("./shelf/flow");
+  showShelf("Fix_it");
+  await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
+  expect(screen.getByRole("treeitem", { name: /^Fix it/ }).getAttribute("aria-selected")).toBe("true");
+});
+
+// Shelve Changes…, Import to Shelf and Import Patches… ask for their new list with `showShelf(name)`
+// while the tab already exists and has not read that list yet: it is selected once read.
+test("a_new_list_asked_for_while_the_shelf_tab_exists_is_selected_when_it_arrives", async () => {
+  const { takeShelfTabRequest, showShelf } = await import("./shelf/flow");
+  takeShelfTabRequest();
+  const NEW = { ...SHELF_LIST, list: { ...SHELF_LIST.list, name: "New_one", description: "New one", dateMs: 1_800_000_000_000 } };
+  let lists: unknown[] = [SHELF_LIST];
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
+    shelf_lists: () => {
+      deliver("task-changed", taskDone(4310, lists));
+      return 4310;
+    },
+    shelf_sides: finishing(4311, { left: { kind: "text", content: "" }, right: { kind: "text", content: "" }, titles: ["", ""] }),
+  });
+  render(App);
+  const strip = await screen.findByRole("tablist", { name: "Git" });
+  const tab = await within(strip).findByRole("tab", { name: "Shelf" });
+
+  showShelf("New_one");
+  await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
+  expect(screen.queryByRole("treeitem", { name: /^New one/ })).toBeNull();
+
+  lists = [NEW, SHELF_LIST];
+  deliver("repo-changed", SHELF_TOUCHED);
+  await waitFor(() =>
+    expect(screen.getByRole("treeitem", { name: /^New one/ }).getAttribute("aria-selected")).toBe("true"),
+  );
+  expect(screen.getByRole("treeitem", { name: /^Fix it/ }).getAttribute("aria-selected")).toBe("false");
+});
+
+const APPLY_PLAN = {
+  subject: null,
+  message: null,
+  author: null,
+  additionalInfoError: null,
+  readError: null,
+  files: [
+    {
+      index: 0,
+      path: "a.txt",
+      before: "a.txt",
+      after: "a.txt",
+      original: "a.txt",
+      strip: 0,
+      maxStrip: 0,
+      kind: "modified",
+      binary: false,
+      base: false,
+      status: "applicable",
+      error: null,
+      hashes: { "a.txt": "h" },
+    },
+  ],
+};
+
+// `ChangesView.ApplyPatch` of the Git menu's `Patch` submenu: `Select Patch File`, then the dialog
+// over that file with the repository's lists; OK applies it with the HEAD it was opened on.
+test("the_git_menu_apply_patch_opens_select_patch_file_then_the_dialog", async () => {
+  vi.mocked(chooseNative).mockResolvedValue("/patches/fix.patch");
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    patch_app_settings_get: () => ({ folder: "/patches", detectPatchOnTheFly: false }),
+    patch_storage_set: () => undefined,
+    patch_plan: finishing(61, APPLY_PLAN),
+    patch_apply: finishing(62, { snapshot: "s", status: "success", failed: [], conflicts: [], messages: [] }),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+
+  deliver("git-action", "ChangesView.ApplyPatch");
+
+  const dialog = await screen.findByRole("dialog", { name: "Apply Patch" });
+  expect(within(dialog).getByRole("treeitem", { name: /^a\.txt +Modified$/ })).toBeTruthy();
+  expect(calls("patch_storage_set")[0][1]).toEqual({ folder: "/patches" });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  await waitFor(() => expect(calls("patch_apply")).toHaveLength(1));
+  expect(calls("patch_apply")[0][1]).toMatchObject({
+    source: { kind: "file", path: "/patches/fix.patch" },
+    expectedHead: INFO.head,
+    choice: { selected: ["a.txt"], overwrite: [], expected: { "a.txt": "h" } },
+  });
+  expect(await screen.findByText("Patch successfully applied")).toBeTruthy();
+});
+
+// P22: from OK to its end an apply is modal, as IntelliJ's merge window for its conflicts is: the
+// main window is inert meanwhile, and live again after.
+test("the_main_window_is_inert_while_an_apply_runs", async () => {
+  vi.mocked(chooseNative).mockResolvedValue("/patches/fix.patch");
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    patch_app_settings_get: () => ({ folder: "/patches", detectPatchOnTheFly: false }),
+    patch_storage_set: () => undefined,
+    patch_plan: finishing(64, APPLY_PLAN),
+    patch_apply: () => 65,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+  // jsdom has no `inert`: Svelte sets the property, a browser reflects it as the attribute.
+  const inert = (selector: string) => {
+    const element = document.querySelector(selector) as HTMLElement;
+    return element.inert === true || element.hasAttribute("inert");
+  };
+  expect(inert(".workspace")).toBe(false);
+
+  deliver("git-action", "ChangesView.ApplyPatch");
+  const dialog = await screen.findByRole("dialog", { name: "Apply Patch" });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  await waitFor(() => expect(calls("patch_apply")).toHaveLength(1));
+
+  await waitFor(() => expect(inert(".workspace")).toBe(true));
+  expect(inert(".main-toolbar")).toBe(true);
+  deliver("task-changed", taskDone(65, { snapshot: "s", status: "success", failed: [], conflicts: [], messages: [] }));
+  expect(await screen.findByText("Patch successfully applied")).toBeTruthy();
+  await waitFor(() => expect(inert(".workspace")).toBe(false));
+  expect(inert(".main-toolbar")).toBe(false);
+});
+
+// `PatchClipboardListener`: with `Analyze and apply patch from clipboard on the fly` on, the app
+// becoming active (the backend's `app-activated`, not a move between rama's own windows) offers
+// the dialog for a patch on the clipboard, once for that text.
+test("on_the_fly_offers_the_dialog_once_per_clipboard_text", async () => {
+  const text = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n";
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    patch_app_settings_get: () => ({ folder: null, detectPatchOnTheFly: true }),
+    patch_clipboard: () => ({ length: text.length, hash: "t1", patch: text }),
+    patch_plan: finishing(63, APPLY_PLAN),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+
+  // Coming back from the merge or diff window is not activating the app.
+  window.dispatchEvent(new Event("focus"));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(calls("patch_clipboard")).toHaveLength(0);
+
+  deliver("app-activated");
+  const dialog = await screen.findByRole("dialog", { name: "Apply Patch" });
+  expect(within(dialog).queryByRole("textbox", { name: "Patch file name:" })).toBeNull();
+  expect(calls("patch_plan")[0][1]).toEqual({ source: { kind: "text", text }, mapping: { files: [] } });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+  deliver("app-deactivated");
+  deliver("app-activated");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(screen.queryByRole("dialog", { name: "Apply Patch" })).toBeNull();
+  expect(calls("patch_plan")).toHaveLength(1);
+});
+
+// While a patch conflict is in the merge window the apply is modal: the Git menu does nothing.
+test("the_git_menu_waits_while_a_patch_conflict_is_in_the_merge_window", async () => {
+  const conflict = { path: "a.txt", base: "b\n", local: "l\n", patched: "p\n", localHash: "h", movedTo: null, newMode: null };
+  vi.mocked(chooseNative).mockResolvedValue("/patches/fix.patch");
+  mockApp({
+    initial_repo: () => "/repo/a",
+    repo_open: () => INFO,
+    patch_app_settings_get: () => ({ folder: null, detectPatchOnTheFly: false }),
+    patch_storage_set: () => undefined,
+    patch_plan: finishing(64, APPLY_PLAN),
+    patch_apply: finishing(65, { snapshot: "s", status: "skip", failed: [], conflicts: [conflict], messages: [] }),
+    merge_window_open_contents: () => undefined,
+    // The window still shows the contents it was opened with, however long the test takes.
+    merge_window_contents: () => ({
+      id: (calls("merge_window_open_contents")[0]?.[1] as { input: { id: string } } | undefined)?.input.id,
+    }),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+  deliver("git-action", "ChangesView.ApplyPatch");
+  const dialog = await screen.findByRole("dialog", { name: "Apply Patch" });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  await waitFor(() => expect(calls("merge_window_open_contents")).toHaveLength(1));
+
+  deliver("git-action", "Git.CreateNewBranch");
+  deliver("git-action", "ChangesView.ApplyPatchFromClipboard");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  expect(screen.queryByRole("dialog", { name: "Create New Branch" })).toBeNull();
+  expect(calls("patch_clipboard")).toHaveLength(0);
+
+  // `Skip` ends the apply, and the menu acts again.
+  const { id } = (calls("merge_window_open_contents")[0][1] as { input: { id: string } }).input;
+  deliver("merge-done", { id, result: "skip" });
+  await waitFor(() => expect(applyInProgress()).toBe(false));
 });

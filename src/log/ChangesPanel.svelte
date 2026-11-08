@@ -52,9 +52,12 @@
     onempty?: () => void;
     // Cherry-Pick Selected Changes and Revert Selected Changes. Without it they come out disabled.
     onvcs?: (action: VcsAction) => void;
+    // `Create Patch...` (`VcsLogCreatePatchActionProvider`). Without it, it comes out disabled.
+    oncreatepatch?: (changes: LogChange[]) => void;
   }
 
-  let { hashes, paths, options, onoptions, onselect, onopen, onempty, onvcs }: Props = $props();
+  let { hashes, paths, options, onoptions, onselect, onopen, onempty, onvcs, oncreatepatch }: Props =
+    $props();
 
   let own = $state.raw<LogChange[]>([]);
   let parents = $state.raw<ChangeSection[]>([]);
@@ -158,9 +161,10 @@
     };
   }
 
-  // `RevertSelectedChangesAction.Revert` and `.Apply`.
-  const fileItems = (changes: LogChange[]): MenuItem[] =>
-    [
+  // `RevertSelectedChangesAction.Revert` and `.Apply`, then `ChangesView.CreatePatchFromChanges`, in
+  // the order of `Vcs.RepositoryChangesBrowserMenu` (which has no Copy as Patch).
+  const fileItems = (changes: LogChange[]): MenuItem[] => [
+    ...[
       ["Revert Selected Changes", true],
       ["Cherry-Pick Selected Changes", false],
     ].map(([label, reverse]) => ({
@@ -173,7 +177,13 @@
           selection: pathsSelection(changes),
           hashes,
         }),
-    }));
+    })),
+    {
+      label: "Create Patch...",
+      disabled: !oncreatepatch || changes.length === 0,
+      run: () => oncreatepatch?.(changes),
+    },
+  ];
 
   async function single(token: number, hash: string, withParents: boolean, all: boolean) {
     const [group] = await commitChangesOf(hash, "merged");

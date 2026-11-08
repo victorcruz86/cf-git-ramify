@@ -260,7 +260,7 @@ From the items the reviews deferred:
 
 Each feature and the tests that name it. The exact names are in the Result column of `docs/parity-matrix.md`.
 
-- **Texts:** `unmerged_files_text_and_action_follow_241`, `unstash_with_conflicts_says_241s_text_and_offers_resolve`, `the_text_filter_shows_text_or_hash`; in Rust one test per constant (`a_failed_stash_says_could_not_stash`, `a_failed_save_is_titled_could_not_save_uncommitted_changes`, `an_unidentifiable_git_names_git_with_a_capital`, `a_missing_remote_says_could_not_find_it`).
+- **Texts:** `unmerged_files_text_and_action_follow_241`, `unstash_with_conflicts_says_241s_text_and_offers_resolve`, `the_text_filter_shows_text_or_hash`; in Rust one test per constant (`a_failed_save_says_could_not_stash_or_shelve`, renamed in part 3, `a_failed_save_is_titled_could_not_save_uncommitted_changes`, `an_unidentifiable_git_names_git_with_a_capital`, `a_missing_remote_says_could_not_find_it`).
 - **Drop:** `drop_asks_drop_commits_with_ok_and_cancel`, `cancelling_the_drop_question_runs_nothing`, `drop_asks_after_the_check_and_before_reading_the_state`, `dont_ask_again_is_saved_only_on_ok`, `without_the_setting_drop_does_not_ask`, `drop_success_lists_the_subjects`, `the Confirmation section asks to confirm dropping commits and saves it`, and in Rust `show_drop_commit_dialog_defaults_to_true`.
 - **Options:** `update_refs_comes_out_as_a_button_and_travels_in_the_answer`, `update_refs_is_saved_last_and_travels_in_the_params`; in Rust `merge_with_each_option_launches_the_intellij_command`, `merge_with_allow_unrelated_histories_joins_histories_without_a_common_ancestor`, `rebase_with_update_refs_passes_the_flag`, `update_refs_is_remembered_per_repository`.
 - **Edit Commit Message:** `escape_with_a_changed_reword_asks_cancel_reword`, `escape_with_an_unchanged_reword_closes_silently`, `reset_with_a_changed_reword_asks_first`, `the_reword_dialog_has_the_history_button`, `the_history_button_is_disabled_with_an_empty_history`, `a_changed_message_goes_to_history_on_any_close`.
@@ -272,6 +272,8 @@ Each feature and the tests that name it. The exact names are in the Result colum
 - **Add to VCS (Review Focus 4):** in Rust `add_to_vcs_adds_the_new_file_to_the_index`, `adding_to_vcs_rejects_foreign_paths`, `committing_another_changelist_leaves_the_added_file_out` (HEAD has only the other file; the index still has the added one), and the two counting tests; in the interface the five tests named in the matrix row.
 - **Small alignments and widget:** `a_symlinked_launchd_agent_counts_as_external`, `every_git_command_carries_intellij_git_executable`, the nine tests of `MergeRebaseWidget.test.ts` and three in `App.test.ts`.
 - **Soft-Wrap:** `wrap_is_stored_per_place_with_its_default`, `the_gear_has_soft_wrap_before_align`, `right_click_on_the_gutter_offers_soft_wrap` (five files), `vcs_log_view_wraps_from_its_own_place_default_off`, `soft_wrap_wraps_both_sides_without_rebuilding_the_views`, `wrap_off_keeps_todays_configuration`; for the aligned diff (Review Focus 5) the seven tests of `spacers.test.ts` (including `an_unchanged_line_wrapping_only_on_one_side_gets_a_top_spacer_before_the_next_hunk` and `feeding_its_output_back_changes_nothing`) and `with_wrap_on_spacers_follow_the_measured_heights`, `a_second_measuring_pass_dispatches_nothing`, `the_two_number_gutters_have_the_same_width_when_aligned`, `with_wrap_off_spacers_are_line_counts_times_20`.
+
+- **The final fix wave**, each test seen failing first except where it says so: in Rust `every_change_to_the_store_moves_its_generation_and_a_read_does_not`, `repo_changed_says_the_shelf_changed_only_after_a_write_to_its_store`, `the_files_of_a_shelve_are_stored_with_one_git_add`, `a_shelve_that_stores_nothing_makes_no_list`, `a_shelve_started_before_another_repository_was_opened_writes_nothing`, `one_shelf_cleaner_cleans_the_open_repository_on_open_and_then_once_a_period`, `new_files_named_like_pathspecs_are_added_and_ignored_ones_are_not`, `a_dropped_or_cleared_stash_is_recorded_first_and_can_be_stored_again`, `a_drop_whose_record_cannot_be_written_drops_nothing`, `an_erased_list_is_kept_in_shelf_erased_for_thirty_days`, `files_taken_out_of_a_deleted_list_are_kept_in_shelf_erased`, `a_binary_changed_in_head_can_be_overwritten_from_the_dialog`, `a_binary_target_written_after_the_copy_is_left`, `a_list_whose_folder_is_a_link_is_not_read`, `a_copy_of_a_file_with_a_name_of_255_bytes_gets_a_name_that_fits`, `lists_that_differ_only_in_their_binaries_are_both_imported`, `without_head_a_file_staged_then_edited_goes_back`, `a_list_that_is_gone_is_named_the_same_way_everywhere`, `a_copy_of_another_repository_says_whose_it_is`, `a_focus_gained_while_a_loss_settles_keeps_the_app_active`, `the_name_prefix_follows_the_shared_cases` (passed at once: the Rust cut was already right) and the menu tests `the_uncommitted_changes_group_holds_the_stash`, `shelve_changes_is_hidden_in_staging_mode` and `the_git_menu_follows_the_order_of_git_main_menu`, plus two cases added to `overwriting_a_file_of_the_worktree_keeps_a_copy_first` (passed at once); in the interface `a_worktree_save_does_not_read_the_shelf_and_a_change_to_the_store_does`, `a_binary_changed_in_head_offers_overwrite_in_the_unshelve_dialog`, `the_binaries_chosen_to_overwrite_reach_the_apply`, `the_git_menu_import_shelf_from_idea_imports_while_the_shelf_is_empty`, `the_git_menu_rollback_opens_the_rollback_of_local_changes`, `the_main_window_is_inert_while_an_apply_runs`, `a_cancelled_splitter_drag_ends_like_a_release`, `the_patch_name_prefix_follows_the_shared_cases` and the V:363 assertion in `failures_show_patch_applying_partly_failed_and_rollback_restores`.
 
 **What the process left on record.** Several tasks wrote their tests together with the code and have no RED run of their own (Task 1's Rust constants, Task 2, which got a retroactive RED in a temporary worktree at `5ad5c44`, and the `commands.rs` test of Task 8). A weakened assertion (`cancelling_the_push_in_progress_is_not_a_failure`) was found by the review of Task 6 and restored.
 
@@ -349,3 +351,282 @@ Against the close of part 1 (78 files and 1,761 tests in the interface, 1,610 in
 ### Conclusion
 
 The behaviour that can be tested without a screen and without a keyboard is tested, with real git where it matters, and follows what the 241 sources say, except for the differences in section 2. Part 2 is not validated. It ends when you complete the list in section 5, with soft wrapping in a real window as its main risk, and settle the points in section 6 that need your machine.
+
+## Part 3: patches, stash and shelf
+
+Date: 2026-11-08. Plan: `docs/superpowers/plans/2026-11-08-phase-4-3-patches-stash-shelf.md`. The part has 28 commits after its plan (`48ae159`): `48ae159..21156cf`, 13 features, 14 fixes and one move-only refactor (`f719d19`), in 11 tasks, each reviewed, plus this report (`8c6b244`). A final review of the whole part (0 critical, 3 important, 29 minor findings) was followed by one fix wave: `eaf4010` (performance and safety), `667a246` (menu, texts and cleanups), `2c2904f` (`cargo fmt` on the part's lines), `c25f56b` (a clippy fix after the format) and the commits of these documents (`5240735` and the next one). Section 2 ends with its rulings.
+
+### Summary
+
+- Part 3 is done in essence: the user saves, moves and restores uncommitted work as in IntelliJ 2024.1. Copy as Patch to Clipboard, Create Patch, Apply Patch and Apply Patch from Clipboard; Stash Changes, Unstash and the Stash tab; Shelve, Unshelve, the Shelf tab and the import of `.idea/shelf`; and `Clean working tree using: Shelve`, the 241 default, for Update, rebase, checkout and Smart Merge.
+- **`done` means tests, not use**, as in parts 1 and 2. The Rust logic is tested with real git and throwaway repositories, with IntelliJ's own fixtures for patches and shelves; the interface in jsdom with the Tauri API simulated. Nobody has seen the dialogs, the two tabs or the merge window in contents mode in a real window, nor used a real clipboard, the native choosers, a patch made by IntelliJ or a real `.idea/shelf`. The part cannot be accepted without the list in section 5.
+- Matrix: 30 action rows of section 4 got their result (23 `done`, 1 `partial`, 6 `pending` with their reason), section 2 has 7 new rows (4 `done`, 3 not copied by plan decision 10), section 3 closed both `Clean working tree using` rows and has 2 new rows not copied (plan decisions 7 and 10), and 4 earlier rows got a part 3 note (the Git tool window, the Local Changes tab, Update Project and the patch location of section 1).
+- 32 rulings were taken during the part (two more lines of the ledger only parked findings for the final review); section 2 lists them with their cost, a ruling and its later correction in one item, then the parked findings and the rulings of the final fix wave. The differences from IntelliJ that a user can notice are in section 3, by feature.
+- The final fix wave: the Shelf tab reads its lists only when a command wrote the store, and every shelve reads its files with one `git add`; Drop and Clear keep a record of each stash and what the shelf erases is kept 30 days (how to recover, end of section 2); a binary that HEAD changed since shelving can be overwritten from the Unshelve dialog; `Import Shelf from .idea…` and `Rollback...` in Git › Uncommitted Changes; the main window is inert during an apply.
+
+### 1. What was built
+
+- **Infrastructure (Task 3).** Native file choosers through `tauri-plugin-dialog` 2.8.3 (plan decision 1), granted to the main window only; the clipboard read with `/usr/bin/pbpaste` and Reveal in Finder with `open -R` (plan decision 2); the merge window in a "contents" mode that answers with the merged text instead of writing a conflict; a read-only two-text diff (`TextsDiff`) extracted from the diff view.
+- **Patch format (Tasks 1 and 4).** A reader and a writer of IntelliJ's patch format in `src-tauri/src/patch/`: `Index:` and `IDEA additional info:` headers, the `<+>` base and charset lines, git headers, quoting, and binary sections written and read through git (plan decision 3). The writer matches the 25 `PatchBuilderTest` cases byte for byte.
+- **Copy as Patch and Create Patch (Task 4).** From Local Changes, the staging area, the Log's changes tree and the Git menu (`Patch` submenu). Create Patch runs as an executor of the commit dialog, with no commit checks (plan decision 8), then `Patch File Settings` (`To file:`, `To clipboard`, `Base path:`, `Reverse patch`, `Encoding:` UTF-8 disabled), the overwrite question and `Successfully created patch`.
+- **Apply (Tasks 2 and 5).** `patch_apply.rs` applies exactly, then at an offset, then by a 3-way merge with the base, then through the merge window (plan decision 4), after a recoverable copy, writing a file only if it still holds what was read. `Apply Patch` and `Apply Patch from Clipboard` open the 241 dialog: tree, strip and map actions, Show Difference, the changelist chooser, `Overwrite Existing Files`, `Patch Applying Partly Failed`, `Abort Patch`, and the on-the-fly clipboard offer.
+- **Stash (Tasks 6 and 7).** `Stash Changes…`, `Unstash Changes…` and `Unstash…` with both checkboxes honoured (overview decision 11), `Stash Silently` and `Stash Files` with the staging area, and the `Stash` tab: list with branch labels, changes, Apply/Pop, a diff preview, Compare with Local, Cherry-Pick Selected Changes, speed search and splitters. The list is read again only when the stash ref changes.
+- **Shelf store and import (Task 8).** The shelf in IntelliJ's layout in rama's data folder (overview decision 4), with recycle, delete, restore, rename, the 7-day retention and a repeatable, read-only import of `.idea/shelf` (overview decision 5).
+- **Shelving (Task 9).** `Shelve Changes...` (an executor of the commit dialog), `Shelve Silently` (⇧⌘H, one shelf per changelist) and `Save To Shelf`, with a copy before rolling back and an emptied changelist deleted.
+- **The Shelf tab and unshelving (Task 10).** The vertical toolbar, the tree with `Recently Deleted`, `Already Unshelved` and `Group By Directory`, the 241 popup menu, inline rename, Delete with Undo, Import Patches…, Import from .idea, Show Diff and Compare with Local, Create Patch and Copy as Patch of a shelf, `Unshelve...` through the Apply dialog in its unshelve mode, `Unshelve Silently` (⌥⌘U), and `Import to Shelf` in the Apply dialog.
+- **`Clean working tree using: Shelve` (Task 11).** The radio of the Git settings page is live, per repository, Shelve by default (overview decision 9). The shelf saver makes one system list per changelist and restores each into its list; the changes come back only after a successful update and otherwise stay saved, with `View saved changes…` (overview decision 10). The phase 2 and 3 decisions this overrides are marked in the spec.
+
+### 2. Decisions and rulings that depart from IntelliJ
+
+Each one with what it costs if it turns out to be wrong. In this part, "plan decision N" is one of the eleven below, from `docs/superpowers/plans/2026-11-08-phase-4-3-patches-stash-shelf.md`, and "overview decision N" one of `docs/superpowers/plans/2026-11-03-phase-4-overview.md`.
+
+**Decisions of the plan (1 to 11)**
+
+1. **Native file choosers through `tauri-plugin-dialog`**, for Apply Patch, Patch File Settings and Import Patches…. Cost: one more dependency; typed paths still work in every field.
+2. **The clipboard is read with `pbpaste` (`LC_CTYPE=UTF-8`); Reveal in Finder is `open -R`.** Cost: none.
+3. **Binary sections go through git** (`git diff --binary` between two blobs to write, `git apply --binary` on a one-entry patch to apply). Cost: the bytes of a written binary section differ from IntelliJ's; see the `delta` ruling below for the one case where IntelliJ reads them differently.
+4. **The applier is exact, then at an offset within ±1000 lines, then already-applied, then `merge3` with the base, then the merge window; no base means the file fails.** Split hunks, trimmed context, the "Result of Patch Apply" viewer and context diffs are not copied. Cost: a patch that IntelliJ applies with fuzz fails here and is applied by hand (`partialApply` of `ApplyPatchTest` is such a case).
+5. **Paths in Apply are relative to the repository root;** the strip and map actions are copied, `MatchPatchPaths` is not. Cost: a patch made in another layout needs the strip or map actions.
+6. **One encoding: UTF-8,** written with `\n`. Cost: no other charsets.
+7. **Separate `Stash` and `Shelf` tabs; `Combine stashes and shelves in one tab` is not copied.** Cost: a setting the user has off; the five `Vcs.Shelf.*` rows have no effect.
+8. **No commit checks for Shelve and Create Patch,** as 241 skips them for a non-VCS executor. Cost: none.
+9. **The patch folder starts at the repository root;** the user's `PATCH_STORAGE_LOCATION` is not read from IntelliJ, and rama remembers the last folder per repository and for the app. Cost: the first time, the user browses to `~/Downloads/PATCHS` once.
+10. **Not copied:** drag and drop between Local Changes and the Shelf, the `Shelf` settings page, the `Getting started with Stash and Shelf` link and the `Help` buttons. Cost: a few seconds per use for drag and drop.
+11. **The shelf base (`<+>` lines) is written from rama's reading of IntelliJ's code,** with no fixture at the tag. Cost: if the escape rules are wrong, imported bases fail and those files fall back to "no base" (plan decision 4, last step). The checklist imports a real shelf with a tab and an emoji.
+
+**Rulings taken during the part**
+
+Interfaces and the order of the work:
+- Task 5 built the Apply dialog with its `apply` and `clipboard` modes and a `mode` prop typed with all three; Task 10 added the `unshelve` specifics. Cost: none, the work moved between tasks.
+- Task 10 added `PatchInput::Shelf { name, files }`, so that unshelving carries the shelf's stored bases. Cost: one enum variant.
+- Task 11 could build a minimal unshelve core in Rust before Task 10 (it did: `shelf/unshelve.rs`). Cost: Task 10 adapted to it.
+- If the Shelf tab did not exist yet, Task 9 registered `Show Shelf` and tested the tab request that Task 10 consumes. Cost: one call to rewire.
+- `Import to Shelf` moved from Task 5 to Task 10, which has the shelf import and the tab. Cost: Task 10 grew by one button.
+- `SavedPatchesView` stays the Stash tab's view, and the Shelf tab is 241's classic `ShelvedChangesViewManager` tree with multi-selection, as 2024.1 shows it. Cost: Task 10 was larger than planned.
+- The plan's `Missing` status is "the target file is absent" and `MissingBase` is "the hunks do not match and there is no base". Cost if wrong: two labels swapped.
+- The applier never aborts or rolls back by itself: the caller calls `patch_rollback` for `Abort and Rollback` and `Rollback`, and folds the merge window's outcomes into the status. Cost: none found.
+- `plan` returns a content hash per file and `patch_apply` takes them as `expected`; a file that changed since the plan fails. Cost: none beyond the signature.
+- Implementers worked in this checkout, two at a time only with disjoint files, and staged only their own hunks. Cost if wrong: a mixed commit, caught by the review.
+
+Behaviour:
+- **Patch creation takes the repository locks.** The first ruling (flush the diff window, no lock, because the patch is written outside the repository) was withdrawn: the default target is inside the worktree, so `patch_create` takes `RepoLocks` and keeps a copy of a worktree file it overwrites. Cost: creating a patch waits behind a running operation; IntelliJ does not lock.
+- **git's `delta` binary sections are kept in written patches,** because rama reads and applies them through `git apply --binary` and git has no switch to force `literal`. Cost: a rama patch with a modified binary, applied in IntelliJ 2024.1, writes an empty file for that entry (241 decodes `delta` as 0 bytes, confirmed by the Task 1 review).
+- Task 1's minor findings were fixed at once (error-path tests, a patch-like alphabet in the property test, a binary entry that git prints as text fails instead of becoming text, hunk numbers past `u32` refused, built bases normalised to LF), because Tasks 2 and 4 build on them. Cost: one fix round.
+- **Every path and mode from a patch is untrusted:** paths through `snapshots::check_path`, modes limited to 100644, 100755 and 120000, `--` before paths. Cost: an exotic valid mode (none known) fails its file.
+- **A binary entry with mode 120000 fails its file;** no symbolic link is created from a patch. Cost: a binary symlink patch is applied by hand. When nothing reaches the writer, no copy is taken.
+- **`check_path` refuses a real parent folder inside `.git`**, for every caller (the applier's `x -> .git` case). A first version also refused a final link pointing into `.git`; it was narrowed: a final link is copied as a link by every caller (commit, rollback, stash, snapshots), and the applier refuses to write through any final link. Cost if wrong: none found; the applier's own refusal is the guard.
+- In the same round: `chmod` only on a regular file, a mode error after the write is a message and the move still runs, and the aside name of a binary overwrite never replaces an existing file. Cost: none.
+- **When every file is skipped, the status is PARTIAL,** following `ApplyPatchStatus` and `PatchApplier` over the research note. Cost if wrong: one notification text.
+- **Apply Patch from Clipboard:** an empty clipboard says `Cannot Apply Patch Now`, and a text that is not a patch opens the dialog with `No changes detected`. 241 enables the action on any clipboard text, and rama cannot disable a native menu item by the clipboard's content. Cost if wrong: two lines.
+- **The Apply dialog's changelist chooser follows `ApplyPatchDifferentiatedDialog` with `CREATE_CHANGELISTS_AUTOMATICALLY` off,** not the brief's wording: with a message only the comment is set; without one, a list named like the file is selected if it exists. Cost: none known.
+- **Copy as Patch to Clipboard is not in the Log's changes tree:** 241's `Vcs.RepositoryChangesBrowserMenu` has only `Create Patch...`. Cost if wrong: one menu entry.
+- **Stash Files takes paths literally** (`--literal-pathspecs`), so `*.txt` or `:(glob)x` is a file name. Cost: none.
+- **The unstash conflict texts come from a marker** that records HEAD and the conflicted paths; it holds only while HEAD is the same and the unmerged paths are among those recorded, and it is deleted when none is left. Cost if wrong: a later conflict on the very same file at the same HEAD still shows the unstash titles (texts only).
+- **The Unstash dialog's `View` shows the stash's changes against local** (the Stash tab's changes browser), and only a load error becomes a notification. Cost: one task carried it.
+- **The stash list is read again only when the stash ref changes:** the watcher marks a change of `.git/refs/stash`, `.git/logs/refs/stash` or `packed-refs` over its debounce window. Cost: none, but a change of the Git executable does not reload it until the next stash change.
+- **The stash changes menu gets `Cherry-Pick Selected Changes`** through the existing `apply_paths` command; `Edit Source` and `Open Repository Version` stay out. Resizable splitters under IntelliJ's keys and ⌘D in the changes tree were added; next-difference inside a file was not. Cost: one shortcut missing.
+- **Overview decision 10 goes fully into the code:** the saved changes come back only after a successful update, for both savers, and the three update tests that pinned phase 2's restore-after-error were changed. Cost if wrong: after a failed update the user restores from the Shelf tab or `View saved changes…`.
+- **Shelf conflicts of the automatic restore go through the Shelf tab:** the conflicting file stays in its system list, `View saved changes…` selects the list, and `Unshelve...` opens the merge window (241 opens it at once). Cost: one more step; nothing is lost.
+- **This build's stash saver writes no `Pending` record;** `Restore Changes` is left only for the records of earlier builds. Cost if wrong: one button less after reopening.
+
+**Findings parked for the final review**
+- Task 1's minors 7 (a duplicated regex and zero hash) and 8 (split `patch.rs`) were parked to Task 4. Cost: a larger file for one more task. Task 4 did both (`f719d19`).
+- Task 2's M11 (move `patch_apply.rs`'s tests to their own file) was parked. Cost: a 3,400-line file. Done in the final fix wave (`patch_apply/tests.rs`).
+- Task 8's M4 (the import key ignores the binary copies) and M6 (one sleeping cleanup thread per open), and the patch-name cut that differed between `shelf.rs` and `src/patch/flow.ts` at a surrogate pair, were parked. Cost: a list that differs only in its binaries not imported; a few idle threads; a different name between a shelf folder and a patch file. All three were fixed in the final fix wave.
+
+**Rulings of the final review and its fix wave**
+- **The Shelf tab reads its lists only when a command wrote the store** (findings 1 and 2 together). Every write to a store moves its generation; `repo-changed` carries `shelf: true` once after the open repository's store changed, and the daily cleanup sends it when it changed something. Cost: a store changed by another program (none is known; the store is rama's own) is not seen until the next write or the next open.
+- **Shelve, Shelve Silently, Save To Shelf and the Update saver read their files with one patch reader:** one copy of the index and one `git add` for all of them (`create::changelist_contents`), in the new `src-tauri/src/shelf/shelve.rs`, which also holds the user's shelving moved out of `vcs_commands.rs`. Results are the same as one file at a time, and the pre-rollback content check is kept. Cost: none; if storing all the files together fails, each one is stored again on its own.
+- **`Import Shelf from .idea…` in Git › Uncommitted Changes after Show Shelf** (P26), rama's own text and id (`Shelf.ImportFromIdea`), running the Shelf tab's import. Cost: one menu entry IntelliJ does not have.
+- **A trail of what Drop, Clear and the shelf's erase remove** (finding 5): IntelliJ's confirmations stay, each dropped stash's `{sha, message, time}` is appended to `<data>/dropped-stashes.json` before the drop or clear (nothing is dropped without it), and an erased list's folder and XML are moved to `<data>/shelf-erased/` and pruned after 30 days, like the snapshots. Cost: a little disk; no interface for the recovery; a record that cannot be written (a full disk) blocks Drop and Clear.
+- **`Overwrite` per row in the Unshelve dialog for a binary that HEAD changed since shelving** (finding 6); the recoverable copy is taken first. Cost: one choice more than IntelliJ, which writes it without asking.
+- **`ChangesView.Revert` in Git › Uncommitted Changes, routed to Local Changes' Rollback** (finding 8), with `action.ChangesView.Revert.text` as its text (`Rollback...`, three dots like the menu's other ActionsBundle items). `Vcs.UmlDiff`, an empty group in the Community Edition, is not shown. Cost: none.
+- **V:363 is kept and a second line names Restore Snapshot… of Local Changes** (finding 9). Cost: a line IntelliJ does not show.
+- **`cargo fmt` only on the lines this part wrote** (finding 10): rustfmt's changes were kept where the lines they replace come from `48ae159^..HEAD`. Cost: `cargo fmt --check` still reports 27 places in 14 files, all older code; formatting is no gate.
+- **`check-ignore` gets `./<path>`** (finding 3), so a new file named like pathspec magic (`:(glob)x`) no longer keeps every new file of an apply out of the index. Cost: none.
+- **One lookup of a list by name, with one text, `"<name>" is no longer in the shelf`** (finding 7), and one `millis`. Cost: none.
+- **A shelve that stores nothing makes no list** (P21): Shelve Changes says V:489 (`only directories`) and Shelve Silently skips that changelist. Cost: V:489 names directories also when the cause is a submodule whose folder is gone.
+- **Restore names the repository a copy belongs to** (P16) for the patch overwrite's Restore and Local Changes' Restore Snapshot… and Rollback notifications. Cost: none; the diff window's restores keep the generic error.
+- **The main window is inert while an apply runs** (P22), the toolbar and the tool windows; the dialogs, the notifications and the status bar stay live. Cost: the log cannot be looked at while a conflict waits in the merge window, as in IntelliJ.
+- **A focus gained while a loss settles wins** (P22, a generation counter). Cost: none.
+- **Without HEAD, `git rm --cached -f`** (P24), on the index only and only for paths found as they were read. Cost: none.
+- **A binary target is checked again right before it is written** (P25). Cost: a much smaller window remains between that check and the rename.
+- **The import key counts the binary copies** (P8); a record of an earlier build matches whatever copies a list has. Cost: none.
+- **A list whose folder is a link is not read** (P11); **a copy's stem is cut so that its numbered name fits in 255 bytes** (P14). Cost: such a copy loses the end of its stem.
+- **The patch file name keeps a surrogate pair whole at the 90-unit cut**, as the shelf does, pinned by `src-tauri/testdata/patch-names.json`, which both suites read (P10). Cost: the shelf still also stops at 220 UTF-8 bytes and a patch file name does not, so 90 three-byte characters give a longer patch name than shelf folder.
+- **One shelf cleaner thread for the app** (P9); a repository opened again starts its day again. Cost: none.
+- **`clipboard_read` and its wrapper are removed** (finding 4); its tests are now `paste_with_returns_utf8` and `paste_with_reports_failure`. Cost: none.
+- Not fixed: P7 (the watcher assumes `.git` is a folder; its fix belongs with linked worktrees, which rama does not open yet; cost: such a repository is not watched for index and stash changes), P20 #5 (squashing `052fe5b` into `81c48cc`: history is never rewritten; cost: `052fe5b` alone does not build), P23 (process notes, no code).
+
+**How to recover what was dropped or erased.** `<data>` is the repository's data folder, `~/Library/Application Support/dev.rama.app/repos/<SHA-256 of the repository's canonical path>/`.
+- A dropped stash: find its line in `<data>/dropped-stashes.json` and run, in the repository, `git stash store -m "<message>" <sha>` with its `message` and `sha`. It is back in the Stash tab with its message. This works until git prunes the unreachable objects (`gc.pruneExpire`, two weeks by default).
+- An erased shelf list: `<data>/shelf-erased/<time>-<name>/` holds its folder `<name>/` and `<name>.xml`. Copy both back into `<data>/shelf/` (the XML still names the paths there) while no list has that name, and open the repository again; or apply its `shelved.patch` with Apply Patch…. Each one is kept 30 days after it was erased.
+
+### 3. Differences from IntelliJ that a user could notice, by feature
+
+From the task reports and their reviews. Each one is accepted, with its cost.
+
+**Patch format**
+- git's `delta` binary sections are kept (ruling above): IntelliJ 2024.1 writes an empty file for such an entry.
+- The `a/` and `b/` prefixes of a git header are stripped once; IntelliJ strips them twice, so for IntelliJ a new empty file `a/x` reads back as `x`.
+- Context diffs are refused (`Context diffs are not supported`), and inputs that would make IntelliJ crash or misread (a binary section with no `literal`/`delta` line, a non-UTF-8 name, both names `/dev/null`, a bad escape, additional info at the very end) are errors.
+- Names with `\`, `"` or control characters are written git-quoted; IntelliJ writes every name raw.
+- A binary file that is only renamed goes out as a rename with no section and reads back as a text entry without hunks.
+- The line diff is the Myers algorithm of the `similar` crate; all 25 writer fixtures still match byte for byte.
+
+**Copy as Patch and Create Patch**
+- Errors are notifications (`Error creating patch: …`, `Patch Creation Failed`), not modal dialogs; field problems are red text under the field, not a balloon.
+- `Creating Patch…` is a task in the status bar, not a modal progress.
+- The suggested extension is always `.patch` (`DEFAULT_PATCH_EXTENSION` is not copied); cancelling `Save Patch File` does not save `To clipboard`.
+- The after side of a local change is what `git add` would store, so with LFS the patch shows pointers; binary means a NUL byte in the content; a symbolic link goes out as its target text; submodules are skipped.
+- The file is written through a temporary file and a rename, so a symbolic or hard link at the target becomes a regular file.
+- Patch creation waits for the repository lock and keeps a copy of a worktree file it overwrites (ruling above).
+
+**Apply Patch and Apply Patch from Clipboard**
+- No fuzzy applier (plan decision 4): `partialApply` and patches with trimmed context fail; the 6 context-diff cases of `ApplyPatchTest` are refused.
+- A binary modification or deletion whose file differs from the patch's `index` line fails; IntelliJ writes the new bytes without checking.
+- `(revision h)` loads only that commit as the base; IntelliJ also falls back to the file history and reads `(date N)`.
+- Paths with `..` are refused (a strip is needed); targets that are links are refused; a read-only file fails instead of aborting the group.
+- The dialog is modal, has no `Group By`, and its Show Difference shows two sides for a file that needs the merge window. `Select missing base` takes the chosen file's folder as the base and does not rename the patch's file.
+- A clipboard text that IntelliJ parses although `isPatchContent` rejects it (a rename-only `diff --git` with no hunk) shows `No changes detected` here.
+- `Rollback failed` keeps V:363 (`Try using 'Local History' dialog to perform revert manually.`) and adds rama's own second line, `The copy taken before applying is in Restore Snapshot… of Local Changes.`, since rama has no Local History.
+- From its OK to its end (a conflict waiting in the merge window included), an apply makes the main window inert, as IntelliJ's modal merge window does; a patch dialog asked for from outside it meanwhile is still refused as if cancelled.
+- The patch's author (`ChangeListData`) is not kept with the changelist: rama's lists have no author.
+- A folder outside the repository in `Map Base Directory…` is refused with rama's own text, `The folder must be inside the repository`.
+- An answer of the merge window in contents mode that arrives more than 500 ms after its session was cleared (a repository switch) is lost (Task 5).
+- `-s,0` in a hunk inserts after line `s`, as git does, not after `s-1` (IntelliJ's quirk). Cost: none for a patch with context.
+
+**Stash**
+- The Unstash dialog is modal and stays open until the unstash ends; IntelliJ's is non-modal.
+- **Show Diff of a stash file opens a dialog inside the app** titled `Stash@{0}: <file>`, with Previous File and Next File, not a diff window or an editor tab; `Show Diff in a New Tab or Window` does the same.
+- Single selection in the list and the changes; `Edit Source` and `Open Repository Version` are not in the changes menu.
+- Speed search matches the file names of stashes already opened only; the help icon is the `info` glyph; the branch label is a small flag and the name.
+- The hiding step of `Git.Show.Stash` and `Vcs.Show.Shelf` does nothing.
+- rama's own: before `Drop` and `Clear`, each entry's hash, message and time are written to `dropped-stashes.json` in the repository's data folder; if that record cannot be written, nothing is dropped. IntelliJ keeps nothing (git prints the hash once).
+- The unstash conflict texts come from a marker file (ruling above).
+
+**Shelf store and import**
+- The store lives in rama's data folder with absolute paths, so it cannot be moved by copying the folder.
+- **A folder name in a 3-byte script is cut at 73 characters, where IntelliJ keeps 90,** so that `<name>.xml` stays under APFS's 255 bytes (90 × `变` gives 73 × `变`). The description is kept whole.
+- A recycled or deleted part copies its binaries with numbered names and keeps deleted binaries; the copy is written before the original is rewritten (a crash leaves a duplicate, not a loss).
+- An invalid list is left out of the tab but its files stay on disk; characters XML 1.0 cannot hold are dropped from descriptions.
+- The retention runs both of its steps daily, and "7 days" is 7×24 h.
+- The import reads only the scheme files of the shelf folder (not the old lists inside `workspace.xml`), skips a list with any bad reference whole, and refuses a `CUSTOM_SHELF_PATH` that is still relative after expansion.
+- **`Import from .idea` is also rama's own `Import Shelf from .idea…` in Git › Uncommitted Changes,** after Show Shelf, because the Shelf tab exists only while the shelf has a list: with an empty shelf it is the only entry point. IntelliJ has no such action.
+- rama's own: what the store erases (Delete of a list in Recently Deleted, the weekly cleanup, the files taken out of a list deleted already) is moved to `<data>/shelf-erased/<time>-<name>/` and removed after 30 days; IntelliJ deletes it at once.
+- A name is taken if its folder or its `<name>.xml` exists (IntelliJ checks the folder); the 90-unit cut never splits a surrogate pair, in the shelf and in a patch file name; the XML `name` must equal the file name, or the list is not read; a list whose folder is a link is not read.
+- A binary copy beside one whose name already takes 255 bytes gets its stem cut so that the number fits.
+- Two IntelliJ lists that differ only in their binary copies are both imported (the import key counts the copies).
+
+**Shelving**
+- A directory (submodule) among the chosen changes is neither shelved nor rolled back, and what the shelf did not store is reported; IntelliJ rolls it back.
+- A file written between reading it and rolling it back is left on disk and reported in `Shelved, but not rolled back`, with the copy named.
+- The copy is taken only when rolling back: `Save To Shelf` takes none.
+- A conflicted file can be shelved, but its rollback fails and is notified.
+- `Save To Shelf` has no entry point without Find Action.
+
+**The Shelf tab and unshelving**
+- **`Remove successfully applied files from the shelf` recycles nothing after an abort or a rollback;** 241 moves the rolled-back files into a recycled copy. Cost: none (safer).
+- A binary file of a list is never written over by itself: a taken place or a changed file makes its row invalid, with the reason. `.base-ids.json`, rama's own record, marks a binary whose HEAD blob changed since shelving; its row offers rama's own `Overwrite`, which writes the shelved version after the recoverable copy (IntelliJ writes it without asking), and `Unshelve Silently` and the automatic restore leave it in the list. Lists without the record (imported, or made before `b2f2c33`) have the git-status check only. The target is checked once more right before it is written.
+- The unshelve changelist starts on the list named like the shelf, else the active one; none is created unless a new name is typed. `Import to Shelf` neither creates nor edits the chosen list.
+- `Import Patches…` picks files only; the diff preview is always shown; a shelved text with no usable base shows the local file against the local file with the hunks, or `Cannot show diff for '<path>'`.
+- The Delete message is plain text; the `Import from .idea` result text is rama's own; a list asked for by name that is gone says `"<name>" is no longer in the shelf` (rama's own).
+- `Restore` of a copy offered by another repository's notification says `The copy belongs to <repository>: open that repository to restore it` (rama's own).
+
+**`Clean working tree using: Shelve`**
+- A shelf conflict during the automatic restore stays in its system list and is merged from the Shelf tab (ruling above).
+- **Without HEAD, only the checked paths are rolled back** (`git rm --cached -f` of the shelved paths, index only, so a file staged and then edited goes too); 241 runs `reset --hard`. Cost: an empty folder of a shelved new file can stay, and what another program staged meanwhile stays.
+- **A deletion that was only on disk comes back staged,** because the unshelve applies it as `patch_apply` does.
+- If a file changed after it was read, the saver rolls nothing back, sends its lists to Recently Deleted and fails the save with `"<path>" changed while it was being shelved and was left as it is. Nothing was shelved.` Between the last re-hash and `git restore` a small window remains (it needs file locks; `git stash` has the same).
+- The card of an update that finished in a previous repository says where the changes are and has no button: `View saved changes…` would open the tab of the repository open now.
+
+### 4. What was proven with tests
+
+Each feature and the tests that name it; the full lists are in the Result column of `docs/parity-matrix.md`.
+
+- **Patch format (Review Focus 2):** in Rust `writer_matches_intellij_fixtures` (25 cases byte for byte), `reader_parses_headers_and_subject` (the `PatchReaderTest` cases), `patch_text_detection_matches_intellij`, `base_and_charset_lines_round_trip` (a tab, `\`, a newline, an emoji, a BOM and U+2028 in a base), `property_create_then_read_is_identity` (2,000 seeded pairs), `binary_section_comes_from_git_and_reads_back`, `rename_new_deleted_and_mode_headers`, `cr_never_reaches_hunk_lines`, `rama_errors_and_garbage_never_panic` (6 MB of seeded random bytes), `hunk_numbers_past_u32_are_refused`, `a_binary_entry_that_git_diffs_as_text_fails`.
+- **Create Patch and Copy as Patch:** in Rust `a_partial_changelist_writes_only_its_hunks`, `staging_versions_read_head_the_index_and_the_disk`, `the_disk_versions_are_stored_with_one_git_add`, `patch_create_writes_utf8_with_lf`, `patch_create_writes_under_the_repository_lock`, `overwriting_a_file_of_the_worktree_keeps_a_copy_first`; in the interface `create_patch_opens_the_dialog_with_create_patch_button_then_the_settings`, `copy_as_patch_puts_the_selected_changes_on_the_clipboard_and_says_so`, `the_settings_validation_texts`, `an_existing_file_asks_before_it_is_overwritten`, `the_created_dialog_offers_reveal_and_remembers_dont_ask_again`, `a_repository_switch_during_create_patch_writes_for_the_first_one` (Review Focus 5).
+- **Apply (Review Focus 1, 2 and 5):** in Rust `applies_intellij_fixtures_with_their_status` (39 of 46 `ApplyPatchTest` cases as IntelliJ; the 6 context diffs are refused and `partialApply` fails, by plan decision 4, as asserted), `a_snapshot_is_taken_before_any_write_and_rollback_restores_it`, `a_file_changed_after_reading_is_not_overwritten`, `a_file_changed_between_the_copy_and_the_read_fails`, `a_file_edited_after_the_plan_is_not_overwritten`, `patch_conflict_resolve_refuses_when_the_local_hash_changed`, `with_a_base_try_resolve_writes_the_merge`, `with_a_base_and_a_real_conflict_returns_a_conflict`, `a_link_to_git_is_never_followed`, `untrusted_paths_and_modes_fail_their_file`, `a_repository_switch_is_refused_before_any_write`, `rollback_gives_the_index_back`; in the interface `a_conflict_opens_the_merge_window_and_abort_asks_abort_and_rollback_skip_or_continue`, `failures_show_patch_applying_partly_failed_and_rollback_restores`, `a_repository_switch_during_apply_is_refused_before_writing`, `the_merge_window_gone_without_an_answer_ends_the_wait`, `abort_and_rollback_closes_the_patch_merge_as_aborted`.
+- **Apply from Clipboard (Review Focus 3):** in Rust `the_clipboard_patch_is_given_only_when_it_is_one` and `a_20_mb_clipboard_that_is_not_a_patch_answers_at_once` (bound 5 s; about 0.1 s in debug on a quiet machine); in the interface `from_clipboard_without_a_patch_says_cannot_apply_patch_now` and `on_the_fly_offers_the_dialog_once_per_clipboard_text`.
+- **Stash:** in Rust the 27 tests of `stash.rs`, among them `unstash_with_reinstate_index_passes_index`, `a_snapshot_precedes_unstash`, `stash_branch_takes_a_snapshot_first`, `drop_by_sha_when_positions_moved`, `stash_files_takes_names_with_pathspec_magic_literally` `the_unstash_texts_end_with_their_conflicts` and `a_dropped_or_cleared_stash_is_recorded_first_and_can_be_stored_again`, plus `a_stash_push_is_a_stash_change` and `a_worktree_save_is_not_a_stash_change`; in the interface the 29 tests of `stash.test.ts` and the 26 of `StashTab.test.ts`, among them `apply_and_pop_never_pass_index`, `show_git_stash_toggles` and `compare_with_local_puts_the_stash_against_the_local_file`.
+- **Shelf store and import (Review Focus 2):** in Rust `reads_every_intellij_shelf_fixture`, `writes_xml_byte_identical_to_the_fixtures` (11 files), `round_trip_with_binary_rename_delete_no_newline_crlf_non_utf8`, `recycle_and_partial_recycle_follow_241`, `cleanup_erases_deleted_older_than_7_days_and_turns_system_recycled_into_deleted`, `import_is_read_only_and_repeatable`, `import_reads_a_custom_shelf_path`, `untrusted_names_and_paths_stay_inside_the_shelf`, `a_long_cjk_description_gives_a_usable_list`.
+- **Shelving (Review Focus 5):** in Rust `shelve_changes_opens_the_dialog_titled_shelve_changes_and_shelves_the_included_part`, `shelve_silently_makes_one_shelf_per_list_and_rolls_back`, `save_to_shelf_does_not_roll_back`, `a_failed_shelve_rolls_nothing_back`, `a_file_written_between_shelving_and_rollback_survives`, `a_change_the_shelf_did_not_store_is_not_rolled_back`, `a_repository_switch_during_shelve_is_refused_before_writing`; in the interface `shelve_changes_runs_no_commit_checks`, `an_emptied_changelist_is_deleted`, `the_shelf_tab_opens_with_the_new_list_selected`.
+- **The Shelf tab and unshelving (Review Focus 1):** in Rust `devin_writing_during_unshelve_is_not_overwritten`, `unshelve_uses_the_stored_base_for_conflicts`, `put_back_takes_the_copy_before_it_checks`, `a_binary_move_leaves_a_source_written_during_the_move`, `a_binary_changed_in_head_since_shelving_stays_in_the_list`, `remove_applied_recycles_or_splits_as_241`, `delete_then_undo_restores_the_list`, `a_system_list_with_a_conflict_is_merged_and_recycled`; in the interface `the_shelf_tab_lists_newest_first_with_count_and_pretty_date`, `the_toolbar_and_the_menu_follow_shelved_changes_toolbar_and_popup_menu`, `unshelve_with_one_list_opens_unshelve_changes`, `a_conflict_skipped_in_the_merge_window_stays_in_the_shelf`, `a_list_asked_for_before_it_arrives_is_selected_when_it_does`, `the_shelf_settings_follow_the_open_repository`.
+- **`Clean working tree using: Shelve` (Review Focus 4):** in Rust `update_with_shelve_saves_one_shelf_per_list_and_restores_into_it`, `a_stopped_update_leaves_the_shelf_and_offers_view_saved_changes`, `a_pending_stash_from_an_earlier_build_still_restores`, `rebase_with_shelve_says_local_changes_were_shelved_before_rebase_with_view_shelf`, `smart_checkout_with_shelve`, `index_only_content_is_kept_in_a_snapshot`, `a_conflict_stays_in_the_shelf_and_nothing_is_overwritten`, `cancelling_merge_does_reset_merge_and_keeps_the_changes_saved`, `without_head_only_the_checked_paths_go_back`, `a_held_index_lock_is_waited_for`, `the_stash_policy_keeps_the_stash`; in the interface the same names for the cards and the radio, plus `view_saved_changes_then_unshelve_merges_the_conflict_and_recycles_it`, the end-to-end path from the stopped update's card to the merge window and the recycled list (the tab click and the merge window itself are simulated).
+- **The counts of the guard tests** (`mutating_without_saving_the_diff_is_not_allowed`, `whatever_touches_the_repository_saves_the_diff_window_first`) follow every new mutating command: the command count went from 79 to 107 in this part.
+
+**What the process left on record.** Several tasks wrote code before its tests and took the failing run afterwards by putting the earlier version of the module in place for one run: the Rust core and two flows of Task 10, the saver and its flows in Task 11, and parts of Task 9 (the App and menu tests have no failing run). Tests that pin behaviour that was already right passed at once and are marked so in their task reports. The Rust lib suite of Task 8 hung twice in `commit::tests` hook tests during full runs under load (every filtered run passed); it did not recur in any later full run, including this one.
+
+### 5. Checklist to verify by hand
+
+None of this could be checked automatically. Use a test repository first and then a real one. The `.app` was not rebuilt in this part; to build it and open it, the commands of part 1, section 5.
+
+**Patches between rama and IntelliJ**
+- [ ] A patch made by IntelliJ 2024.1 (`Create Patch` with a text change, a new file, a deletion, a rename and a binary file) applied in rama with `Apply Patch`: the tree and `git status` equal IntelliJ's own apply.
+- [ ] The other way: a patch made by rama applied in IntelliJ. With a modified binary, expect the known difference (IntelliJ writes an empty file for a `delta` section); everything else must apply.
+- [ ] A patch with the `<+>` base (Create Patch from a shelf) applied over a file that changed since: the 3-way merge or the merge window.
+
+**The clipboard**
+- [ ] `Copy as Patch to Clipboard` from Local Changes, then paste into a text editor: the same text as Create Patch writes.
+- [ ] `Apply Patch from Clipboard…` with an empty clipboard (`Cannot Apply Patch Now`), with plain text (`No changes detected`), with a patch, and with a large text (20 MB): no freeze.
+- [ ] `Detect patch on the fly` on: copy a patch in another app and come back to rama: the dialog is offered once for that text, not again for the same text.
+
+**The native choosers**
+- [ ] `Select Patch File`, `Map Base Directory…`, `Select missing base`, `To file:` (`Save Patch to`), `Base path:` and `Import Patches…`: each opens the macOS panel, Cancel leaves the field as it was, and a typed path still works.
+- [ ] `Reveal in Finder` after `Successfully created patch`.
+
+**The shelf**
+- [ ] A real `.idea/shelf` from IntelliJ 2024.1 with a shelved file that holds a tab and an emoji, into a repository whose shelf is empty: Git › Uncommitted Changes › `Import Shelf from .idea…`; the Shelf tab appears; the list shows with its date, `Show Diff` shows the base against the shelved version, and `Unshelve...` over a changed file merges through the base. A second import adds nothing.
+- [ ] A shelved binary that an Update changed upstream: the Unshelve dialog shows its reason and `Overwrite`; with it, the shelved version is written and Restore Snapshot… has the upstream one.
+- [ ] Git › Uncommitted Changes › `Rollback...` opens Local Changes' Rollback; during an apply that waits in the merge window, the main window does not react.
+- [ ] `Shelve Changes...` and `Shelve Silently` (physical ⇧⌘H) from Local Changes; the Shelf tab appears with the new list selected; `Unshelve Silently` (⌥⌘U), `Unshelve...` (⇧⌘U), F2 and ⇧F6 rename, Delete then Undo, `Already Unshelved`.
+- [ ] **Update with Shelve on a real conflict:** a local remote, a local change that conflicts with the incoming commit, `Update Project` with Merge. The update stops; the changes stay in the shelf; `View saved changes…` opens the Shelf tab with that list selected; `Unshelve...` resolves the conflict in the merge window and the list is recycled. Repeat with a stash saved by an earlier build (`Restore Changes` must still show).
+
+**The merge window in contents mode**
+- [ ] An Apply Patch conflict: the window is titled `Patch Conflict for <name> (<folder>)` with `Local version`, `Merge result` and `Patched version`; Accept Left, Accept Right and Apply; `Abort…` asks `Abort Patch` with `Abort and Rollback`, `Skip` and `Continue Resolve`, and each does what it says; closing the window asks the same.
+
+**Stash**
+- [ ] **Recover what was dropped:** drop a stash, then bring it back with the line of `dropped-stashes.json` (end of section 2); delete a list twice from the Shelf tab and find it in `shelf-erased/`.
+- [ ] **Unstash with `Reinstate index`:** stage part of a change, stash it, then `Unstash Changes…` with `Reinstate index` on: the staged part comes back staged. With it off, nothing comes back staged.
+- [ ] The Stash tab in a real window: Apply, Pop, ⌘⏎, Drop with Delete, Backspace and ⌘Backspace, the splitters, Compare with Local, and `Unstash Changes…` toggling the tab.
+
+### 6. What could not be checked
+
+- **Nothing was seen in a real window.** The two tabs, the Apply dialog, Patch File Settings, the merge window in contents mode and the choosers were tested in jsdom with the Tauri API simulated.
+- **No interoperability with the real IntelliJ.** Patches and shelves were checked against the fixtures at the tag, not against files made by the installed IntelliJ, and no rama patch was opened in IntelliJ. The `<+>` base escapes (plan decision 11) have no fixture at the tag.
+- **No real clipboard, no native panel.** The tests replace `pbpaste` with a fake program and the clipboard writer with a closure; the choosers were mocked. The `dialog:allow-open` and `dialog:allow-save` capability is validated by `tauri-build` only.
+- **No physical keyboard:** ⇧⌘H, ⌥⌘U, ⇧⌘U, ⌘⏎, F2, ⇧F6 and Delete were simulated key events.
+- **The real IPC of the new commands** has not been exercised through Tauri; a failure would be one of registration or argument names (look for `command … not found` in the console).
+- **The native menu changes with the staging area** (`sync_patch_menu`, `sync_local_changes_menu`) have no automated test: they need an `AppHandle`. The pure menu builders are tested.
+- **No measurement.** The cost of reading every shelf list (now only after a command wrote the store), of shelving many files with one `git add`, of `plan` on a large patch, and memory and CPU were not measured. The 20 MB clipboard test only bounds the time.
+- **App activation** for the on-the-fly offer is decided with a 150 ms settle between rama's windows, a guess at how long macOS takes to move the focus; a slower handover would only read the clipboard again.
+
+### 7. Verification
+
+Run on 2026-11-08 at `21156cf`, one suite at a time (`pgrep -fl "vitest|cargo (test|clippy)|rustc"` empty before each, load average under 7), with the toolchain of `~/.cache/rama-toolchain`.
+
+| Command | Result |
+|---|---|
+| `pnpm exec tsc --noEmit -p .` | no errors (exit 0) |
+| `pnpm exec vitest run --maxWorkers=2` | 92 files, 2,070 tests passed |
+| `cargo test --lib -- --test-threads=4` | 1,824 passed, 0 failed, 5 ignored (on purpose), 161 s |
+| `cargo clippy --all-targets -- -D warnings` | no warnings (finished, no output) |
+| `python3 -I -m unittest discover -s scripts` | 65 tests, OK |
+
+Against the close of part 2 (83 files and 1,867 tests in the interface, 1,637 in Rust, 65 in the scripts), part 3 adds 9 test files and 203 tests in the interface and 187 in Rust, and none in the scripts. No timing test failed in this run. `cargo fmt --check` was not part of the verification, as in part 2.
+
+After the final fix wave, run on 2026-11-08 at `c25f56b` (the code of this wave; this commit only adds the documents), one suite at a time, `pgrep -fl "vitest|cargo (test|clippy)|rustc"` empty before each and the load average under 10:
+
+| Command | Result |
+|---|---|
+| `pnpm exec tsc --noEmit -p .` | no errors (exit 0) |
+| `pnpm exec vitest run --maxWorkers=2` | 92 files, 2,078 tests passed |
+| `cargo test --lib -- --test-threads=4` (`CARGO_BUILD_JOBS=4`) | 1,845 passed, 0 failed, 5 ignored (on purpose), 166 s |
+| `cargo clippy --all-targets -- -D warnings` | no warnings |
+| `python3 -I -m unittest discover -s scripts` | 65 tests, OK |
+
+The wave adds 8 tests in the interface and 21 in Rust. `cargo fmt --check` reports 27 places in 14 files, all on lines older than this part (finding 10).
+
+### Conclusion
+
+What can be tested without a screen, a keyboard, a real clipboard or the real IntelliJ is tested, with real git and IntelliJ's own fixtures where it matters, and follows the 241 sources except for the differences in sections 2 and 3. Part 3 is not validated. It ends when you complete the list in section 5, with the exchange of patches and shelves with IntelliJ and Update with Shelve on a real conflict as its main risks.

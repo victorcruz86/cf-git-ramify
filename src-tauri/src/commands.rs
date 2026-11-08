@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -31,14 +31,16 @@ use crate::log::commands::SharedLog;
 use crate::messages;
 use crate::operation::{self, RepoState};
 use crate::preserve::{self, Pending};
+use crate::remotes;
 use crate::rollback::{self, RollbackError};
 use crate::settings::{self, Settings};
+use crate::shelf;
 use crate::snapshots::{self, Snapshot, SnapshotId};
 use crate::staging;
 use crate::status::{self, FileChange};
 use crate::storage;
 use crate::task::{Runner, TaskId};
-use crate::watch::{self, Watcher};
+use crate::watch::{self, RepoChange, Watcher};
 use crate::worktree_diff::{self, Comparison, WorktreeSides};
 
 #[derive(Debug, Serialize)]
@@ -184,14 +186,25 @@ enum GitMenuEntry {
     // Id of the action (the same one the shortcut uses in the interface) and text. No native accelerator: the
     // shortcuts are handled by the interface, and the order between menu and keyboard cannot be checked.
     Item(&'static str, &'static str),
-    // A submenu, like `Git.MainMenu.RebaseActions`.
-    Group(&'static str, &'static [GitMenuEntry]),
+    // A submenu with its id and text, like `Git.MainMenu.RebaseActions`.
+    Group(&'static str, &'static str, &'static [GitMenuEntry]),
     Separator,
 }
 
 use GitMenuEntry::{Group, Item, Separator};
 
 const REBASE_GROUP: &str = "Git.MainMenu.RebaseActions";
+const LOCAL_CHANGES_GROUP: &str = "Git.MainMenu.LocalChanges";
+const PATCH_GROUP: &str = "Patch.MainMenu";
+// `ChangesView.CreatePatch`, an executor action: not there with the staging area.
+const CREATE_PATCH: &str = "ChangesView.CreatePatch";
+const CREATE_PATCH_TEXT: &str = "Create Patch from Local Changes...";
+// `ChangesView.Shelve`, the same kind of action.
+const SHELVE_CHANGES: &str = "ChangesView.Shelve";
+const SHELVE_CHANGES_TEXT: &str = "Shelve Changes...";
+// rama's own (IntelliJ has no such action): the Shelf tab's `Import from .idea`, reachable while
+// the shelf is still empty and the tab is not there.
+const IMPORT_IDEA_SHELF: &str = "Shelf.ImportFromIdea";
 // What only applies with an operation in progress. The native menu cannot hide an entry: it starts
 // disabled and the interface enables it according to the repository state.
 const ONGOING_MENU: [&str; 8] = [
@@ -225,14 +238,14 @@ fn menu_items(entries: &[GitMenuEntry]) -> Vec<(&'static str, &'static str)> {
         .iter()
         .flat_map(|entry| match entry {
             Item(id, text) => vec![(*id, *text)],
-            Group(_, children) => menu_items(children),
+            Group(_, _, children) => menu_items(children),
             Separator => Vec::new(),
         })
         .collect()
 }
 
-// `Git.MainMenu` of plugin.xml, in its order. What the app does not have yet (Stash…) comes in with its phase.
-const GIT_MENU: [GitMenuEntry; 25] = [
+// `Git.MainMenu` of plugin.xml, in its order. What the app does not have yet comes in with its phase.
+const GIT_MENU: [GitMenuEntry; 28] = [
     Item("CheckinProject", "Commit…"),
     Item("Vcs.Push", "Push…"),
     Item("Vcs.UpdateProject", "Update Project…"),
@@ -244,6 +257,7 @@ const GIT_MENU: [GitMenuEntry; 25] = [
     Item("Git.Rebase", "Rebase…"),
     Group(
         REBASE_GROUP,
+        "Rebase",
         &[
             Item("Git.Rebase.Abort", "Abort Rebase"),
             Item("Git.Rebase.Continue", "Continue Rebase"),
@@ -256,6 +270,35 @@ const GIT_MENU: [GitMenuEntry; 25] = [
     Item("Git.CreateNewBranch", "New Branch…"),
     Item("Git.Tag", "New Tag…"),
     Item("Git.Reset", "Reset HEAD…"),
+    Separator,
+    // `Patch.MainMenu`.
+    Group(
+        PATCH_GROUP,
+        "Patch",
+        &[
+            Item(CREATE_PATCH, CREATE_PATCH_TEXT),
+            Item("ChangesView.ApplyPatch", "Apply Patch..."),
+            Item(
+                "ChangesView.ApplyPatchFromClipboard",
+                "Apply Patch from Clipboard...",
+            ),
+        ],
+    ),
+    // `Git.MainMenu.LocalChanges`, with rama's own `Import Shelf from .idea…` after Show Shelf.
+    // `Vcs.UmlDiff` is an empty group in the Community Edition.
+    Group(
+        LOCAL_CHANGES_GROUP,
+        "Uncommitted Changes",
+        &[
+            Item(SHELVE_CHANGES, SHELVE_CHANGES_TEXT),
+            Item("Vcs.Show.Shelf", "Show Shelf"),
+            Item(IMPORT_IDEA_SHELF, "Import Shelf from .idea…"),
+            Item("Git.Stash", "Stash Changes…"),
+            Item("Git.Unstash", "Unstash Changes…"),
+            // `action.ChangesView.Revert.text`.
+            Item("ChangesView.Revert", "Rollback..."),
+        ],
+    ),
     Separator,
     Item("Git.Configure.Remotes", "Manage Remotes…"),
     Item("Git.Clone", "Clone…"),
@@ -311,7 +354,7 @@ pub fn stop_watching(state: &AppState) {
 // When the window is shown again, watching the session's repository resumes.
 pub fn resume_watching(
     state: &AppState,
-    on_change: impl Fn() + Send + 'static,
+    on_change: impl Fn(RepoChange) + Send + 'static,
 ) -> Result<(), GitError> {
     if state.watcher.lock().unwrap().is_some() {
         return Ok(());
@@ -333,19 +376,49 @@ fn replace_watcher(state: &AppState, watcher: Option<Watcher>) {
     drop(old);
 }
 
+// After a command: the watcher reports for itself whether the stash was touched.
 pub(crate) fn repo_changed(app: &AppHandle) {
-    let _ = app.emit(REPO_CHANGED_EVENT, ());
+    emit_repo_changed(app, RepoChange::default());
 }
 
-fn notifier(app: AppHandle) -> impl Fn() + Send + 'static {
-    move || repo_changed(&app)
+// The shelf generation each store had at the last `repo-changed`.
+static SHELF_SEEN: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
+
+// Whether the store of `data` was written since the last time this was asked (`SHELF_TOPIC`).
+fn shelf_moved(seen: &mut BTreeMap<PathBuf, u64>, data: &Path) -> bool {
+    let now = shelf::generation(data);
+    seen.insert(data.to_path_buf(), now).unwrap_or(0) != now
+}
+
+// Every signal says whether the open repository's shelf changed since the previous one: the
+// commands that write the store emit `repo-changed` once they are done, and the Shelf tab reads
+// the lists only then.
+fn emit_repo_changed(app: &AppHandle, change: RepoChange) {
+    let state = app.state::<AppState>();
+    let shelf = repo_data_dir(app, &state).is_ok_and(|data| {
+        let mut seen = SHELF_SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+        shelf_moved(&mut seen, &data)
+    });
+    let change = RepoChange {
+        shelf: change.shelf || shelf,
+        ..change
+    };
+    let _ = app.emit(REPO_CHANGED_EVENT, change);
+}
+
+fn notifier(app: AppHandle) -> impl Fn(RepoChange) + Send + 'static {
+    move |change| emit_repo_changed(&app, change)
 }
 
 // If watching cannot be resumed there is no other error path to the interface: the
 // event is emitted anyway and the interface reads the state again.
 pub fn resume_and_notify(app: &AppHandle) {
     let _ = resume_watching(&app.state::<AppState>(), notifier(app.clone()));
-    notifier(app.clone())();
+    // Nobody watched while it was hidden: the stash may have changed too.
+    notifier(app.clone())(RepoChange {
+        stash: true,
+        shelf: false,
+    });
     app.state::<AppState>().branch_sync.visible();
 }
 
@@ -686,12 +759,14 @@ pub struct AppState {
     pub diff_path: Mutex<Option<String>>,
     // Whoever waits for the diff window to save what was written.
     pub diff_flush: Mutex<VecDeque<Sender<bool>>>,
-    // The merge window's file, while it is open.
-    pub merge_path: Mutex<Option<String>>,
+    // What the merge window shows, while it is open.
+    pub merge_session: Mutex<Option<MergeSession>>,
     // Whoever waits for the merge window to say whether it can be closed.
     pub merge_leave: Mutex<VecDeque<Sender<LeaveReply>>>,
     // The merge page already listens to its notices. Before that it has loaded nothing, and there is no merge to lose.
     pub merge_ready: Mutex<bool>,
+    // Whether the app has the focus, for the on-the-fly patch detection.
+    pub activation: Mutex<Activation>,
 }
 
 impl Default for AppState {
@@ -710,7 +785,8 @@ impl Default for AppState {
             branch_sync: BranchSync::default(),
             diff_path: Mutex::default(),
             diff_flush: Mutex::default(),
-            merge_path: Mutex::default(),
+            merge_session: Mutex::default(),
+            activation: Mutex::default(),
             merge_leave: Mutex::default(),
             merge_ready: Mutex::default(),
         }
@@ -1057,10 +1133,10 @@ fn append_entries(
                 let item = MenuItem::with_id(app, *id, *text, !starts_disabled(id), None::<&str>)?;
                 into.append(&item)?;
             }
-            Group(id, children) => {
-                let rebase = Submenu::with_id(app, *id, "Rebase", !starts_disabled(id))?;
-                append_entries(app, &rebase, children)?;
-                into.append(&rebase)?;
+            Group(id, text, children) => {
+                let group = Submenu::with_id(app, *id, *text, !starts_disabled(id))?;
+                append_entries(app, &group, children)?;
+                into.append(&group)?;
             }
             Separator => into.append(&PredefinedMenuItem::separator(app)?)?,
         }
@@ -1086,6 +1162,94 @@ fn set_ongoing_enabled(items: Vec<MenuItemKind<Wry>>, ids: &[String]) -> tauri::
         }
     }
     Ok(())
+}
+
+// What the Patch submenu shows: `Create Patch from Local Changes...` only without the staging area.
+fn patch_menu(staging: bool) -> Vec<(&'static str, &'static str)> {
+    let items = GIT_MENU
+        .iter()
+        .find_map(|entry| match entry {
+            Group(id, _, children) if *id == PATCH_GROUP => Some(menu_items(children)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    items
+        .into_iter()
+        .filter(|(id, _)| !(staging && *id == CREATE_PATCH))
+        .collect()
+}
+
+fn find_submenu(items: Vec<MenuItemKind<Wry>>, id: &str) -> tauri::Result<Option<Submenu<Wry>>> {
+    for item in items {
+        if let MenuItemKind::Submenu(submenu) = item {
+            if submenu.id().0 == id {
+                return Ok(Some(submenu));
+            }
+            if let Some(found) = find_submenu(submenu.items()?, id)? {
+                return Ok(Some(found));
+            }
+        }
+    }
+    Ok(None)
+}
+
+// The native menu cannot hide an entry: it is taken out of the submenu with the staging area and
+// put back without it. A submenu left empty is disabled.
+fn sync_patch_menu(app: &AppHandle, staging: bool) -> tauri::Result<()> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let Some(group) = find_submenu(menu.items()?, PATCH_GROUP)? else {
+        return Ok(());
+    };
+    let shown = group.get(CREATE_PATCH);
+    match (staging, shown) {
+        (true, Some(item)) => group.remove(&item)?,
+        (false, None) => {
+            let item = MenuItem::with_id(app, CREATE_PATCH, CREATE_PATCH_TEXT, true, None::<&str>)?;
+            group.insert(&item, 0)?;
+        }
+        _ => {}
+    }
+    group.set_enabled(!patch_menu(staging).is_empty())
+}
+
+// What `Uncommitted Changes` shows: `Shelve Changes...` only without the staging area.
+fn local_changes_menu(staging: bool) -> Vec<(&'static str, &'static str)> {
+    let items = GIT_MENU
+        .iter()
+        .find_map(|entry| match entry {
+            Group(id, _, children) if *id == LOCAL_CHANGES_GROUP => Some(menu_items(children)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    items
+        .into_iter()
+        .filter(|(id, _)| !(staging && *id == SHELVE_CHANGES))
+        .collect()
+}
+
+// As for the Patch submenu: `Shelve Changes...` is taken out with the staging area and put back,
+// first, without it.
+fn sync_local_changes_menu(app: &AppHandle, staging: bool) -> tauri::Result<()> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let Some(group) = find_submenu(menu.items()?, LOCAL_CHANGES_GROUP)? else {
+        return Ok(());
+    };
+    let wanted = local_changes_menu(staging)
+        .iter()
+        .any(|(id, _)| *id == SHELVE_CHANGES);
+    match (wanted, group.get(SHELVE_CHANGES)) {
+        (false, Some(item)) => group.remove(&item),
+        (true, None) => {
+            let item =
+                MenuItem::with_id(app, SHELVE_CHANGES, SHELVE_CHANGES_TEXT, true, None::<&str>)?;
+            group.insert(&item, 0)
+        }
+        _ => Ok(()),
+    }
 }
 
 pub fn is_git_menu_item(id: &str) -> bool {
@@ -1129,7 +1293,8 @@ pub async fn repo_open(
             info.recovery = recover_on_open(&locks, &root, &dir)?;
             find_pending(&mut info, &root, &dir);
         }
-        prune_snapshots(data_base, root.clone());
+        prune_snapshots(data_base.clone(), root.clone());
+        clean_shelf(app.clone(), data_base, root.clone());
         let watcher = watch::start(root, notifier(app))?;
         Ok((info, watcher))
     })
@@ -1144,7 +1309,7 @@ pub async fn repo_open(
     if let Some(window) = app_for_diff.get_webview_window(DIFF_WINDOW) {
         let _ = window.destroy();
     }
-    *state.merge_path.lock().unwrap() = None;
+    *state.merge_session.lock().unwrap() = None;
     *state.merge_ready.lock().unwrap() = false;
     if let Some(window) = app_for_diff.get_webview_window(MERGE_WINDOW) {
         let _ = window.destroy();
@@ -1166,6 +1331,51 @@ fn prune_snapshots(base: Option<PathBuf>, repo: PathBuf) {
     std::thread::spawn(move || {
         let _ = snapshots::prune(&storage::repo_dir(&base, &repo), SystemTime::now());
     });
+}
+
+// `ShelveChangesManager`: the shelf's retention runs when the project opens, then once a day
+// (`scheduleWithFixedDelay(…, 1, 1, DAYS)`) while that repository stays open. Like the pruning,
+// it never delays the opening and its result is not looked at. One thread does it for the app: an
+// open hands it the repository's data folder.
+const SHELF_CLEANING_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
+
+static SHELF_CLEANER: Mutex<Option<Sender<PathBuf>>> = Mutex::new(None);
+
+fn clean_shelf(app: AppHandle, base: Option<PathBuf>, repo: PathBuf) {
+    let Some(base) = base else { return };
+    let dir = storage::repo_dir(&base, &repo);
+    let mut cleaner = SHELF_CLEANER.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(sender) = cleaner.as_ref() {
+        if sender.send(dir.clone()).is_ok() {
+            return;
+        }
+    }
+    let (sender, receiver) = mpsc::channel();
+    let _ = sender.send(dir);
+    *cleaner = Some(sender);
+    thread::spawn(move || {
+        run_shelf_cleaner(receiver, SHELF_CLEANING_PERIOD, |dir| {
+            let before = shelf::generation(dir);
+            let _ = shelf::cleanup(dir, SystemTime::now());
+            // What the Shelf tab shows changed: it reads the lists again.
+            if shelf::generation(dir) != before {
+                repo_changed(&app);
+            }
+        })
+    });
+}
+
+// Cleans the last folder it was given at once, then again each `period` until another one comes.
+fn run_shelf_cleaner(receiver: Receiver<PathBuf>, period: Duration, mut clean: impl FnMut(&Path)) {
+    let Ok(mut dir) = receiver.recv() else { return };
+    loop {
+        clean(&dir);
+        match receiver.recv_timeout(period) {
+            Ok(next) => dir = next,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
 }
 
 const PERF_OUT_VARIABLE: &str = "RAMA_PERF_OUT";
@@ -1464,13 +1674,135 @@ fn merge_title(root: &Path, path: &str) -> String {
     format!("Merge Revisions for {}", root.join(path).display())
 }
 
-// Decision 3: with the window open, the file it shows does not change. True if it has to be created.
-fn claim_merge(shown: &mut Option<String>, open: bool, path: String) -> bool {
+// What the merge window shows: a file in conflict, or three texts that whoever opened it gave (a patch
+// that does not apply, `ApplyPatchMergeRequest`), with no file in conflict behind them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeSession {
+    Conflict(String),
+    Contents(MergeContents),
+}
+
+// `ApplicationActivationListener`: whether one of rama's windows has the focus. Moving between them
+// is not leaving the app: a window that loses the focus only makes it inactive if, a moment later,
+// none of them has it and no focus event came since. `generation` counts the focus events.
+#[derive(Debug)]
+pub struct Activation {
+    active: bool,
+    generation: u64,
+}
+
+impl Default for Activation {
+    fn default() -> Self {
+        Self {
+            active: true,
+            generation: 0,
+        }
+    }
+}
+
+impl Activation {
+    // A window gained the focus: true if the app was not active.
+    pub fn gained(&mut self) -> bool {
+        self.generation += 1;
+        !std::mem::replace(&mut self.active, true)
+    }
+
+    // A window lost the focus: what `settled` is given once the others were asked.
+    pub fn lost(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
+
+    // True if the app is left now: nobody gained the focus since the loss of `since`, and no
+    // window has it.
+    pub fn settled(&mut self, since: u64, any_focused: bool) -> bool {
+        if since != self.generation || any_focused || !self.active {
+            return false;
+        }
+        self.active = false;
+        true
+    }
+}
+
+pub const APP_ACTIVATED_EVENT: &str = "app-activated";
+pub const APP_DEACTIVATED_EVENT: &str = "app-deactivated";
+// How long the focus may take to arrive in another window of rama.
+const FOCUS_SETTLE: Duration = Duration::from_millis(150);
+
+// The main window hears when the app as a whole gains and loses the focus.
+pub fn focus_changed(app: &AppHandle, focused: bool) {
+    let state = app.state::<AppState>();
+    if focused {
+        if state.activation.lock().unwrap().gained() {
+            let _ = app.emit_to(MAIN_WINDOW, APP_ACTIVATED_EVENT, ());
+        }
+        return;
+    }
+    let since = state.activation.lock().unwrap().lost();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(FOCUS_SETTLE);
+        let any = app
+            .webview_windows()
+            .values()
+            .any(|window| window.is_focused().unwrap_or(false));
+        let state = app.state::<AppState>();
+        if state.activation.lock().unwrap().settled(since, any) {
+            let _ = app.emit_to(MAIN_WINDOW, APP_DEACTIVATED_EVENT, ());
+        }
+    });
+}
+
+// The texts are shown as they are; `path` only picks the syntax highlighting, and nothing reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeContents {
+    // Whoever opened it recognises its `merge-done` by it.
+    pub id: String,
+    pub title: String,
+    pub titles: [String; 3],
+    pub left: String,
+    pub base: String,
+    pub right: String,
+    pub path: String,
+    // A patch conflict: Cancel is `Abort…` and asks `Abort and Rollback`, `Skip` or `Continue
+    // Resolve` (`ApplyPatchAction.applyContent`).
+    #[serde(default)]
+    pub abort: bool,
+}
+
+// Decision 3: with the window open, what it shows does not change. True if it has to be created.
+fn claim_merge(shown: &mut Option<MergeSession>, open: bool, session: MergeSession) -> bool {
     if open {
         return false;
     }
-    *shown = Some(path);
+    *shown = Some(session);
     true
+}
+
+fn session_path(shown: &Option<MergeSession>) -> Option<String> {
+    match shown {
+        Some(MergeSession::Conflict(path)) => Some(path.clone()),
+        _ => None,
+    }
+}
+
+fn session_contents(shown: &Option<MergeSession>) -> Option<MergeContents> {
+    match shown {
+        Some(MergeSession::Contents(contents)) => Some(contents.clone()),
+        _ => None,
+    }
+}
+
+// Hidden until its page calls `showWindow`.
+fn build_merge_window(app: &AppHandle, title: &str) -> tauri::Result<()> {
+    WebviewWindowBuilder::new(app, MERGE_WINDOW, WebviewUrl::App(MERGE_WINDOW_URL.into()))
+        .title(title)
+        .inner_size(1200.0, 800.0)
+        .visible(false)
+        .background_color(tauri::webview::Color(0x1e, 0x1f, 0x22, 0xff))
+        .build()
+        .map(drop)
 }
 
 // A single merge window. It does not touch files: there is no need to save the diff one first. The lock
@@ -1485,22 +1817,45 @@ pub async fn merge_window_open(
     let checked = path.clone();
     let root = repo.clone();
     blocking_api(move || Ok(worktree_diff::check_inside(&root, &checked)?)).await?;
-    let mut shown = state.merge_path.lock().unwrap();
+    let mut shown = state.merge_session.lock().unwrap();
     let existing = app.get_webview_window(MERGE_WINDOW);
-    if !claim_merge(&mut shown, existing.is_some(), path.clone()) {
+    let title = merge_title(&repo, &path);
+    if !claim_merge(&mut shown, existing.is_some(), MergeSession::Conflict(path)) {
         return existing
             .map_or(Ok(()), |window| reveal(&window))
             .map_err(|error| failed(error.to_string()));
     }
     *state.merge_ready.lock().unwrap() = false;
-    let built =
-        WebviewWindowBuilder::new(&app, MERGE_WINDOW, WebviewUrl::App(MERGE_WINDOW_URL.into()))
-            .title(merge_title(&repo, &path))
-            .inner_size(1200.0, 800.0)
-            .visible(false)
-            .background_color(tauri::webview::Color(0x1e, 0x1f, 0x22, 0xff))
-            .build();
-    if let Err(error) = built {
+    if let Err(error) = build_merge_window(&app, &title) {
+        *shown = None;
+        return Err(failed(error.to_string()));
+    }
+    Ok(())
+}
+
+// The contents mode. With the window already open it brings it forward and refuses: whoever asked would
+// wait for a `merge-done` with its id that never comes.
+#[tauri::command]
+pub async fn merge_window_open_contents(
+    input: MergeContents,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let mut shown = state.merge_session.lock().unwrap();
+    let existing = app.get_webview_window(MERGE_WINDOW);
+    let title = input.title.clone();
+    if !claim_merge(
+        &mut shown,
+        existing.is_some(),
+        MergeSession::Contents(input),
+    ) {
+        if let Some(window) = existing {
+            let _ = reveal(&window);
+        }
+        return Err(failed("Another merge is in progress".to_string()));
+    }
+    *state.merge_ready.lock().unwrap() = false;
+    if let Err(error) = build_merge_window(&app, &title) {
         *shown = None;
         return Err(failed(error.to_string()));
     }
@@ -1509,10 +1864,16 @@ pub async fn merge_window_open(
 
 #[tauri::command]
 pub fn merge_window_path(state: State<'_, AppState>) -> Option<String> {
-    state.merge_path.lock().unwrap().clone()
+    session_path(&state.merge_session.lock().unwrap())
 }
 
-// `MergeResult`, with the side's name as the user sees it.
+#[tauri::command]
+pub fn merge_window_contents(state: State<'_, AppState>) -> Option<MergeContents> {
+    session_contents(&state.merge_session.lock().unwrap())
+}
+
+// `MergeResult`, with the side's name as the user sees it. `Abort` and `Skip` are the answers of a
+// patch conflict's `Abort…` (`ApplyPatchStatus.ABORT` and `SKIP`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MergeResult {
@@ -1520,24 +1881,56 @@ pub enum MergeResult {
     Yours,
     Theirs,
     Cancelled,
+    Abort,
+    Skip,
 }
 
+// A conflict arrives with its path. The contents mode, with its id and the text of the result, which
+// whoever opened it writes: the window saves nothing.
 #[derive(Debug, Clone, Serialize)]
-pub struct MergeDone {
-    pub path: String,
-    pub result: MergeResult,
+#[serde(untagged)]
+pub enum MergeDone {
+    Conflict {
+        path: String,
+        result: MergeResult,
+    },
+    Contents {
+        id: String,
+        result: MergeResult,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+    },
+}
+
+// A cancelled merge has no result text.
+fn merge_done(session: MergeSession, result: MergeResult, content: Option<String>) -> MergeDone {
+    match session {
+        MergeSession::Conflict(path) => MergeDone::Conflict { path, result },
+        MergeSession::Contents(contents) => MergeDone::Contents {
+            id: contents.id,
+            result,
+            content: content.filter(|_| {
+                matches!(
+                    result,
+                    MergeResult::Resolved | MergeResult::Yours | MergeResult::Theirs
+                )
+            }),
+        },
+    }
 }
 
 // The window finishes: the main one receives how, and the window is destroyed.
 #[tauri::command]
 pub async fn merge_window_done(
     result: MergeResult,
+    content: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let mut shown = state.merge_path.lock().unwrap();
-    if let Some(path) = shown.take() {
-        let _ = app.emit_to(MAIN_WINDOW, MERGE_DONE_EVENT, MergeDone { path, result });
+    let mut shown = state.merge_session.lock().unwrap();
+    if let Some(session) = shown.take() {
+        let done = merge_done(session, result, content);
+        let _ = app.emit_to(MAIN_WINDOW, MERGE_DONE_EVENT, done);
     }
     *state.merge_ready.lock().unwrap() = false;
     if let Some(window) = app.get_webview_window(MERGE_WINDOW) {
@@ -1618,6 +2011,12 @@ pub async fn merge_working_file(
     blocking_api(move || working_file(&repo, &path)).await
 }
 
+// `Show in Finder`, with the file selected. Refused if the path is not absolute.
+#[tauri::command]
+pub async fn reveal_in_finder(path: String) -> Result<(), ApiError> {
+    blocking_api(move || remotes::reveal_in_finder(Path::new(&path)).map_err(failed)).await
+}
+
 // The repository's own data (changelists, copies) lives in the app's data folder,
 // not in the repository.
 pub(crate) fn repo_data_dir(
@@ -1627,7 +2026,7 @@ pub(crate) fn repo_data_dir(
     data_dir_of(app, &current_repo(state)?)
 }
 
-fn data_dir_of(app: &AppHandle, repo: &Path) -> Result<PathBuf, ApiError> {
+pub(crate) fn data_dir_of(app: &AppHandle, repo: &Path) -> Result<PathBuf, ApiError> {
     let base = app
         .path()
         .app_data_dir()
@@ -1641,8 +2040,19 @@ fn load_changelists(dir: &Path) -> Result<Changelists, ApiError> {
         .map_err(|error| failed(format!("Could not read the changelists: {error}")))
 }
 
+// Reading, changing and saving the changelists do not cross: the savers edit them from their task,
+// beside the synchronous commands.
+static CHANGELISTS_LOCK: Mutex<()> = Mutex::new(());
+
+fn changelists_lock() -> std::sync::MutexGuard<'static, ()> {
+    CHANGELISTS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 // Reconciles with the files that have changes and saves only if something changed.
 pub fn read_changelists(dir: &Path, paths: &[String]) -> Result<Changelists, ApiError> {
+    let _held = changelists_lock();
     let mut lists = load_changelists(dir)?;
     if lists.reconcile(paths) {
         lists.save(dir).map_err(|error| failed(error.to_string()))?;
@@ -1654,13 +2064,15 @@ pub fn edit_changelists(
     dir: &Path,
     edit: impl FnOnce(&mut Changelists) -> Result<(), ChangelistError>,
 ) -> Result<Changelists, ApiError> {
+    let _held = changelists_lock();
     let mut lists = load_changelists(dir)?;
     edit(&mut lists)?;
     lists.save(dir).map_err(|error| failed(error.to_string()))?;
     Ok(lists)
 }
 
-// Synchronous commands run one at a time, so reading, changing and saving do not clobber each other.
+// `read_changelists` holds `CHANGELISTS_LOCK`: reading, changing and saving do not cross the edits of
+// another command or of a saver's task.
 #[tauri::command]
 pub fn changelists_get(
     paths: Vec<String>,
@@ -1997,7 +2409,7 @@ pub async fn commit_fix_autocrlf(state: State<'_, AppState>) -> Result<(), ApiEr
 }
 
 // The settings belong to the app, not to a repository.
-fn base_dir(app: &AppHandle) -> Result<PathBuf, ApiError> {
+pub(crate) fn base_dir(app: &AppHandle) -> Result<PathBuf, ApiError> {
     app.path()
         .app_data_dir()
         .map_err(|error| failed(error.to_string()))
@@ -2009,6 +2421,12 @@ pub(crate) fn current_settings(app: &AppHandle) -> Result<Settings, ApiError> {
 
 fn apply_settings(app: &AppHandle, settings: &Settings) {
     git::set_binary(settings.git_path.as_deref());
+    if let Err(error) = sync_patch_menu(app, settings.effective_staging()) {
+        eprintln!("Could not update the Patch menu: {error}");
+    }
+    if let Err(error) = sync_local_changes_menu(app, settings.effective_staging()) {
+        eprintln!("Could not update the Uncommitted Changes menu: {error}");
+    }
     app.state::<AppState>()
         .tasks
         .set_credential_helper(settings.use_credential_helper);
@@ -2115,14 +2533,28 @@ pub fn snapshots_list(
     Ok(snapshots::list(&repo_data_dir(&app, &state)?))
 }
 
+// rama's own: a copy offered by a notification of another repository is not looked for in the
+// open one, where it is not.
+fn restorable_here(open: &Path, expected_repo: Option<&str>) -> Result<(), ApiError> {
+    match expected_repo {
+        Some(expected) if Path::new(expected) != open => Err(failed(format!(
+            "The copy belongs to {expected}: open that repository to restore it"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 // Returns the identifier of the copy of the state that existed just before restoring.
+// `expected_repo`: the repository the copy was taken in, when the caller knows it.
 #[tauri::command]
 pub async fn snapshots_restore(
     id: String,
+    expected_repo: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
     let repo = current_repo(&state)?;
+    restorable_here(&repo, expected_repo.as_deref())?;
     let dir = repo_data_dir(&app, &state)?;
     let locks = state.operations.clone();
     blocking_api(move || restore_locked(&locks, &repo, &dir, &id)).await
@@ -2138,6 +2570,65 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    // `SHELF_TOPIC`: `repo-changed` says the shelf changed only after a write to the open
+    // repository's store, once; a worktree save does not make the Shelf tab read its lists again.
+    #[test]
+    fn repo_changed_says_the_shelf_changed_only_after_a_write_to_its_store() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one\n", "a");
+        let data = TempDir::new().unwrap();
+        let mut seen = BTreeMap::new();
+
+        assert!(!shelf_moved(&mut seen, data.path()));
+        std::fs::write(repo.path().join("a.txt"), b"two\n").unwrap();
+        assert!(!shelf_moved(&mut seen, data.path()));
+
+        let patch = crate::patch::Patch::default();
+        shelf::create(data.path(), repo.path(), "Work", &patch, &[], false).unwrap();
+        assert!(shelf_moved(&mut seen, data.path()));
+        assert!(!shelf_moved(&mut seen, data.path()));
+    }
+
+    // P16: a copy asked for by the repository it was taken in is not looked for in another one:
+    // the user is told whose it is, and nothing is written.
+    #[test]
+    fn a_copy_of_another_repository_says_whose_it_is() {
+        let open = Path::new("/repos/b");
+
+        assert!(restorable_here(open, None).is_ok());
+        assert!(restorable_here(open, Some("/repos/b")).is_ok());
+        let error = restorable_here(open, Some("/repos/a")).unwrap_err();
+        assert_eq!(
+            error.message,
+            "The copy belongs to /repos/a: open that repository to restore it"
+        );
+    }
+
+    // P9: one thread for every open. It cleans the repository just opened at once, then once a
+    // period, and a repository opened meanwhile takes the place of the previous one.
+    #[test]
+    fn one_shelf_cleaner_cleans_the_open_repository_on_open_and_then_once_a_period() {
+        let (open, opened) = mpsc::channel::<PathBuf>();
+        let (cleaned_tx, cleaned) = mpsc::channel::<PathBuf>();
+        let cleaner = thread::spawn(move || {
+            run_shelf_cleaner(opened, Duration::from_millis(150), |dir| {
+                cleaned_tx.send(dir.to_path_buf()).unwrap();
+            })
+        });
+        let next = || cleaned.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        open.send(PathBuf::from("/a")).unwrap();
+        assert_eq!(next(), Path::new("/a"));
+        assert_eq!(next(), Path::new("/a"));
+        open.send(PathBuf::from("/b")).unwrap();
+        while next() != Path::new("/b") {}
+        assert_eq!(next(), Path::new("/b"));
+        assert_eq!(next(), Path::new("/b"));
+
+        drop(open);
+        cleaner.join().unwrap();
+    }
 
     #[test]
     fn a_git_error_hides_the_credentials() {
@@ -2361,6 +2852,31 @@ mod tests {
         assert_eq!(waiting.len(), 1);
     }
 
+    // The saver edits the changelists from its task, beside the commands: no edit is lost.
+    #[test]
+    fn changelist_edits_from_several_threads_are_not_lost() {
+        let dir = TempDir::new().unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|thread| {
+                let dir = dir.path().to_path_buf();
+                std::thread::spawn(move || {
+                    for n in 0..10 {
+                        edit_changelists(&dir, |lists| {
+                            lists.create(&format!("list {thread} {n}")).map(|_| ())
+                        })
+                        .unwrap();
+                        read_changelists(&dir, &[]).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(Changelists::load(dir.path()).lists.len(), 81);
+    }
+
     #[test]
     fn opening_finds_what_did_not_come_back() {
         let repo = TempRepo::new();
@@ -2372,11 +2888,13 @@ mod tests {
         let saved = in_task(&runner, repo.path(), move |ctx| {
             preserve::save_with_index_copy(ctx, &path, &data, "Update")
         });
+        let saved = saved.unwrap().unwrap();
+        // What an earlier build recorded: this one records nothing (decision 10).
+        preserve::record_earlier_build(dir.path(), &saved.sha, "Update", &saved.message);
         let mut info = repo_info(repo.path()).unwrap();
 
         find_pending(&mut info, repo.path(), dir.path());
 
-        let saved = saved.unwrap().unwrap();
         assert_eq!(info.pending.len(), 1);
         assert_eq!(info.pending[0].sha, saved.sha);
         assert_eq!(info.state.operation, None);
@@ -2466,6 +2984,28 @@ mod tests {
             "staging_stage_hunks",
             "staging_unstage_hunks",
             "changes_add",
+            "stash_save",
+            "stash_push_paths",
+            "stash_unstash",
+            "stash_drop",
+            "stash_clear",
+            "patch_plan",
+            "patch_apply",
+            "patch_conflict_resolve",
+            "patch_rollback",
+            "patch_create",
+            "patch_preview",
+            "shelf_shelve",
+            "shelf_shelve_silently",
+            "shelf_delete",
+            "shelf_undo_delete",
+            "shelf_restore",
+            "shelf_rename",
+            "shelf_recycle",
+            "shelf_import_patches",
+            "shelf_import_idea",
+            "shelf_import_to_shelf",
+            "shelf_patch_create",
         ] {
             let start = source.find(&format!("pub async fn {name}(")).unwrap();
             let mut lines = source[start..].lines();
@@ -2932,7 +3472,7 @@ mod tests {
             path: repo.path().to_path_buf(),
         });
         let (sender, receiver) = mpsc::channel();
-        resume_watching(&state, move || {
+        resume_watching(&state, move |_| {
             let _ = sender.send(());
         })
         .unwrap();
@@ -2961,7 +3501,7 @@ mod tests {
         stop_watching(&state);
 
         let (sender, receiver) = mpsc::channel();
-        resume_watching(&state, move || {
+        resume_watching(&state, move |_| {
             let _ = sender.send(());
         })
         .unwrap();
@@ -2975,7 +3515,7 @@ mod tests {
     #[test]
     fn reopening_without_repository_does_not_watch() {
         let state = AppState::default();
-        resume_watching(&state, || {}).unwrap();
+        resume_watching(&state, |_| {}).unwrap();
         assert!(state.watcher.lock().unwrap().is_none());
     }
 
@@ -2984,7 +3524,7 @@ mod tests {
         let repo = TempRepo::new();
         let (state, receiver) = watching_state(&repo);
 
-        resume_watching(&state, || panic!("must not create another watcher")).unwrap();
+        resume_watching(&state, |_| panic!("must not create another watcher")).unwrap();
         fs::write(repo.path().join("a.txt"), b"hello").unwrap();
 
         assert!(receiver.recv_timeout(Duration::from_secs(2)).is_ok());
@@ -4022,6 +4562,15 @@ mod tests {
                 "New Branch…",
                 "New Tag…",
                 "Reset HEAD…",
+                "Create Patch from Local Changes...",
+                "Apply Patch...",
+                "Apply Patch from Clipboard...",
+                "Shelve Changes...",
+                "Show Shelf",
+                "Import Shelf from .idea…",
+                "Stash Changes…",
+                "Unstash Changes…",
+                "Rollback...",
                 "Manage Remotes…",
                 "Clone…",
                 "Create Git Repository…",
@@ -4030,6 +4579,131 @@ mod tests {
                 "Open .git/info/exclude",
             ]
         );
+    }
+
+    // `Git.MainMenu.LocalChanges` (`_Uncommitted Changes`) after Reset HEAD…, its own submenu, and the
+    // Rebase group keeps its text.
+    #[test]
+    fn the_uncommitted_changes_group_holds_the_stash() {
+        let groups: Vec<(&str, &str, Vec<&str>)> = GIT_MENU
+            .iter()
+            .filter_map(|entry| match entry {
+                Group(id, text, children) => Some((
+                    *id,
+                    *text,
+                    menu_items(children).iter().map(|item| item.1).collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            groups,
+            [
+                (
+                    REBASE_GROUP,
+                    "Rebase",
+                    vec!["Abort Rebase", "Continue Rebase", "Skip Commit"]
+                ),
+                (
+                    PATCH_GROUP,
+                    "Patch",
+                    vec![
+                        "Create Patch from Local Changes...",
+                        "Apply Patch...",
+                        "Apply Patch from Clipboard..."
+                    ]
+                ),
+                (
+                    LOCAL_CHANGES_GROUP,
+                    "Uncommitted Changes",
+                    vec![
+                        "Shelve Changes...",
+                        "Show Shelf",
+                        "Import Shelf from .idea…",
+                        "Stash Changes…",
+                        "Unstash Changes…",
+                        "Rollback..."
+                    ]
+                ),
+            ]
+        );
+        assert!(!starts_disabled(LOCAL_CHANGES_GROUP));
+    }
+
+    // `ChangesView.Shelve` is an executor action, hidden with the staging area like Create Patch;
+    // `Vcs.Show.Shelf` stays.
+    #[test]
+    fn shelve_changes_is_hidden_in_staging_mode() {
+        let ids = |staging| -> Vec<&str> {
+            local_changes_menu(staging)
+                .iter()
+                .map(|item| item.0)
+                .collect()
+        };
+
+        assert_eq!(
+            ids(false),
+            [
+                "ChangesView.Shelve",
+                "Vcs.Show.Shelf",
+                IMPORT_IDEA_SHELF,
+                "Git.Stash",
+                "Git.Unstash",
+                "ChangesView.Revert"
+            ]
+        );
+        assert_eq!(
+            ids(true),
+            [
+                "Vcs.Show.Shelf",
+                IMPORT_IDEA_SHELF,
+                "Git.Stash",
+                "Git.Unstash",
+                "ChangesView.Revert"
+            ]
+        );
+        assert!(is_git_menu_item("ChangesView.Shelve"));
+        assert!(is_git_menu_item("Vcs.Show.Shelf"));
+        assert!(is_git_menu_item(IMPORT_IDEA_SHELF));
+        assert!(is_git_menu_item("ChangesView.Revert"));
+    }
+
+    // `Patch.MainMenu` after Reset HEAD…, before Uncommitted Changes, in `VcsActions.xml`'s order.
+    // `Create Patch from Local Changes...` is an executor action: hidden with the staging area
+    // (`CheckinActionUtil.updateCommonCommitAction`, `ExternalCommitMode.disableDefaultCommitAction`);
+    // the two Apply actions stay, so the submenu is never empty.
+    #[test]
+    fn create_patch_from_local_changes_is_hidden_in_staging_mode() {
+        let group = GIT_MENU
+            .iter()
+            .find_map(|entry| match entry {
+                Group(id, text, children) if *id == PATCH_GROUP => {
+                    Some((*text, menu_items(children)))
+                }
+                _ => None,
+            })
+            .unwrap();
+
+        let apply = [
+            ("ChangesView.ApplyPatch", "Apply Patch..."),
+            (
+                "ChangesView.ApplyPatchFromClipboard",
+                "Apply Patch from Clipboard...",
+            ),
+        ];
+        let create = (
+            "ChangesView.CreatePatch",
+            "Create Patch from Local Changes...",
+        );
+        let all = [[create].as_slice(), &apply].concat();
+        assert_eq!(group, ("Patch", all.clone()));
+        assert_eq!(patch_menu(false), all);
+        assert_eq!(patch_menu(true), apply);
+        assert!(is_git_menu_item("ChangesView.CreatePatch"));
+        assert!(is_git_menu_item("ChangesView.ApplyPatch"));
+        assert!(is_git_menu_item("ChangesView.ApplyPatchFromClipboard"));
+        assert!(!starts_disabled(PATCH_GROUP));
     }
 
     // `Git.MainMenu.MergeActions` and `RebaseActions` are only visible in their state, and so are the two below
@@ -4066,6 +4740,9 @@ mod tests {
         assert!(is_git_menu_item("Git.Init"));
         assert!(is_git_menu_item("Git.Rebase.Skip"));
         assert!(!is_git_menu_item(REBASE_GROUP));
+        assert!(!is_git_menu_item(LOCAL_CHANGES_GROUP));
+        assert!(is_git_menu_item("Git.Stash"));
+        assert!(is_git_menu_item("Git.Unstash"));
         assert!(!is_git_menu_item(QUIT_MENU_ID));
         assert!(!is_git_menu_item(SETTINGS_MENU_ID));
     }
@@ -4082,11 +4759,210 @@ mod tests {
     fn asking_for_another_file_brings_the_window_forward_without_changing_it() {
         let mut shown = None;
 
-        assert!(claim_merge(&mut shown, false, "a.txt".to_string()));
-        assert_eq!(shown.as_deref(), Some("a.txt"));
+        assert!(claim_merge(&mut shown, false, conflict("a.txt")));
+        assert_eq!(session_path(&shown).as_deref(), Some("a.txt"));
 
-        assert!(!claim_merge(&mut shown, true, "b.txt".to_string()));
-        assert_eq!(shown.as_deref(), Some("a.txt"));
+        assert!(!claim_merge(&mut shown, true, conflict("b.txt")));
+        assert_eq!(session_path(&shown).as_deref(), Some("a.txt"));
+    }
+
+    fn conflict(path: &str) -> MergeSession {
+        MergeSession::Conflict(path.to_string())
+    }
+
+    fn contents(id: &str) -> MergeContents {
+        MergeContents {
+            id: id.to_string(),
+            title: "Merge Revisions for /repo/a.txt".to_string(),
+            titles: [
+                "Your version".to_string(),
+                "Result".to_string(),
+                "Patched version".to_string(),
+            ],
+            left: "a\nX\n".to_string(),
+            base: "a\nb\n".to_string(),
+            right: "a\nY\n".to_string(),
+            path: "a.txt".to_string(),
+            abort: false,
+        }
+    }
+
+    #[test]
+    fn contents_mode_keeps_the_single_window() {
+        let mut shown = None;
+
+        assert!(claim_merge(
+            &mut shown,
+            false,
+            MergeSession::Contents(contents("1"))
+        ));
+        assert!(!claim_merge(&mut shown, true, conflict("b.txt")));
+        assert!(!claim_merge(
+            &mut shown,
+            true,
+            MergeSession::Contents(contents("2"))
+        ));
+
+        assert_eq!(session_contents(&shown), Some(contents("1")));
+        assert_eq!(session_path(&shown), None);
+    }
+
+    #[test]
+    fn a_conflict_session_has_no_contents() {
+        let shown = Some(conflict("a.txt"));
+
+        assert_eq!(session_contents(&shown), None);
+        assert_eq!(session_path(&shown).as_deref(), Some("a.txt"));
+    }
+
+    #[test]
+    fn contents_mode_arrives_with_its_id_and_the_text() {
+        let done = merge_done(
+            MergeSession::Contents(contents("7")),
+            MergeResult::Resolved,
+            Some("a\nZ\n".to_string()),
+        );
+
+        assert_eq!(
+            serde_json::to_value(&done).unwrap(),
+            serde_json::json!({ "id": "7", "result": "resolved", "content": "a\nZ\n" })
+        );
+    }
+
+    #[test]
+    fn a_cancelled_contents_merge_carries_no_text() {
+        let done = merge_done(
+            MergeSession::Contents(contents("7")),
+            MergeResult::Cancelled,
+            Some("ignored".to_string()),
+        );
+
+        assert_eq!(
+            serde_json::to_value(&done).unwrap(),
+            serde_json::json!({ "id": "7", "result": "cancelled" })
+        );
+    }
+
+    // A patch conflict's `Abort…` (`MERGE_CANCEL_HANDLER` of `ApplyPatchAction.applyContent`):
+    // `Abort and Rollback` and `Skip` close the window with their own result and no text.
+    #[test]
+    fn a_patch_merge_closes_as_aborted_or_skipped_without_text() {
+        let input: MergeContents = serde_json::from_value(serde_json::json!({
+            "id": "7",
+            "title": "Patch Conflict for a.txt (/repo)",
+            "titles": ["Local version", "Merge result", "Patched version"],
+            "left": "a\nX\n",
+            "base": "a\nb\n",
+            "right": "a\nY\n",
+            "path": "a.txt",
+            "abort": true,
+        }))
+        .unwrap();
+        assert!(input.abort);
+        assert!(!contents("7").abort);
+
+        for (result, text) in [(MergeResult::Abort, "abort"), (MergeResult::Skip, "skip")] {
+            let done = merge_done(
+                MergeSession::Contents(input.clone()),
+                result,
+                Some("ignored".to_string()),
+            );
+            assert_eq!(
+                serde_json::to_value(&done).unwrap(),
+                serde_json::json!({ "id": "7", "result": text })
+            );
+        }
+    }
+
+    #[test]
+    fn the_input_of_contents_mode_is_read_in_camel_case() {
+        let input: MergeContents = serde_json::from_value(serde_json::json!({
+            "id": "7",
+            "title": "Merge Revisions for /repo/a.txt",
+            "titles": ["Your version", "Result", "Patched version"],
+            "left": "a\nX\n",
+            "base": "a\nb\n",
+            "right": "a\nY\n",
+            "path": "a.txt",
+        }))
+        .unwrap();
+
+        assert_eq!(input, contents("7"));
+    }
+
+    // `ApplicationActivationListener` (on-the-fly patch detection): going from one of rama's
+    // windows to another is not leaving the app; it is left once a window lost the focus and none
+    // has it a moment later, and comes back with the next focus.
+    #[test]
+    fn the_app_is_activated_only_when_the_focus_comes_from_outside() {
+        let mut activation = Activation::default();
+
+        assert!(!activation.gained(), "it starts active");
+        let other_window = true;
+        let lost = activation.lost();
+        assert!(!activation.settled(lost, other_window), "main to merge");
+        assert!(!activation.gained());
+        let lost = activation.lost();
+        assert!(
+            activation.settled(lost, false),
+            "no window of rama has the focus"
+        );
+        assert!(!activation.settled(lost, false), "said once");
+        assert!(activation.gained(), "back from another app");
+        assert!(!activation.gained());
+    }
+
+    // P22: a window that gains the focus while a loss is being settled wins over that loss, which
+    // asked about the windows before it.
+    #[test]
+    fn a_focus_gained_while_a_loss_settles_keeps_the_app_active() {
+        let mut activation = Activation::default();
+
+        let lost = activation.lost();
+        // The thread of `lost` asked the windows (none focused yet), then a window gained it.
+        assert!(!activation.gained());
+        assert!(!activation.settled(lost, false));
+        let lost = activation.lost();
+        assert!(activation.settled(lost, false));
+    }
+
+    // Task 3's choosers only live in the main window: the diff and merge windows, which show
+    // repository text, get no dialog permission.
+    #[test]
+    fn the_choosers_are_granted_to_the_main_window_only() {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        let mut granted = Vec::new();
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            let capability: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let windows: Vec<String> =
+                serde_json::from_value(capability["windows"].clone()).unwrap();
+            let permissions: Vec<String> =
+                serde_json::from_value(capability["permissions"].clone()).unwrap();
+            for permission in permissions {
+                granted.push((permission, windows.clone()));
+            }
+        }
+        granted.sort();
+
+        let all = vec!["diff".to_string(), "main".to_string(), "merge".to_string()];
+        let main = vec!["main".to_string()];
+        let sorted = |mut windows: Vec<String>| {
+            windows.sort();
+            windows
+        };
+        let granted: Vec<(String, Vec<String>)> = granted
+            .into_iter()
+            .map(|(permission, windows)| (permission, sorted(windows)))
+            .collect();
+        assert_eq!(
+            granted,
+            [
+                ("core:default".to_string(), all),
+                ("dialog:allow-open".to_string(), main.clone()),
+                ("dialog:allow-save".to_string(), main),
+            ]
+        );
     }
 
     #[test]
@@ -4227,10 +5103,11 @@ mod tests {
 
     #[test]
     fn the_merge_result_arrives_with_its_path() {
-        let done = MergeDone {
-            path: "a.txt".to_string(),
-            result: MergeResult::Cancelled,
-        };
+        let done = merge_done(
+            conflict("a.txt"),
+            MergeResult::Cancelled,
+            Some("ignored".to_string()),
+        );
 
         assert_eq!(
             serde_json::to_value(&done).unwrap(),

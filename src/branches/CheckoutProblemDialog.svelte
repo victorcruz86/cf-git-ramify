@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { CheckoutMode } from "../lib/api";
+  import type { CheckoutMode, CleanTree } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
 
   // `operation` is lowercase, like `checkout.operation.name`: the title and the buttons already carry
@@ -11,16 +11,26 @@
     force: string | null;
     cancel: string;
     files: string[];
+    // The repository's saver (`smart.operation.dialog.*.stash` or `.shelf`, G:377-380).
+    saver?: CleanTree;
     onanswer: (how: CheckoutMode | null) => void;
   }
 
-  let { operation, title, smart, force, cancel, files, onanswer }: Props = $props();
+  let { operation, title, smart, force, cancel, files, saver = "shelve", onanswer }: Props =
+    $props();
+
+  // G:377 and G:378 without the product name, as the rest of the app; G:379 and G:380 are the
+  // description of the smart button.
+  const verbs = $derived(saver === "stash" ? ["stash", "unstash"] : ["shelve", "unshelve"]);
+  const description = $derived(
+    `${saver === "stash" ? "Stash" : "Shelve"} local changes, ${operation}, ${verbs[1]}`,
+  );
 </script>
 
 <!-- Focus goes to `cancel`, like `GitSmartOperationDialog`: Enter must not touch anything by surprise. -->
 <Dialog {title} onclose={() => onanswer(null)} onsubmit={() => onanswer("smart")} width={520}>
   <p>Your local changes to the following files would be overwritten by {operation}.</p>
-  <p>Can stash the changes, {operation} and unstash them after that.</p>
+  <p>Can {verbs[0]} the changes, {operation} and {verbs[1]} them after that.</p>
   <ul>
     {#each files as file}
       <li>{file}</li>
@@ -33,7 +43,7 @@
     <button type="button" class="button" data-autofocus onclick={() => onanswer(null)}>
       {cancel}
     </button>
-    <button class="button default">{smart}</button>
+    <button class="button default" title={description}>{smart}</button>
   {/snippet}
 </Dialog>
 

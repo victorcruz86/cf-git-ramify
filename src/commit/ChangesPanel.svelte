@@ -48,6 +48,8 @@
   import { notify as showNotification } from "../lib/notifications";
   import { store, stored } from "../lib/storage";
   import { mergeFiles } from "../conflicts/flow";
+  import { localEntries, patches, unreadablePatchText } from "../patch/flow";
+  import { shelves, silentGroups, unreadableShelfText } from "../shelf/flow";
   import { taskResult } from "../lib/tasks";
   import ChangelistDialog from "./ChangelistDialog.svelte";
   import { findList } from "./changelists";
@@ -55,8 +57,9 @@
   import { checkinFilesText } from "./checkin";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import ListChooserDialog from "./ListChooserDialog.svelte";
+  import { requestExecutor } from "./dialogStore";
   import { latestOnly } from "./refresh";
-  import { liveLists, rollbackTargets } from "./request";
+  import { listSelections, liveLists, rollbackTargets } from "./request";
   import RollbackDialog from "./RollbackDialog.svelte";
   import SnapshotsDialog from "./SnapshotsDialog.svelte";
   import {
@@ -75,6 +78,8 @@
     flattenTree,
     listTree,
     UNVERSIONED_ID,
+    pathOfKey,
+    scopeOfKey,
     withoutCheck,
     type TreeNode,
   } from "./tree";
@@ -199,6 +204,8 @@
   let notices = $state.raw<Notice[]>([]);
   let nextNotice = 0;
   let recoveryDismissed = $state(false);
+  // The hunks the last refresh read: those of the files split across lists, for Copy as Patch.
+  let hunksRead = $state.raw(new Map<string, Hunk[]>());
   let tree = $state<ChangesTree>();
   let staging = $state<StagingView>();
   let destroyed = false;
@@ -264,6 +271,11 @@
       paths: selectedFiles.map((file) => file.path),
       lists: selectedLists.map((list) => list.id),
     };
+  }
+
+  // `ChangesView.Revert` from the Git menu: the Rollback of the selection, or of the active list.
+  export function requestRollback() {
+    openRollback();
   }
 
   export function focusTree() {
@@ -340,6 +352,7 @@
     },
     ({ status, assigned, hunks }) => {
       changes = status;
+      hunksRead = hunks;
       void refreshMergeInfo(status);
       if (assigned) lists = liveLists(assigned, hunks);
       onrefresh?.({ status, lists: assigned ? lists : null, hunks });
@@ -461,7 +474,7 @@
   async function restore(id: string) {
     dialog = null;
     await run(async () => {
-      const previous = await snapshotsRestore(id);
+      const previous = await snapshotsRestore(id, repo.path);
       notify("info", "Snapshot restored.", {
         label: "Undo",
         run: () => restore(previous),
@@ -508,6 +521,15 @@
   export function offerToRemoveEmpty(touched: ChangeList[]) {
     const empty = touched.find((list) => nodes.get(`list:${list.id}`)?.paths.length === 0);
     if (empty && !dialog) dialog = { kind: "remove-empty", list: empty };
+  }
+
+  // After Shelve Changes (`scheduleAutomaticEmptyChangeListDeletion(list, silently = true)`): the
+  // list is read again and, if it is not the active one and was left empty, deleted without asking.
+  export async function removeIfEmpty(id: string) {
+    await refresh();
+    if (!lists || id === lists.active) return;
+    if (nodes.get(`list:${id}`)?.paths.length !== 0) return;
+    await run(() => changelistsRemove(id));
   }
 
   function setActive() {
@@ -705,6 +727,10 @@
 
   function openStagingMenu(x: number, y: number) {
     const targets = stagingTargets(selectedKeys, changes);
+    const patchable = selectedKeys.some((key) =>
+      ["staged", "unstaged", "untracked"].includes(scopeOfKey(key)),
+    );
+    const stashed = [...new Set([...targets.stage, ...targets.unstage])];
     const file = firstSelectedFile();
     const three = file && hasThreeVersions(file) ? file : null;
     menu = {
@@ -725,6 +751,15 @@
           disabled: targets.unstage.length === 0,
           run: () => staging?.apply({ stage: [], unstage: targets.unstage }),
         },
+        // `Git.Stage.Stash.Files`: what is staged, unstaged or untracked, not the conflicts.
+        {
+          label: "Stash Files",
+          disabled: stashed.length === 0,
+          run: () => {
+            const otherStaged = groups.staged.some(({ path }) => !stashed.includes(path));
+            void staging?.stashFiles(repo.path, stashed, otherStaged);
+          },
+        },
         { label: "Rollback", shortcut: "⌥⌘Z", disabled: toRevert.length === 0, run: revertOnly },
         {
           label: "Show Diff",
@@ -738,6 +773,17 @@
           disabled: !three,
           run: () => three && onshowdiff(three, "three"),
         },
+        // `GitStageCreatePatchActionProvider`: visible only when enabled, with anything staged,
+        // unstaged or untracked chosen.
+        ...(patchable
+          ? [
+              { label: "Create Patch...", run: () => staging?.createPatch(repo.path, selectedKeys) },
+              {
+                label: "Copy as Patch to Clipboard",
+                run: () => staging?.copyAsPatch(repo.path, selectedKeys),
+              },
+            ]
+          : []),
         null,
         { label: "Restore Snapshot…", run: () => (dialog = { kind: "snapshots" }) },
         null,
@@ -788,9 +834,7 @@
     menu = { x, y, label: "Changes", items };
   }
 
-  // `ChangesViewPopupMenu`, without what rama does not have yet. `Shelve Changes...`, `Create Patch
-  // from Local Changes...` and `Copy as Patch to Clipboard` come with the shelf and the patches
-  // (part 3), and so does `Shelve Silently` on the toolbar.
+  // `ChangesViewPopupMenu`, without what rama does not have yet.
   function openContextMenu(x: number, y: number) {
     if (browser) {
       openBrowserMenu(x, y);
@@ -834,6 +878,18 @@
     }
     if (singleList) items.push({ label: "Edit Changelist...", shortcut: "F2", run: openEdit });
     items.push(
+      {
+        label: "Create Patch from Local Changes...",
+        disabled: !canCreatePatch(),
+        run: () => requestExecutor("patch", { kind: "project", ...selectedChanges() }),
+      },
+      { label: "Copy as Patch to Clipboard", disabled: !canCopyPatch(), run: copyAsPatch },
+      // `ChangesView.Shelve`, an executor action like Create Patch, with its enabled rule.
+      {
+        label: "Shelve Changes...",
+        disabled: !canCreatePatch(),
+        run: () => requestExecutor("shelve", { kind: "project", ...selectedChanges() }),
+      },
       { label: "Import Changelists from .idea", run: importLists },
       null,
       { label: "Restore Snapshot…", run: () => (dialog = { kind: "snapshots" }) },
@@ -843,8 +899,62 @@
     menu = { x, y, label: "Changes", items };
   }
 
+  // `CreatePatchAction` (`AbstractCommitChangesAction.update` in the popup): one list that has
+  // changes, or else some changes chosen.
+  function canCreatePatch(): boolean {
+    if (selectedLists.length > 0) {
+      const node = roots.find((root) => root.list?.id === selectedLists[0].id);
+      return selectedLists.length === 1 && (node?.paths.length ?? 0) > 0;
+    }
+    return selectedVersioned.length > 0;
+  }
+
+  // `CreatePatchFromChangesAction.defaultUpdate`: changes or unversioned files, and one list at most.
+  function canCopyPatch(): boolean {
+    return selectedFiles.length > 0 && selectedLists.length <= 1;
+  }
+
+  // `CreatePatchFromChangesAction.Clipboard`: what each chosen row has of its file (the hunks of
+  // its list for a file split across lists), with the comment of the chosen list as the message.
+  async function copyAsPatch() {
+    if (!lists) return;
+    const chosen = listSelections(new Set(selectedKeys), lists, hunksRead, new Map());
+    if (chosen.unreadable.length > 0) {
+      notify("error", unreadablePatchText(chosen.unreadable));
+      return;
+    }
+    const files = selectedFiles.filter((file) => chosen.included.has(file.path));
+    const entries = localEntries(files, chosen.selections);
+    await patches.copyAsPatch({ repo: repo.path, entries }, singleList?.comment ?? null);
+  }
+
+  // `ShelveSilentlyActionBase.update`: some changes chosen (unversioned files are not changes), with
+  // changelists, so not with the staging area.
+  function canShelveSilently(): boolean {
+    return !stagingArea && !browser && selectedVersioned.length > 0;
+  }
+
+  // `ChangesView.ShelveSilently` and `ChangesView.SaveToShelve` (no rollback): one shelf per
+  // changelist of the chosen changes.
+  async function shelveSilently(rollback: boolean) {
+    if (!lists || !canShelveSilently()) return;
+    const versioned = new Set(selectedVersioned.map((file) => file.path));
+    const keys = selectedKeys.filter((key) => versioned.has(pathOfKey(key)));
+    const built = silentGroups(keys, changes, lists, hunksRead);
+    if (built.unreadable.length > 0) {
+      notify("error", unreadableShelfText(built.unreadable));
+      return;
+    }
+    await shelves.shelveSilently(repo.path, built.groups, rollback);
+  }
+
   function perform(action: ActionId) {
     switch (action) {
+      case "ChangesView.ShelveSilently":
+      case "ChangesView.SaveToShelve":
+        if (!canShelveSilently()) return false;
+        void shelveSilently(action === "ChangesView.ShelveSilently");
+        break;
       case "ChangesView.Revert":
         openRollback();
         break;
@@ -1025,6 +1135,17 @@
         >
           <Icon name="add" />
         </button>
+        <!-- `Git.Stash.Silently`: enabled while the staging area has changes. -->
+        <button
+          type="button"
+          class="action"
+          title="Stash Silently"
+          aria-label="Stash Silently"
+          disabled={groups.staged.length + groups.unstaged.length + groups.untracked.length + groups.conflicts.length === 0}
+          onclick={() => staging?.stashSilently(repo.path)}
+        >
+          <Icon name="stash" />
+        </button>
       {:else}
         <button
           type="button"
@@ -1034,6 +1155,18 @@
           onclick={openChangelistsMenu}
         >
           <Icon name="changelist" />
+        </button>
+        <!-- `ChangesView.ShelveSilently`, last of `ChangesViewToolbar`; the New UI draws it with the
+             stash icon. -->
+        <button
+          type="button"
+          class="action"
+          title="Shelve Silently (⇧⌘H)"
+          aria-label="Shelve Silently"
+          disabled={!canShelveSilently()}
+          onclick={() => void shelveSilently(true)}
+        >
+          <Icon name="stash" />
         </button>
       {/if}
       <span class="toolbar-separator"></span>

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { stagingStage, stagingUnstage, type FileChange } from "../lib/api";
   import { errorText } from "../lib/errors";
+  import { patches, stagingEntries } from "../patch/flow";
+  import { stashFiles as stashPaths, stashSilently as stashAll } from "../stash/flow";
   import ChangesTree from "./ChangesTree.svelte";
   import { hoverOperation, stagingTargets } from "./staging";
   import type { TreeNode } from "./tree";
@@ -40,6 +42,29 @@
 
   export function focus() {
     tree.focus();
+  }
+
+  // `Stash Silently` of the toolbar (`Git.Stash.Silently`), with the root of the open repository.
+  export async function stashSilently(root: string) {
+    await stashAll(root);
+    onchanged();
+  }
+
+  // `Stash Files` of the tree (`Git.Stage.Stash.Files`). `otherStaged`: the stage has files that
+  // were not chosen, which IntelliJ warns about.
+  export async function stashFiles(root: string, paths: string[], otherStaged: boolean) {
+    await stashPaths(root, paths, otherStaged);
+    onchanged();
+  }
+
+  // `Create Patch...` and `Copy as Patch to Clipboard` of the tree
+  // (`GitStageCreatePatchActionProvider`), with the chosen nodes of the open repository `root`.
+  export async function createPatch(root: string, keys: string[]) {
+    await patches.createPatch({ repo: root, entries: stagingEntries(keys, changes) }, null);
+  }
+
+  export async function copyAsPatch(root: string, keys: string[]) {
+    await patches.copyAsPatch({ repo: root, entries: stagingEntries(keys, changes) });
   }
 
   export async function apply(targets: { stage: string[]; unstage: string[] }) {

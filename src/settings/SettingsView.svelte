@@ -2,12 +2,14 @@
   import { onMount, untrack } from "svelte";
   import { protectedBranches } from "../branches/state";
   import {
+    cleanTreeSet,
     gitVersion,
     protectedBranchesSet,
     protectedPatternsCheck,
     repoSettingsGet,
     settingsSave,
     type ApiError,
+    type CleanTree,
     type Settings,
   } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
@@ -29,6 +31,12 @@
   // Of the open repository, separated by `;` as in `ParametersListUtil.COLON_LINE_PARSER`. `null`:
   // there is no repository, or they could not be read, and then they are left untouched.
   let protectedText = $state<string | null>(null);
+  // `Clean working tree using:` of the open repository, and what it had. `null`: there is no
+  // repository, or it could not be read; the radio is then greyed out on the default.
+  let cleanTree = $state<CleanTree | null>(null);
+  let savedCleanTree: CleanTree | null = null;
+  // Until it is read nothing is checked: the default would be wrong for a repository with Stash.
+  let cleanTreeRead = $state(false);
   // The error of the first pattern that does not compile, while it is typed. It does not block Save.
   let protectedError = $state<string | null>(null);
   let checkRun = 0;
@@ -89,12 +97,22 @@
 
   async function loadProtected() {
     try {
-      const { protectedBranches: stored } = await repoSettingsGet();
+      const { protectedBranches: stored, cleanTree: saver } = await repoSettingsGet();
+      cleanTree = savedCleanTree = saver;
+      cleanTreeRead = true;
       protectedText = stored.join(";");
       await checkProtected(protectedText);
     } catch {
       protectedText = null;
+      cleanTree = savedCleanTree = null;
+      cleanTreeRead = true;
     }
+  }
+
+  async function saveCleanTree() {
+    if (cleanTree === null || cleanTree === savedCleanTree) return;
+    await cleanTreeSet(cleanTree);
+    savedCleanTree = cleanTree;
   }
 
   async function saveProtected() {
@@ -117,6 +135,7 @@
     problem = null;
     try {
       await saveProtected();
+      await saveCleanTree();
       const paths = updatePaths
         .split("\n")
         .map((path) => path.trim())
@@ -313,10 +332,25 @@
     </div>
     <div class="choices" role="group" aria-labelledby="settings-clean-tree">
       <span id="settings-clean-tree">Clean working tree using:</span>
-      <label class="choice">
-        <input type="radio" checked disabled />
-        Stash
-      </label>
+      {#if cleanTree === null}
+        <label class="choice">
+          <input type="radio" disabled />
+          Stash
+        </label>
+        <label class="choice">
+          <input type="radio" checked={cleanTreeRead} disabled />
+          Shelve
+        </label>
+      {:else}
+        <label class="choice">
+          <input type="radio" value="stash" bind:group={cleanTree} />
+          Stash
+        </label>
+        <label class="choice">
+          <input type="radio" value="shelve" bind:group={cleanTree} />
+          Shelve
+        </label>
+      {/if}
     </div>
     <div class="update-paths">
       <label for="settings-update-paths">Filter "Update Project" information by paths:</label>

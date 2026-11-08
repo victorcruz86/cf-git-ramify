@@ -1,7 +1,7 @@
 import type { CommitMode } from "./api";
 
 // What a tab of the `Git` and `Commit` tool windows shows (`ChangesViewContentManager`). Shelf and Stash
-// arrive with the shelf and stash views; the model already has them.
+// exist only while they have entries.
 export type ContentId = "local-changes" | "shelf" | "stash" | "log" | "console";
 
 // Whoever asks to show something also says "commit" for wherever Local Changes is at the moment.
@@ -27,6 +27,12 @@ export const CONTENT_TITLE: Record<ContentId, string> = {
   console: "Console",
 };
 
+// `CommitTabTitleUpdater.updateTab` in the New UI: in the `Commit` window, Local Changes is `Commit`
+// (`tab.title.commit`), and the strip only shows with more than one content.
+export function contentTitle(id: ContentId, window: ToolWindowId): string {
+  return id === "local-changes" && window === "commit" ? "Commit" : CONTENT_TITLE[id];
+}
+
 export function orderContents(ids: ContentId[]): ContentId[] {
   return [...ids].sort((a, b) => CONTENT_WEIGHT[a] - CONTENT_WEIGHT[b]);
 }
@@ -45,6 +51,22 @@ export function toolWindows(
     commit: ordered.filter((id) => IN_COMMIT_WINDOW.includes(id)),
     git: ordered.filter((id) => !IN_COMMIT_WINDOW.includes(id)),
   };
+}
+
+// A selected content that is gone (the last stash dropped) leaves its window on the first one. The same
+// record comes back when nothing vanished.
+export function keepSelected(
+  windows: { commit: ContentId[] | null; git: ContentId[] },
+  selected: Record<ToolWindowId, ContentId>,
+): Record<ToolWindowId, ContentId> {
+  const kept = (id: ToolWindowId) => {
+    const contents = windows[id];
+    return !contents || contents.length === 0 || contents.includes(selected[id])
+      ? selected[id]
+      : contents[0];
+  };
+  const next = { commit: kept("commit"), git: kept("git") };
+  return next.commit === selected.commit && next.git === selected.git ? selected : next;
 }
 
 // Whoever wants to show a tab (a notification with "Show console", for example) does not know

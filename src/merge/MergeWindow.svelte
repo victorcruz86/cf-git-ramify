@@ -6,6 +6,7 @@
     conflictSides,
     conflictsAccept,
     mergeBlocks,
+    mergeWindowContents,
     mergeWindowDone,
     mergeWindowPath,
     mergeWindowReady,
@@ -22,6 +23,8 @@
     type ConflictSide,
     type ConflictSides,
     type ConflictVersion,
+    type MergeBlock,
+    type MergeContents,
     type MergeResult,
     type Settings,
     type Whitespace,
@@ -36,14 +39,28 @@
 
   // Ported from MergeRequestProcessor, MergeThreesideViewer.getResolveAction, MergeUtil and
   // BinaryMergeTool: the window around the three-pane editor.
+  // Two modes: a file in conflict, read and saved here; or three texts given by whoever opened it (a
+  // patch that does not apply), whose result goes back in `merge-done` and is written by that caller.
 
+  // `cancel` makes it a Yes/No/Cancel question, whose Cancel (also Escape) keeps things as they are.
   interface Question {
     title: string;
     message: string;
     yes: string;
     no: string;
-    answer: (yes: boolean) => void;
+    cancel?: string;
+    answer: (choice: "yes" | "no" | "cancel") => void;
   }
+
+  // A patch conflict (`ApplyPatchAction.applyContent`): Cancel is `Abort…` (V:381) and asks this
+  // (V:382-386) instead of whether to discard the result.
+  const ABORT_PATCH = {
+    title: "Abort Patch",
+    message: "Abort and Rollback applying patch or Skip this file?",
+    yes: "Abort and Rollback",
+    no: "Skip",
+    cancel: "Continue Resolve",
+  };
 
   const CONTINUE = "Continue Merge";
   const WHITESPACE: { value: Whitespace; label: string }[] = [
@@ -53,6 +70,7 @@
   ];
 
   let path: string | null = null;
+  let contents: MergeContents | null = null;
   let sides = $state.raw<ConflictSides | null>(null);
   let texts: { left: string; base: string; right: string } | null = null;
   let separator = "\n";
@@ -69,6 +87,8 @@
   let busy = $state(false);
   let whitespace = $state<Whitespace>("default");
   let question = $state.raw<Question | null>(null);
+  // The contents mode of a patch conflict.
+  let abortable = $state(false);
   let menu = $state.raw<{ x: number; y: number; label: string; items: MenuItem[] } | null>(null);
   // `Soft-Wrap` of the place `Merge`. There is no gear here: the gutter menu is its only toggle.
   let wrap = loadWrap("Merge");
@@ -93,16 +113,20 @@
 
   const contentOf = (version: ConflictVersion) => (version.kind === "text" ? version.text : "");
 
-  function ask(details: Omit<Question, "answer">): Promise<boolean> {
+  function choose(details: Omit<Question, "answer">): Promise<"yes" | "no" | "cancel"> {
     return new Promise((resolve) => {
       question = {
         ...details,
-        answer: (yes) => {
+        answer: (choice) => {
           question = null;
-          resolve(yes);
+          resolve(choice);
         },
       };
     });
+  }
+
+  async function ask(details: Omit<Question, "answer" | "cancel">): Promise<boolean> {
+    return (await choose(details)) === "yes";
   }
 
   // MergeUtil.showConfirmDiscardChangesDialog.
@@ -116,9 +140,9 @@
     });
   }
 
-  async function finish(result: MergeResult) {
+  async function finish(result: MergeResult, content?: string) {
     busy = true;
-    await mergeWindowDone(result);
+    await mergeWindowDone(result, content);
   }
 
   // A command that writes. If the file changed, the red bar; if something else fails, the error.
@@ -135,11 +159,17 @@
   }
 
   async function accept(side: "left" | "right") {
-    if (busy || question || outdated || !path) return;
+    if (busy || question || outdated || (!path && !contents)) return;
     const action = side === "left" ? "Accept Left" : "Accept Right";
     if (!(await discard(action, editors?.modified() ?? false))) return;
     // R1: the side as the user sees it; the backend inverts it in a rebase.
     const chosen: ConflictSide = side === "left" ? "yours" : "theirs";
+    // TextMergeRequestImpl.applyResult: the result is that side's text.
+    if (contents && texts) {
+      await finish(chosen, side === "left" ? texts.left : texts.right);
+      return;
+    }
+    if (!path) return;
     const target = path;
     await write(async () => {
       await taskResult(await conflictsAccept([target], chosen));
@@ -149,7 +179,12 @@
 
   // doFinishMerge(RESOLVED): without asking.
   async function save() {
-    if (busy || outdated || !editors || !sides || !path) return;
+    if (busy || outdated || !editors) return;
+    if (contents) {
+      await finish("resolved", editors.result());
+      return;
+    }
+    if (!sides || !path) return;
     const content = withSeparator(editors.result(), separator);
     const target = path;
     const hash = sides.hash;
@@ -174,9 +209,16 @@
     await save();
   }
 
-  // MergeUtil.showExitWithoutApplyingChangesDialog. A binary never asks.
+  // MergeUtil.showExitWithoutApplyingChangesDialog. A binary never asks. A patch conflict asks
+  // `Abort Patch` (`MERGE_CANCEL_HANDLER`): its Cancel keeps resolving.
   async function cancel() {
     if (busy || question) return;
+    if (abortable) {
+      const choice = await choose(ABORT_PATCH);
+      if (choice === "yes") await finish("abort");
+      else if (choice === "no") await finish("skip");
+      return;
+    }
     if (!(await discard("Cancel Merge", editors?.modified() ?? false))) return;
     await finish("cancelled");
   }
@@ -253,7 +295,7 @@
   // MergeCallback.checkIsValid: the working file is no longer the one that was read, or it is no longer in
   // conflict because someone marked it resolved outside.
   async function check() {
-    if (!path || !sides || outdated || busy) return;
+    if (contents || !path || !sides || outdated || busy) return;
     try {
       const file = await mergeWorkingFile(path);
       if (file.hash !== sides.hash || !file.conflicted) outdated = true;
@@ -281,9 +323,34 @@
     }
   }
 
+  async function showEditors(blocks: MergeBlock[], titles: [string, string, string], file: string) {
+    await tick();
+    if (!host || !texts) return;
+    editors = new MergeEditors(
+      host,
+      { ...texts, blocks, titles, path: file, wrap },
+      { onchange: changed, onallprocessed: () => (processed = true) },
+    );
+    autoApply();
+    version++;
+  }
+
+  // The given texts, with no working file to compare with: `check()` has nothing to do.
+  async function loadContents(given: MergeContents) {
+    texts = { left: normalized(given.left), base: normalized(given.base), right: normalized(given.right) };
+    const blocks = await mergeBlocks(texts.left, texts.base, texts.right, whitespace);
+    await showEditors(blocks, given.titles, given.path);
+  }
+
   async function load() {
     settings = await settingsGet();
     whitespace = settings.mergeWhitespace;
+    contents = await mergeWindowContents();
+    if (contents) {
+      abortable = contents.abort === true;
+      await loadContents(contents);
+      return;
+    }
     path = await mergeWindowPath();
     if (!path) throw new Error("There is no file to resolve");
     const read = await taskResult<ConflictSides>(await conflictSides(path));
@@ -304,15 +371,7 @@
       same && whitespace === "default"
         ? read.blocks
         : await mergeBlocks(texts.left, texts.base, texts.right, whitespace);
-    await tick();
-    if (!host) return;
-    editors = new MergeEditors(
-      host,
-      { ...texts, blocks, titles: read.titles, path: read.path, wrap },
-      { onchange: changed, onallprocessed: () => (processed = true) },
-    );
-    autoApply();
-    version++;
+    await showEditors(blocks, read.titles, read.path);
   }
 
   onMount(() => {
@@ -453,7 +512,9 @@
         {/if}
       </div>
       <div class="right">
-        <button type="button" class="button" disabled={busy} onclick={cancel}>Cancel</button>
+        <button type="button" class="button" disabled={busy} onclick={cancel}
+          >{abortable ? "Abort…" : "Cancel"}</button
+        >
         {#if text}
           <button
             type="button"
@@ -473,14 +534,19 @@
   <Dialog
     title={current.title}
     width={420}
-    onclose={() => current.answer(false)}
-    onsubmit={() => current.answer(true)}
+    onclose={() => current.answer(current.cancel ? "cancel" : "no")}
+    onsubmit={() => current.answer("yes")}
   >
     {#each current.message.split("\n") as line, index (index)}
       <p>{line}</p>
     {/each}
     {#snippet footer()}
-      <button type="button" class="button" onclick={() => current.answer(false)}>{current.no}</button>
+      {#if current.cancel}
+        <button type="button" class="button" onclick={() => current.answer("cancel")}
+          >{current.cancel}</button
+        >
+      {/if}
+      <button type="button" class="button" onclick={() => current.answer("no")}>{current.no}</button>
       <button class="button default" data-autofocus>{current.yes}</button>
     {/snippet}
   </Dialog>

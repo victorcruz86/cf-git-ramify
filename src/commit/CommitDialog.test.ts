@@ -990,3 +990,163 @@ test("Add to VCS of the browser menu moves the file to the dialog's list and inc
   const sent = calls("commit_changes")[0][1] as unknown as { request: { added: string[] } };
   expect(sent.request.added).toEqual(["new.txt"]);
 });
+
+describe("the Create Patch executor", () => {
+  const SPLIT: Changelists = {
+    ...LISTS,
+    hunkAssignments: { "a.txt": { h1: "default", h2: "other" } },
+  };
+
+  // `CreatePatchFromLocalChanges`: the dialog titled `Create Patch` with its `Create Patch…`
+  // button, then Patch File Settings. The file is named after the message, the message is the
+  // `Subject:` header, and a file split across lists goes with the hunks of this list only.
+  test("create_patch_opens_the_dialog_with_create_patch_button_then_the_settings", async () => {
+    mockCommands({ changelists_get: () => SPLIT });
+    const { localEntries, patchFlow } = await import("../patch/flow");
+    const settings = vi.fn(async (request: { file: string; base: string }) => {
+      order.push("settings");
+      return { file: request.file, toClipboard: false, base: request.base, reverse: false };
+    });
+    const create = vi.fn(async () => {
+      order.push("create");
+      return { file: "/repo/Fix_it_.patch", snapshot: null };
+    });
+    const flow = patchFlow(
+      { settings, overwrite: async () => true, created: async () => ({ reveal: false, dontAsk: false }) },
+      {
+        create,
+        createFromShelf: create,
+        defaults: async () => ({ folder: null, toClipboard: false, showInFinder: false }),
+        paths: async (file, base) => ({ file, fileExists: false, base, baseExists: true }),
+        showInFinder: async () => {},
+        reveal: async () => {},
+        restore: async () => "",
+      },
+    );
+    const onexecute = vi.fn(async (changes: import("./dialog").ExecutorChanges, context: import("./dialog").ExecutorContext) => {
+      const selections = new Map(changes.selections.map((file) => [file.path, file.selection]));
+      await flow.createPatch(
+        { repo: changes.repo, entries: localEntries(changes.files, selections) },
+        changes.message,
+        context.close,
+      );
+    });
+    await open({ executor: "patch", onexecute });
+
+    expect(within(screen.getByRole("dialog", { name: "Create Patch" })).getByRole("heading", { name: "Create Patch" })).toBeTruthy();
+    await type("Fix it.");
+    await fireEvent.click(screen.getByRole("button", { name: "Create Patch…" }));
+
+    await waitFor(() => expect(order).toEqual(["settings", "close", "create"]));
+    expect(settings.mock.calls[0][0].file).toBe("/repo/Fix_it_.patch");
+    const [entries, options, to, remember, repo] = create.mock.calls[0] as unknown as unknown[];
+    expect(entries).toEqual([
+      {
+        path: "a.txt",
+        oldPath: null,
+        before: { kind: "head" },
+        after: { kind: "selection", selection: [{ hunk: "h1", lines: null }] },
+      },
+      { path: "b.txt", oldPath: null, before: { kind: "head" }, after: { kind: "disk" } },
+    ]);
+    expect(options).toEqual({ basePath: "/repo", reverse: false, message: "Fix it." });
+    expect(to).toEqual({ kind: "file", path: "/repo/Fix_it_.patch" });
+    expect([remember, repo]).toEqual([true, "/repo"]);
+  });
+
+  test("cancelling_the_settings_leaves_the_create_patch_dialog_open", async () => {
+    mockCommands();
+    const onexecute = vi.fn(async () => {});
+    const { onclose } = await open({ executor: "patch", onexecute });
+    await type("Message");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Create Patch…" }));
+
+    await waitFor(() => expect(onexecute).toHaveBeenCalledTimes(1));
+    expect(onclose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Create Patch" })).toBeTruthy();
+  });
+
+  // Decision 8: no commit checks; the executor is caught, and the draft is the list's comment and
+  // goes to the history, as `saveCommitMessageBeforeCommit` does.
+  test("executor_failure_is_notified_and_the_draft_is_kept", async () => {
+    mockCommands();
+    const onexecute = vi.fn(async (_changes, context: import("./dialog").ExecutorContext) => {
+      context.close();
+      throw { kind: "failed", message: "The disk is full" };
+    });
+    const { onclose } = await open({ executor: "patch", onexecute });
+    await type("My patch");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Create Patch…" }));
+
+    await waitFor(() =>
+      expect(get(notifications).map((shown) => shown.title)).toContain("The disk is full"),
+    );
+    expect(onclose).toHaveBeenCalledTimes(1);
+    expect(calls("commit_warnings")).toHaveLength(0);
+    expect(calls("messages_push").map(([, args]) => args)).toEqual([{ message: "My patch" }]);
+    expect(calls("changelists_set_comment").at(-1)?.[1]).toEqual({
+      id: "default",
+      comment: "My patch",
+      repo: "/repo",
+    });
+  });
+
+  // The executor learns which repository the changes are in, and whether it is still open.
+  test("the_executor_is_tied_to_its_repository", async () => {
+    mockCommands();
+    let open_ = "/repo";
+    const onexecute = vi.fn(async () => {});
+    await open({ executor: "patch", onexecute, sameRepo: (path: string) => path === open_ });
+    await type("m");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Create Patch…" }));
+
+    await waitFor(() => expect(onexecute).toHaveBeenCalledTimes(1));
+    const [changes, context] = onexecute.mock.calls[0] as unknown as [
+      import("./dialog").ExecutorChanges,
+      import("./dialog").ExecutorContext,
+    ];
+    expect(changes.repo).toBe("/repo");
+    expect(changes.list).toBe("default");
+    expect(context.here()).toBe(true);
+    open_ = "/other";
+    expect(context.here()).toBe(false);
+  });
+});
+
+describe("the Shelve Changes executor", () => {
+  // Decision 8: like Create Patch, Shelve Changes runs none of the commit checks
+  // (`GitCheckinHandlerFactory` returns early for an executor that is not a VCS commit), so a
+  // detached HEAD asks nothing. The executor gets the included files.
+  test("shelve_changes_runs_no_commit_checks", async () => {
+    mockCommands({ commit_warnings: () => [{ kind: "detachedHead" }] });
+    const onexecute = vi.fn(async (_changes, context: import("./dialog").ExecutorContext) => context.close());
+    const { onclose } = await open({ executor: "shelve", onexecute });
+    await type("Later");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Shelve Changes" }));
+
+    await waitFor(() => expect(onexecute).toHaveBeenCalledTimes(1));
+    expect(calls("commit_warnings")).toHaveLength(0);
+    expect(onclose).toHaveBeenCalledTimes(1);
+    const [changes] = onexecute.mock.calls[0] as unknown as [import("./dialog").ExecutorChanges];
+    expect(changes.files.map((file) => file.path)).toEqual(["a.txt", "b.txt"]);
+  });
+
+  // The dialog of Shelve Changes lists no unversioned files (`dialogTexts("shelve").unversioned`),
+  // so none can be included, even when one was selected: rollback (`delete_added`) never deletes
+  // a file the shelf did not get.
+  test("shelve_changes_cannot_include_an_unversioned_file", async () => {
+    mockCommands();
+    await open({
+      executor: "shelve",
+      request: { kind: "files", paths: ["a.txt", "new.txt"], lists: [] },
+    });
+
+    const shelve = screen.getByRole("dialog", { name: "Shelve Changes" });
+    expect(within(shelve).queryByRole("treeitem", { name: "new.txt" })).toBeNull();
+    expect(within(shelve).queryByRole("treeitem", { name: /^Unversioned Files/ })).toBeNull();
+  });
+});

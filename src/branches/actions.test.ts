@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import type { LogRef } from "../lib/api";
 import { dismiss, notifications, type Shown } from "../lib/notifications";
+import { takeShelfTabRequest } from "../shelf/flow";
 import {
   branchActions,
   deletedNotification,
@@ -15,7 +16,7 @@ const local = (name: string): LogRef => ({ name, kind: "local" });
 const remote = (name: string): LogRef => ({ name, kind: "remote" });
 const tag = (name: string): LogRef => ({ name, kind: "tag" });
 const DONE = { kind: "done" };
-const STASH = { sha: "abc", message: "Uncommitted changes before Checkout at today" };
+const STASH = { kind: "stash" as const, sha: "abc", message: "Uncommitted changes before Checkout at today", lists: [] };
 
 function api(overrides: Partial<BranchApi> = {}): BranchApi {
   return {
@@ -116,10 +117,12 @@ describe("checkout", () => {
     });
   });
 
+  // G:398-401, with `View saved changes…` first, as `UnstashConflictResolver` adds them.
   test("unstash_with_conflicts_says_241s_text_and_offers_resolve", async () => {
     const checkout = vi.fn().mockResolvedValue({ kind: "conflicts", stash: STASH, failure: null });
     const resolveConflicts = vi.fn(async () => "resolved" as const);
-    await branchActions(ui({}, { resolveConflicts }), api({ checkout })).run({
+    const showStashes = vi.fn();
+    await branchActions(ui({}, { resolveConflicts, showStashes }), api({ checkout })).run({
       kind: "checkout",
       target: "other",
     });
@@ -127,9 +130,52 @@ describe("checkout", () => {
     expect(last().body).toBe(
       "Your uncommitted changes were saved to stash.\nUnstash is not complete, you have unresolved merges in your working tree\nResolve conflicts and drop the stash.",
     );
-    expect(last().actions?.map(({ label }) => label)).toEqual(["Resolve conflicts…"]);
+    expect(last().actions?.map(({ label }) => label)).toEqual([
+      "View saved changes…",
+      "Resolve conflicts…",
+    ]);
     last().actions?.[0].run();
+    expect(showStashes).toHaveBeenCalledTimes(1);
+    last().actions?.[1].run();
     expect(resolveConflicts).toHaveBeenCalledTimes(1);
+  });
+
+  test("smart_checkout_with_shelve", async () => {
+    const message = "Uncommitted changes before Checkout at today";
+    const shelf = {
+      kind: "shelve" as const,
+      sha: "",
+      message,
+      lists: [{ name: "Uncommitted_changes", description: `${message} [Changes]`, changelist: "default" }],
+    };
+    const showStashes = vi.fn();
+    const resolveConflicts = vi.fn();
+    takeShelfTabRequest();
+    const checkout = vi
+      .fn()
+      .mockResolvedValueOnce({ kind: "conflicts", stash: shelf, failure: null })
+      .mockResolvedValueOnce({ kind: "notRestored", stash: shelf, reason: "it broke" })
+      .mockResolvedValueOnce({ kind: "gone", stash: shelf, failure: null });
+    const actions = branchActions(ui({}, { showStashes, resolveConflicts }), api({ checkout }));
+
+    await actions.run({ kind: "checkout", target: "other" });
+
+    expect(last()).toMatchObject({ kind: "warning", title: "Local changes were not restored", sticky: true });
+    expect(last().body).toContain(`were left in the shelf: ${message}`);
+    expect(last().body).not.toMatch(/stash/);
+    expect(last().actions?.map(({ label }) => label)).toEqual(["View saved changes…"]);
+    last().actions?.[0].run();
+    expect(takeShelfTabRequest()).toEqual({ select: "Uncommitted_changes" });
+    expect(showStashes).not.toHaveBeenCalled();
+    expect(resolveConflicts).not.toHaveBeenCalled();
+
+    await actions.run({ kind: "checkout", target: "other" });
+    expect(last().body).toBe(`it broke\nThey are in the shelf: ${message}`);
+    expect(last().actions?.map(({ label }) => label)).toEqual(["View saved changes…"]);
+
+    await actions.run({ kind: "checkout", target: "other" });
+    expect(last().body).toBe(`They are no longer in the shelf: ${message}`);
+    expect(last().actions).toBeUndefined();
   });
 
   test("conflicts_with_the_failed_operation_report_both", async () => {

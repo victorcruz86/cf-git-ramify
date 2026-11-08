@@ -57,8 +57,10 @@
     onListChanged,
     SIZE_KEY,
     SPLITTER_KEY,
+    beforeExecutor,
     type Executor,
     type ExecutorChanges,
+    type ExecutorRun,
   } from "./dialog";
   import { toggleInclusion } from "./inclusion";
   import {
@@ -97,8 +99,8 @@
     hasHead: boolean;
     // `Clear initial commit message`.
     clearInitial: boolean;
-    // Shelve and Create Patch: what to do with the changes once the dialog has closed.
-    onexecute?: (changes: ExecutorChanges) => Promise<void>;
+    // Shelve and Create Patch: what to do with the changes. It closes the dialog when it goes ahead.
+    onexecute?: ExecutorRun;
     onshowdiff?: (file: FileChange) => void;
     // `Commit and Push…`: called before the commit, and what it returns is pushed after it.
     onpreparepush?: () => () => Promise<void>;
@@ -536,16 +538,7 @@
     const checked = chooseNow();
     if (!checked) return;
     if (executor !== "commit") {
-      const run = onexecute;
-      const changes = {
-        list: current.id,
-        message,
-        paths: [...checked.files],
-        partial: [],
-        selections: checked.selections,
-      };
-      onclose();
-      await run?.(changes);
+      await executeOther(checked);
       return;
     }
     const label =
@@ -603,6 +596,47 @@
         .catch((failure) => notify({ kind: "error", title: errorText(failure) }));
     } else {
       void commit();
+    }
+  }
+
+  // Shelve and Create Patch (decision 8: no commit checks). The message goes to the history and,
+  // with the whole list in, to its comment, before the executor runs; the executor closes the dialog
+  // when it goes ahead. Whatever it throws is notified. It is told the repository it works on and
+  // whether that one is still open.
+  async function executeOther(checked: { selections: FileSelection[]; files: Set<string> }) {
+    const run = onexecute;
+    const list = current;
+    if (!run || !list || checked.files.size === 0) return;
+    const draft = message;
+    const fullyIncluded = versionedKeys.every((key) => chosenKeys.has(key));
+    const path = repo.path;
+    const isOpen = sameRepo;
+    const byPath = new Map(changes.map((change) => [change.path, change]));
+    const changesOut: ExecutorChanges = {
+      repo: path,
+      list: list.id,
+      message: draft,
+      files: [...checked.files].map((file) => ({
+        path: file,
+        oldPath: byPath.get(file)?.oldPath ?? null,
+      })),
+      selections: checked.selections,
+    };
+    messagesPush(draft).catch(() => {});
+    saveComment(beforeExecutor({ draft, list, fullyIncluded }), path);
+    let closed = false;
+    const context = {
+      close: () => {
+        if (closed) return;
+        closed = true;
+        onclose();
+      },
+      here: () => isOpen?.(path) ?? true,
+    };
+    try {
+      await run(changesOut, context);
+    } catch (failure) {
+      notify({ kind: "error", title: errorText(failure) });
     }
   }
 

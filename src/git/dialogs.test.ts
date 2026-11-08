@@ -517,6 +517,7 @@ function api(overrides: Partial<GitApi> = {}): GitApi {
     tags: vi.fn(async () => ["v1"]),
     settings: vi.fn(async () => ({
       protectedBranches: [],
+      cleanTree: "shelve" as const,
       forcePushTargets: [],
       merge: { branch: null, options: [] as MergeOption[] },
       rebase: { options: [] as RebaseFlag[], newBase: null },
@@ -563,6 +564,7 @@ describe("Merge…", () => {
     const backend = api({
       settings: vi.fn(async () => ({
         protectedBranches: [],
+        cleanTree: "shelve" as const,
         forcePushTargets: [],
         merge: { branch: "origin/side", options: ["noVerify", "noFf"] as MergeOption[] },
         rebase: { options: [], newBase: null },
@@ -592,6 +594,7 @@ describe("Merge…", () => {
       version: vi.fn(async () => "2.20.1"),
       settings: vi.fn(async () => ({
         protectedBranches: [],
+        cleanTree: "shelve" as const,
         forcePushTargets: [],
         merge: { branch: null, options: ["noVerify", "noFf"] as MergeOption[] },
         rebase: { options: [], newBase: null },
@@ -897,6 +900,7 @@ describe("Rebase…", () => {
   const remembered = (options: RebaseFlag[], newBase: string | null) =>
     vi.fn(async () => ({
       protectedBranches: [],
+      cleanTree: "shelve" as const,
       forcePushTargets: [],
       merge: { branch: null, options: [] as MergeOption[] },
       rebase: { options, newBase },
@@ -1114,7 +1118,7 @@ describe("Rebase…", () => {
   });
 
   test("what_was_saved_that_does_not_come_back_is_notified_and_what_is_stopped_stays_saved", async () => {
-    const saved = { sha: "abc", message: "Uncommitted changes before rebase" };
+    const saved = { kind: "stash" as const, sha: "abc", message: "Uncommitted changes before rebase", lists: [] };
     const blocked = { kind: "restoreBlocked" as const, reason: { files: ["a.txt"] } };
     const back = api({
       rebase: vi.fn(async () => ({ ...ran({ kind: "done" }), saved: [{ saved, restore: blocked }] })),

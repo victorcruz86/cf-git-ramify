@@ -77,9 +77,11 @@
     // The branch operations of the context menu, which Task 9 wires up.
     onvcs?: (action: VcsAction) => void;
     onfetch?: () => Promise<unknown>;
+    // `Create Patch...` of the changes tree.
+    oncreatepatch?: (changes: LogChange[]) => void;
   }
 
-  let { active, onready, onvcs, onfetch }: Props = $props();
+  let { active, onready, onvcs, onfetch, oncreatepatch }: Props = $props();
 
   const newTab = (id: number, options = defaultOptions()): LogTab => ({
     id,
@@ -606,6 +608,7 @@
                 onempty={() => diffOpened?.()}
                 onopen={() => (diffOpen = true)}
                 {onvcs}
+                {oncreatepatch}
               />
             </div>
             {#if options.showDetails}

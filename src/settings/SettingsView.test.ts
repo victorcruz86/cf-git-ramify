@@ -408,8 +408,9 @@ const openReady = async () => {
 };
 
 const repoCommands = {
-  repo_settings_get: () => ({ protectedBranches: ["master", "main"], forcePushTargets: [] }),
+  repo_settings_get: () => ({ protectedBranches: ["master", "main"], forcePushTargets: [], cleanTree: "shelve" }),
   protected_branches_set: () => [],
+  clean_tree_set: () => null,
   protected_patterns_check: () => null,
 };
 
@@ -432,15 +433,72 @@ test("push_and_update_rows_with_their_texts", async () => {
   expect(screen.getAllByText("Explicitly check for incoming commits on remotes:")).toHaveLength(1);
 });
 
-test("clean_working_tree_is_a_fixed_stash", async () => {
-  mockCommands();
+// G:707 and G:1385-1386, per repository (`GitVcsPanel`), Shelve by default (decision 9).
+test("the_radio_saves_per_repository_and_defaults_to_shelve", async () => {
+  mockCommands(repoCommands);
   await openReady();
 
   const group = screen.getByRole("group", { name: "Clean working tree using:" });
   const stash = screen.getByRole("radio", { name: "Stash" }) as HTMLInputElement;
-  expect(group.contains(stash)).toBe(true);
-  expect(stash.checked).toBe(true);
-  expect(stash.disabled).toBe(true);
+  const shelve = screen.getByRole("radio", { name: "Shelve" }) as HTMLInputElement;
+  expect(group.contains(stash) && group.contains(shelve)).toBe(true);
+  await waitFor(() => expect(shelve.checked).toBe(true));
+  expect(stash.checked).toBe(false);
+  expect(shelve.disabled).toBe(false);
+
+  await fireEvent.click(stash);
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("clean_tree_set")).toHaveLength(1));
+  expect(calls("clean_tree_set")[0][1]).toEqual({ cleanTree: "stash" });
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  expect((calls("settings_save")[0][1] as { settings: Settings }).settings).not.toHaveProperty("cleanTree");
+});
+
+// No value is shown before the repository's is read: a greyed-out Shelve would be wrong for one
+// that saves with Stash.
+test("the_radio_shows_nothing_while_it_loads", async () => {
+  let answer = (_: unknown) => {};
+  mockCommands({
+    ...repoCommands,
+    repo_settings_get: () => new Promise((resolve) => (answer = resolve)),
+  });
+  open();
+
+  const group = screen.getByRole("group", { name: "Clean working tree using:" });
+  expect(group.querySelectorAll("input:checked")).toHaveLength(0);
+  answer({ protectedBranches: [], forcePushTargets: [], cleanTree: "stash" });
+  const stash = () => screen.getByRole("radio", { name: "Stash" }) as HTMLInputElement;
+  await waitFor(() => expect(stash().checked).toBe(true));
+  expect(stash().disabled).toBe(false);
+});
+
+test("the_radio_shows_what_the_repository_saved_and_is_not_written_unchanged", async () => {
+  mockCommands({
+    ...repoCommands,
+    repo_settings_get: () => ({ protectedBranches: [], forcePushTargets: [], cleanTree: "stash" }),
+  });
+  await openReady();
+
+  const stash = screen.getByRole("radio", { name: "Stash" }) as HTMLInputElement;
+  await waitFor(() => expect(stash.checked).toBe(true));
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  expect(calls("clean_tree_set")).toHaveLength(0);
+});
+
+test("without_a_repository_the_radio_is_greyed_out_on_shelve", async () => {
+  mockCommands();
+  await openReady();
+
+  const shelve = screen.getByRole("radio", { name: "Shelve" }) as HTMLInputElement;
+  expect(shelve.checked).toBe(true);
+  expect(shelve.disabled).toBe(true);
+  expect((screen.getByRole("radio", { name: "Stash" }) as HTMLInputElement).disabled).toBe(true);
+  await fireEvent.click(ok());
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  expect(calls("clean_tree_set")).toHaveLength(0);
 });
 
 test("saves_the_push_and_update_settings", async () => {

@@ -2,7 +2,7 @@
 // launches a task, which delivers its result to `taskResult`.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -14,8 +14,8 @@ use crate::branches::{
     RemoteOptions, Repo, ResetMode,
 };
 use crate::commands::{
-    blocking_api, current_repo, current_settings, failed, flush_diff_window, repo_changed,
-    repo_data_dir, ApiError, AppState, RepoLocks, MAIN_WINDOW, SAVE_ACTION,
+    base_dir, blocking_api, current_repo, current_settings, data_dir_of, failed, flush_diff_window,
+    repo_changed, repo_data_dir, ApiError, AppState, RepoLocks, MAIN_WINDOW, SAVE_ACTION,
 };
 use crate::commit;
 use crate::conflicts;
@@ -25,15 +25,24 @@ use crate::log::store::refs_fingerprint;
 use crate::merge::{self, MergeOption};
 use crate::merge3::{self, Block, Whitespace};
 use crate::operation::{self, Operation};
+use crate::patch::create::{self, CreateOptions, PatchEntry, PatchTarget};
+use crate::patch::patch_failure;
+use crate::patch_apply::{ApplyChoice, PatchInput, PathMapping};
 use crate::preserve::{RestoreOutcome, Saved};
 use crate::pull::{self, PullInfo, PullOption};
 use crate::push::{self, PushInfo, PushResult, PushSpec, PushTags, UpdatedPush};
 use crate::rebase::{self, RebaseParams};
 use crate::remotes::{self, Cloned, InitOutcome, Remote};
 use crate::rewrite::{self, MenuChecks, Rewritten, Undone};
-use crate::settings::{self, RepoSettings, UpdateMethod};
+use crate::settings::{self, AppPatch, PatchDefaults, RepoSettings, UpdateMethod};
+use crate::shelf;
+use crate::shelf::shelve::{
+    shelve, shelve_silently, ShelveEntry, ShelveGroup, SWITCHED_BEFORE_SHELVING,
+};
+use crate::shelf::tab::{ListFiles, Restorable, ShelfFile};
 use crate::snapshots::SnapshotId;
 use crate::staging;
+use crate::stash;
 use crate::task::{TaskId, TaskKind};
 use crate::update::{self, Aborted, UpdateOptions, UpdateResult};
 use crate::worktree_diff::{self, ThreeSides, Written};
@@ -60,6 +69,27 @@ const RESOLVING_CONFLICTS: &str = "Resolving Conflicts…";
 const TESTING_URL: &str = "Checking URL…";
 const UPDATING: &str = "Update";
 const UPDATING_BRANCHES: &str = "Updating branches…";
+// `unstash.clearing.stashes`, `unstash.dialog.stash.list.load.progress.indicator.title`,
+// `unstash.dialog.remove.stash.progress.indicator.title` (without the name if the entry is already gone),
+// `stashing.progress.title`, `stash.files.progress.title` and `unstash.unstashing`.
+const CLEARING_STASHES: &str = "Clearing stashes…";
+const LOADING_STASHES: &str = "Loading list of stashes…";
+const LOADING_STASH: &str = "Loading...";
+const REMOVING_STASH: &str = "Removing Stash…";
+const STASHING: &str = "Stashing changes…";
+const STASHING_FILES: &str = "Stashing Files";
+const UNSTASHING: &str = "Unstashing…";
+// `patch.apply.dialog.title` and `patch.apply.rollback.progress.title`.
+const APPLYING_PATCH: &str = "Apply Patch";
+const LOADING_PATCH: &str = "Loading...";
+const ROLLING_BACK_PATCH: &str = "Rollback applied changes…";
+// `create.patch.commit.action.progress`.
+const CREATING_PATCH: &str = "Creating Patch…";
+// The reason of the copy of a worktree file a patch is written over.
+const BEFORE_OVERWRITING_PATCH: &str = "before writing a patch over it";
+// `shelve.changes.progress.text`, `shelve.changes.progress.title` and `activity.name.shelve`.
+const SHELVING: &str = "Shelving changes…";
+const SHELVING_SILENTLY: &str = "Shelving Changes";
 
 // The signal is also emitted on failure: a half-done operation may have changed something.
 fn start<T: Serialize + 'static>(
@@ -91,12 +121,32 @@ fn read<T: Serialize + 'static>(
     title: &str,
     work: impl FnOnce(&Repo) -> Result<T, GitError> + Send + 'static,
 ) -> Result<TaskId, ApiError> {
+    read_as(app, state, TaskKind::Read, title, work)
+}
+
+// A read that waits for the repository's writes, as they do: what it reads is never half written.
+fn read_locked<T: Serialize + 'static>(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    title: &str,
+    work: impl FnOnce(&Repo) -> Result<T, GitError> + Send + 'static,
+) -> Result<TaskId, ApiError> {
+    read_as(app, state, TaskKind::Write, title, work)
+}
+
+fn read_as<T: Serialize + 'static>(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    kind: TaskKind,
+    title: &str,
+    work: impl FnOnce(&Repo) -> Result<T, GitError> + Send + 'static,
+) -> Result<TaskId, ApiError> {
     let path = current_repo(state)?;
     let data = repo_data_dir(app, state)?;
     let root = path.clone();
     Ok(state
         .tasks
-        .start(&root, TaskKind::Read, title.to_string(), move |ctx| {
+        .start(&root, kind, title.to_string(), move |ctx| {
             work(&Repo {
                 ctx,
                 path: &path,
@@ -364,21 +414,22 @@ pub async fn operation_abort(
 
 // The conflicts and the three versions of one only read: they do not announce changes.
 #[tauri::command]
-pub async fn conflicts_session(state: State<'_, AppState>) -> Result<TaskId, ApiError> {
-    let path = current_repo(&state)?;
-    let title = LOADING_CONFLICTS.to_string();
-    Ok(state
-        .tasks
-        .start(&path, TaskKind::Read, title, conflicts::session))
+pub async fn conflicts_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, LOADING_CONFLICTS, conflicts::session)
 }
 
 #[tauri::command]
-pub async fn conflict_sides(path: String, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
-    let repo = current_repo(&state)?;
-    let title = LOADING_REVISIONS.to_string();
-    Ok(state.tasks.start(&repo, TaskKind::Read, title, move |ctx| {
-        conflicts::sides(ctx, &path)
-    }))
+pub async fn conflict_sides(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, LOADING_REVISIONS, move |repo| {
+        conflicts::sides(repo, &path)
+    })
 }
 
 // `side` is the user's, as they see it in the window: `accept` is what inverts it in a rebase.
@@ -409,6 +460,228 @@ pub async fn conflict_resolve(
     let title = RESOLVING_CONFLICTS.to_string();
     start(&app, &state, TaskKind::Write, title, move |repo| {
         conflicts::resolve(repo, &path, content.as_bytes(), &expected_hash).map_err(GitError::from)
+    })
+}
+
+// The stash. An entry goes by its hash: `stash` finds its `stash@{n}` when it acts. The list, the
+// changes and the sides only read (`stash list` and `stash show` are reading forms for the console),
+// so they do not wait for the repository's lock.
+#[tauri::command]
+pub async fn stash_list(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
+    read(&app, &state, LOADING_STASHES, |repo| stash::list(repo.ctx))
+}
+
+#[tauri::command]
+pub async fn stash_changes(
+    sha: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, LOADING_STASH, move |repo| {
+        stash::changes(repo.ctx, &sha)
+    })
+}
+
+#[tauri::command]
+pub async fn stash_file_sides(
+    sha: String,
+    path: String,
+    old_path: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, LOADING_REVISIONS, move |repo| {
+        stash::file_sides(repo.ctx, &sha, &path, old_path.as_deref())
+    })
+}
+
+// `Stash Changes…` and `Stash Silently` (an empty message).
+#[tauri::command]
+pub async fn stash_save(
+    message: String,
+    keep_index: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start(
+        &app,
+        &state,
+        TaskKind::Write,
+        STASHING.to_string(),
+        move |repo| stash::save(repo.ctx, &message, keep_index),
+    )
+}
+
+// `Stash Files` of the staging area.
+#[tauri::command]
+pub async fn stash_push_paths(
+    paths: Vec<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let title = STASHING_FILES.to_string();
+    start(&app, &state, TaskKind::Write, title, move |repo| {
+        stash::push_paths(repo.ctx, &paths)
+    })
+}
+
+// `expected_head` is the HEAD the dialog saw. A recoverable copy is taken before anything is written.
+#[tauri::command]
+pub async fn stash_unstash(
+    sha: String,
+    pop: bool,
+    reinstate_index: bool,
+    branch: Option<String>,
+    expected_head: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start(
+        &app,
+        &state,
+        TaskKind::Write,
+        UNSTASHING.to_string(),
+        move |repo| {
+            stash::unstash(
+                repo,
+                &sha,
+                pop,
+                reinstate_index,
+                branch.as_deref(),
+                &expected_head,
+            )
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn stash_drop(
+    sha: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let path = current_repo(&state)?;
+    let looked = sha.clone();
+    let label = blocking_api(move || Ok(stash::label_of(&path, &looked))).await?;
+    let title = match label {
+        Some(label) => format!("Removing Stash {label}…"),
+        None => REMOVING_STASH.to_string(),
+    };
+    start(&app, &state, TaskKind::Write, title, move |repo| {
+        stash::drop(repo, &sha)
+    })
+}
+
+#[tauri::command]
+pub async fn stash_clear(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start(
+        &app,
+        &state,
+        TaskKind::Write,
+        CLEARING_STASHES.to_string(),
+        stash::clear,
+    )
+}
+
+// Apply Patch. Each command reads the patch again from its source: only paths and texts travel.
+// The plan writes nothing; `mapping` is the dialog's strip and base directory.
+#[tauri::command]
+pub async fn patch_plan(
+    source: PatchInput,
+    mapping: Option<PathMapping>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    read_locked(&app, &state, LOADING_PATCH, move |repo| {
+        crate::patch_apply::plan_input(repo.path, repo.data, &source, &mapping.unwrap_or_default())
+    })
+}
+
+// `Show Difference` of the file at `index` of the plan, with the same mapping. It writes nothing.
+#[tauri::command]
+pub async fn patch_preview(
+    source: PatchInput,
+    mapping: Option<PathMapping>,
+    index: usize,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    read_locked(&app, &state, LOADING_PATCH, move |repo| {
+        crate::patch_apply::preview_input(
+            repo.path,
+            repo.data,
+            &source,
+            &mapping.unwrap_or_default(),
+            index,
+        )
+    })
+}
+
+// `expected_head` is the HEAD the dialog saw: if it no longer matches, nothing is touched.
+// `choice` has the selected files, the new files to write over and the plan's `hashes` (path to
+// content hash, `absent`): a file that changed since the plan is not written. A recoverable copy
+// is taken before anything is written.
+#[tauri::command]
+pub async fn patch_apply(
+    source: PatchInput,
+    mapping: PathMapping,
+    choice: ApplyChoice,
+    expected_head: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let title = APPLYING_PATCH.to_string();
+    start(&app, &state, TaskKind::Write, title, move |repo| {
+        crate::patch_apply::apply_input(repo, &source, &mapping, &choice, &expected_head)
+    })
+}
+
+// The merge window's result for a conflict of `patch_apply`, written only over the content it
+// was shown (`local_hash`); `moved_to` and `new_mode` come from the conflict.
+#[tauri::command]
+pub async fn patch_conflict_resolve(
+    path: String,
+    content: String,
+    local_hash: String,
+    moved_to: Option<String>,
+    new_mode: Option<u32>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let title = RESOLVING_CONFLICTS.to_string();
+    start(&app, &state, TaskKind::Write, title, move |repo| {
+        crate::patch_apply::resolve_conflict(
+            repo.path,
+            &path,
+            &content,
+            &local_hash,
+            moved_to.as_deref(),
+            new_mode,
+        )
+    })
+}
+
+// `Rollback` of `Patch Applying Partly Failed` and `Abort and Rollback`: the copy `patch_apply`
+// took. A copy of the current state is taken first.
+#[tauri::command]
+pub async fn patch_rollback(
+    snapshot: SnapshotId,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let title = ROLLING_BACK_PATCH.to_string();
+    start(&app, &state, TaskKind::Write, title, move |repo| {
+        crate::patch_apply::rollback(repo.data, repo.path, &snapshot)
     })
 }
 
@@ -1623,6 +1896,28 @@ pub fn protected_branches_set(
     Ok(push::invalid_patterns(&patterns))
 }
 
+// `Clean working tree using:` of the open repository (`GitVcsSettings`, per project).
+#[tauri::command]
+pub fn clean_tree_set(
+    clean_tree: settings::CleanTree,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    settings::save_clean_tree(&repo_data_dir(&app, &state)?, clean_tree)
+        .map_err(|error| failed(error.to_string()))
+}
+
+// The Shelf tab's options of the open repository (`ShelveChangesManager.State`).
+#[tauri::command]
+pub fn shelf_settings_set(
+    shelf: settings::ShelfSettings,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    settings::save_shelf_settings(&repo_data_dir(&app, &state)?, shelf)
+        .map_err(|error| failed(error.to_string()))
+}
+
 // The error of the first pattern of the field that does not compile, while it is typed. It reads
 // and writes nothing.
 #[tauri::command]
@@ -1708,6 +2003,576 @@ pub fn start_remote_check(app: &AppHandle) {
         .start(move || app_visible(&seen), move || check_remotes(&checked));
 }
 
+// What `patch_create` does once the diff window is saved, without the app: `repo` must be a
+// repository root, and `clipboard` gets the text for `To clipboard`. With `remember` (Patch File
+// Settings), `To clipboard` is saved first and the folder before the file is written, as
+// `CreatePatchCommitSession.execute` and `validateAndWritePatchToFile` do.
+#[allow(clippy::too_many_arguments)]
+fn create_patch(
+    app_dir: &Path,
+    repo: &Path,
+    repo_dir: &Path,
+    entries: &[PatchEntry],
+    options: &CreateOptions,
+    to: &PatchTarget,
+    remember: bool,
+    clipboard: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<PatchCreated, GitError> {
+    let text = || create::text(repo, entries, options).map_err(patch_failure);
+    deliver_patch(app_dir, repo, repo_dir, to, remember, text, clipboard)
+}
+
+// The patch `text` makes, to the file or the clipboard of `to`, with the folder and the choice
+// remembered when `remember`.
+fn deliver_patch(
+    app_dir: &Path,
+    repo: &Path,
+    repo_dir: &Path,
+    to: &PatchTarget,
+    remember: bool,
+    text: impl FnOnce() -> Result<Vec<u8>, GitError>,
+    clipboard: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<PatchCreated, GitError> {
+    let io = |error: std::io::Error| GitError::Io(error.to_string());
+    let real = |path: &Path| std::fs::canonicalize(path).map_err(io);
+    if real(&crate::commands::repo_root(repo)?)? != real(repo)? {
+        return Err(GitError::Io(format!(
+            "{} is not the root of a repository",
+            repo.display()
+        )));
+    }
+    if remember {
+        settings::remember_patch_to_clipboard(repo_dir, matches!(to, PatchTarget::Clipboard))
+            .map_err(io)?;
+    }
+    let file = match to {
+        PatchTarget::File { path } => {
+            let file = PathBuf::from(path);
+            let folder = file
+                .parent()
+                .filter(|_| file.is_absolute())
+                .ok_or_else(|| {
+                    GitError::Io(format!("Cannot write patch to specified file: {path}"))
+                })?;
+            std::fs::create_dir_all(folder).map_err(io)?;
+            if remember {
+                settings::remember_patch_folder(app_dir, repo_dir, folder, repo).map_err(io)?;
+            }
+            Some(file)
+        }
+        PatchTarget::Clipboard => None,
+    };
+    let text = text()?;
+    match file {
+        Some(file) => {
+            let snapshot = copy_before_overwriting(repo, repo_dir, &file)?;
+            create::write_file(&file, &text).map_err(io)?;
+            Ok(PatchCreated {
+                file: Some(file.display().to_string()),
+                snapshot,
+            })
+        }
+        None => {
+            clipboard(&String::from_utf8_lossy(&text)).map_err(io)?;
+            Ok(PatchCreated {
+                file: None,
+                snapshot: None,
+            })
+        }
+    }
+}
+
+// The file written, and the recoverable copy of what was there when it was a file of the worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchCreated {
+    file: Option<String>,
+    snapshot: Option<SnapshotId>,
+}
+
+// Never lose work: a file of the worktree that the patch replaces (after Overwrite) is copied
+// first. Outside the worktree, and inside `.git`, the Overwrite question is all there is, as in
+// IntelliJ.
+fn copy_before_overwriting(
+    repo: &Path,
+    repo_dir: &Path,
+    file: &Path,
+) -> Result<Option<SnapshotId>, GitError> {
+    let io = |error: std::io::Error| GitError::Io(error.to_string());
+    if std::fs::symlink_metadata(file).is_err() {
+        return Ok(None);
+    }
+    let (Some(folder), Some(name)) = (file.parent(), file.file_name()) else {
+        return Ok(None);
+    };
+    let root = std::fs::canonicalize(repo).map_err(io)?;
+    let folder = std::fs::canonicalize(folder).map_err(io)?;
+    let Ok(inside) = folder.strip_prefix(&root) else {
+        return Ok(None);
+    };
+    let relative = inside.join(name).to_string_lossy().into_owned();
+    if crate::snapshots::check_path(repo, &relative).is_err() {
+        return Ok(None);
+    }
+    crate::snapshots::create(repo_dir, repo, &[relative], BEFORE_OVERWRITING_PATCH)
+        .map(Some)
+        .map_err(io)
+}
+
+// `FileUtil.expandUserHome` of the trimmed text (`getFileName`, `getBaseDirName`).
+fn expand_home(path: &str) -> String {
+    let path = path.trim();
+    let home = || std::env::var("HOME").unwrap_or_default();
+    if path == "~" {
+        return home();
+    }
+    match path.strip_prefix("~/") {
+        Some(rest) => format!("{}/{rest}", home()),
+        None => path.to_string(),
+    }
+}
+
+// Copy as Patch and Create Patch. It saves the diff window first (so its unsaved text goes in, as
+// IntelliJ saves the documents). Writing a file takes the repository's lock like every command that
+// writes files (the default folder is the worktree); the clipboard only reads. `expected_repo` is
+// the repository the changes were read from, which may no longer be the open one: the patch is
+// still made from it.
+#[tauri::command]
+pub async fn patch_create(
+    entries: Vec<PatchEntry>,
+    options: CreateOptions,
+    to: PatchTarget,
+    remember: bool,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let repo = PathBuf::from(&expected_repo);
+    let data = data_dir_of(&app, &repo)?;
+    let base = base_dir(&app)?;
+    let root = repo.clone();
+    let title = CREATING_PATCH.to_string();
+    let kind = match &to {
+        PatchTarget::File { .. } => TaskKind::Write,
+        PatchTarget::Clipboard => TaskKind::Read,
+    };
+    Ok(state.tasks.start(&root, kind, title, move |_| {
+        create_patch(
+            &base,
+            &repo,
+            &data,
+            &entries,
+            &options,
+            &to,
+            remember,
+            crate::log::commands::copy_to_clipboard,
+        )
+    }))
+}
+
+// What Patch File Settings starts with, for the repository the changes are in.
+#[tauri::command]
+pub fn patch_settings_get(repo: String, app: AppHandle) -> Result<PatchDefaults, ApiError> {
+    let data = data_dir_of(&app, Path::new(&repo))?;
+    Ok(settings::patch_defaults(&base_dir(&app)?, &data))
+}
+
+// `PATCH_STORAGE_LOCATION` and `DETECT_PATCH_ON_THE_FLY`, which belong to the app.
+#[tauri::command]
+pub fn patch_app_settings_get(app: AppHandle) -> Result<AppPatch, ApiError> {
+    Ok(settings::app_patch(&base_dir(&app)?))
+}
+
+// The folder of the patch chosen in `Select Patch File`.
+#[tauri::command]
+pub fn patch_storage_set(folder: String, app: AppHandle) -> Result<(), ApiError> {
+    settings::remember_patch_storage(&base_dir(&app)?, Path::new(&folder))
+        .map_err(|error| failed(error.to_string()))
+}
+
+// `Analyze and apply patch from clipboard on the fly`.
+#[tauri::command]
+pub fn patch_on_the_fly_set(on: bool, app: AppHandle) -> Result<(), ApiError> {
+    settings::save_detect_patch_on_the_fly(&base_dir(&app)?, on)
+        .map_err(|error| failed(error.to_string()))
+}
+
+// `Don't ask again` of `Successfully created patch`.
+#[tauri::command]
+pub fn patch_show_in_finder_set(repo: String, show: bool, app: AppHandle) -> Result<(), ApiError> {
+    let data = data_dir_of(&app, Path::new(&repo))?;
+    settings::save_show_patch_in_finder(&data, show).map_err(|error| failed(error.to_string()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchPaths {
+    file: String,
+    file_exists: bool,
+    base: String,
+    base_exists: bool,
+}
+
+// The `To file:` and `Base path:` fields as Patch File Settings checks them (`File.exists`).
+#[tauri::command]
+pub fn patch_paths(file: String, base: String) -> PatchPaths {
+    let file = expand_home(&file);
+    let base = expand_home(&base);
+    let exists = |path: &str| !path.is_empty() && Path::new(path).exists();
+    PatchPaths {
+        file_exists: exists(&file),
+        base_exists: exists(&base),
+        file,
+        base,
+    }
+}
+
+fn shelf_io(error: std::io::Error) -> GitError {
+    GitError::Io(error.to_string())
+}
+
+// Whether `repo` is still the open repository, for a task that started on it.
+fn still_open(app: &AppHandle, repo: &Path) -> bool {
+    is_open(&app.state::<AppState>(), repo)
+}
+
+fn is_open(state: &AppState, repo: &Path) -> bool {
+    let open = state.repo.lock().unwrap();
+    open.as_ref().is_some_and(|open| open.path == repo)
+}
+
+// `Shelve Changes...` (`ShelveChangesCommitExecutor`). It saves the diff window first and works
+// under the repository's lock. `expected_repo` is the repository the dialog showed: if another one
+// is open, before the task starts or before it writes anything, nothing is done.
+#[tauri::command]
+pub async fn shelf_shelve(
+    entries: Vec<ShelveEntry>,
+    description: String,
+    rollback: bool,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let repo = PathBuf::from(&expected_repo);
+    if current_repo(&state)? != repo {
+        return Err(failed(SWITCHED_BEFORE_SHELVING.to_string()));
+    }
+    let data = data_dir_of(&app, &repo)?;
+    let root = repo.clone();
+    let title = SHELVING.to_string();
+    Ok(state.tasks.start(&root, TaskKind::Write, title, move |_| {
+        let result = shelve(&repo, &data, &entries, &description, rollback, || {
+            still_open(&app, &repo)
+        });
+        repo_changed(&app);
+        result
+    }))
+}
+
+// `Shelve Silently` (rollback) and `Save To Shelf` (none): one list per changelist, named after it
+// (`ShelveChangesManager.shelveSilentlyUnderProgress`).
+#[tauri::command]
+pub async fn shelf_shelve_silently(
+    lists: Vec<ShelveGroup>,
+    rollback: bool,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let repo = PathBuf::from(&expected_repo);
+    if current_repo(&state)? != repo {
+        return Err(failed(SWITCHED_BEFORE_SHELVING.to_string()));
+    }
+    let data = data_dir_of(&app, &repo)?;
+    let root = repo.clone();
+    let title = SHELVING_SILENTLY.to_string();
+    Ok(state.tasks.start(&root, TaskKind::Write, title, move |_| {
+        let result = shelve_silently(&repo, &data, &lists, rollback, || still_open(&app, &repo));
+        repo_changed(&app);
+        result
+    }))
+}
+
+// The Shelf tab. Every command that changes the store saves the diff window first and works under
+// the repository's lock on `expected_repo`, the repository the tab showed: with another one open,
+// before the task starts or inside it, nothing is done.
+const LOADING_SHELF: &str = "Loading...";
+// `shelve.deletion.title`, `shelve.undo.deletion`, `vcs.shelf.action.restore.text`,
+// `action.ShelvedChanges.Rename.text`, `unshelve.changes.progress.title`, `looking.for.patch.files`,
+// `import.patches.into.shelf` and `patch.import.to.shelf.progress.title`.
+const DELETING_SHELF: &str = "Shelf Deletion";
+const UNDOING_SHELF_DELETION: &str = "Undo Shelf Deletion";
+const RESTORING_SHELF: &str = "Restore";
+const RENAMING_SHELF: &str = "Rename...";
+const UNSHELVING: &str = "Unshelving Changes…";
+const LOOKING_FOR_PATCHES: &str = "Looking for Patch Files…";
+const IMPORTING_PATCHES: &str = "Import Patches into Shelf…";
+const IMPORTING_TO_SHELF: &str = "Import Patch to Shelf";
+// rama's own (decision 5 of the overview).
+const IMPORTING_IDEA_SHELF: &str = "Import from .idea";
+const SWITCHED_BEFORE_SHELF: &str =
+    "Another repository was opened: the shelf of the previous one was not changed";
+
+fn start_on_shelf<T: Serialize + 'static>(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    expected_repo: &str,
+    title: &str,
+    work: impl FnOnce(&Path, &Path) -> Result<T, GitError> + Send + 'static,
+) -> Result<TaskId, ApiError> {
+    let repo = PathBuf::from(expected_repo);
+    if current_repo(state)? != repo {
+        return Err(failed(SWITCHED_BEFORE_SHELF.to_string()));
+    }
+    let data = data_dir_of(app, &repo)?;
+    let app = app.clone();
+    let root = repo.clone();
+    Ok(state
+        .tasks
+        .start(&root, TaskKind::Write, title.to_string(), move |_| {
+            if !still_open(&app, &repo) {
+                return Err(GitError::Io(SWITCHED_BEFORE_SHELF.to_string()));
+            }
+            let result = work(&repo, &data);
+            repo_changed(&app);
+            result
+        }))
+}
+
+// Every list with its changes, newest first. Only the app's own store is read.
+#[tauri::command]
+pub async fn shelf_lists(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
+    read(&app, &state, LOADING_SHELF, |repo| {
+        Ok(shelf::tab::entries(repo.data))
+    })
+}
+
+// `Show Diff` and `Compare with Local` of one file of a list. It writes nothing.
+#[tauri::command]
+pub async fn shelf_sides(
+    name: String,
+    file: ShelfFile,
+    with_local: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, LOADING_REVISIONS, move |repo| {
+        shelf::tab::sides(repo.data, repo.path, &name, &file, with_local).map_err(GitError::Io)
+    })
+}
+
+// `gatherPatchFiles` over what the chooser gave: files and folders the user picked. Only read.
+#[tauri::command]
+pub async fn shelf_find_patches(
+    paths: Vec<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, LOOKING_FOR_PATCHES, move |_| {
+        let chosen: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        let found = shelf::tab::find_patches(&chosen);
+        Ok(found
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>())
+    })
+}
+
+// `Delete` of the tab: whole lists and the files chosen in others. No question is asked.
+#[tauri::command]
+pub async fn shelf_delete(
+    lists: Vec<String>,
+    files: Vec<ListFiles>,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start_on_shelf(
+        &app,
+        &state,
+        &expected_repo,
+        DELETING_SHELF,
+        move |_, data| {
+            shelf::tab::delete(data, &lists, &files, SystemTime::now()).map_err(shelf_io)
+        },
+    )
+}
+
+// `Undo` of `Shelf Deletion`: how many lists could not come back.
+#[tauri::command]
+pub async fn shelf_undo_delete(
+    lists: Vec<Restorable>,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start_on_shelf(
+        &app,
+        &state,
+        &expected_repo,
+        UNDOING_SHELF_DELETION,
+        move |_, data| shelf::tab::undo_delete(data, &lists).map_err(shelf_io),
+    )
+}
+
+// `Restore` of the deleted lists, dated now.
+#[tauri::command]
+pub async fn shelf_restore(
+    names: Vec<String>,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start_on_shelf(
+        &app,
+        &state,
+        &expected_repo,
+        RESTORING_SHELF,
+        move |_, data| shelf::tab::restore(data, &names, SystemTime::now()).map_err(shelf_io),
+    )
+}
+
+// The inline `Rename...`: the description only.
+#[tauri::command]
+pub async fn shelf_rename(
+    name: String,
+    description: String,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start_on_shelf(
+        &app,
+        &state,
+        &expected_repo,
+        RENAMING_SHELF,
+        move |_, data| shelf::rename(data, &name, &description).map_err(shelf_io),
+    )
+}
+
+// After an unshelve with `Remove successfully applied files from the shelf`: the files of the
+// list that went through are recycled.
+#[tauri::command]
+pub async fn shelf_recycle(
+    name: String,
+    files: Vec<ShelfFile>,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start_on_shelf(&app, &state, &expected_repo, UNSHELVING, move |_, data| {
+        shelf::unshelve::recycle_applied(data, &name, &files, SystemTime::now())
+    })
+}
+
+// `Import Patches…`: the patch files found, each one copied into a new list.
+#[tauri::command]
+pub async fn shelf_import_patches(
+    files: Vec<String>,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start_on_shelf(
+        &app,
+        &state,
+        &expected_repo,
+        IMPORTING_PATCHES,
+        move |_, data| {
+            let files: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
+            Ok(shelf::tab::import_patches(data, &files))
+        },
+    )
+}
+
+// `Import from .idea` (decision 5 of the overview): the lists of the project's `.idea/shelf`
+// not imported before. `.idea` is only read.
+#[tauri::command]
+pub async fn shelf_import_idea(
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start_on_shelf(
+        &app,
+        &state,
+        &expected_repo,
+        IMPORTING_IDEA_SHELF,
+        move |repo, data| shelf::import(data, repo).map_err(shelf_io),
+    )
+}
+
+// `Import to Shelf` of the Apply Patch dialog: the included files (by their planned path), mapped.
+#[tauri::command]
+pub async fn shelf_import_to_shelf(
+    source: PatchInput,
+    mapping: PathMapping,
+    selected: Vec<String>,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    start_on_shelf(
+        &app,
+        &state,
+        &expected_repo,
+        IMPORTING_TO_SHELF,
+        move |repo, data| {
+            shelf::tab::import_to_shelf(data, repo, &source, &mapping, &selected)
+                .map_err(GitError::Io)
+        },
+    )
+}
+
+// `Create Patch...` and `Copy as Patch to Clipboard` of the tab, as `patch_create` does them.
+#[tauri::command]
+pub async fn shelf_patch_create(
+    chosen: Vec<ListFiles>,
+    options: CreateOptions,
+    to: PatchTarget,
+    remember: bool,
+    expected_repo: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let repo = PathBuf::from(&expected_repo);
+    let data = data_dir_of(&app, &repo)?;
+    let base = base_dir(&app)?;
+    let root = repo.clone();
+    let title = CREATING_PATCH.to_string();
+    let kind = match &to {
+        PatchTarget::File { .. } => TaskKind::Write,
+        PatchTarget::Clipboard => TaskKind::Read,
+    };
+    Ok(state.tasks.start(&root, kind, title, move |_| {
+        let text = || {
+            let sources = shelf::tab::patch_sources(&data, &repo, &chosen).map_err(GitError::Io)?;
+            create::text_of_sources(&repo, &sources, &options).map_err(patch_failure)
+        };
+        deliver_patch(
+            &base,
+            &repo,
+            &data,
+            &to,
+            remember,
+            text,
+            crate::log::commands::copy_to_clipboard,
+        )
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1716,8 +2581,14 @@ mod tests {
     }
 
     // Reads change nothing: there is nothing to save beforehand.
-    const READS: [&str; 30] = [
+    const READS: [&str; 36] = [
         "merge_message",
+        "shelf_lists",
+        "shelf_sides",
+        "shelf_find_patches",
+        "stash_list",
+        "stash_changes",
+        "stash_file_sides",
         "staging_three_sides",
         "conflicts_session",
         "conflict_sides",
@@ -1764,7 +2635,7 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('(').unwrap()])
             .collect();
-        assert_eq!(commands.len(), 79, "{commands:?}");
+        assert_eq!(commands.len(), 107, "{commands:?}");
         let unsaved = |name: &&&str| {
             !READS.contains(name) && !ELSEWHERE.contains(name) && !WHILE_SAVING.contains(name)
         };
@@ -1826,5 +2697,322 @@ mod tests {
         assert_eq!(written.copy, None);
         assert_eq!(fs::read(repo.path().join("a.txt")).unwrap(), b"one\n");
         assert!(reverted.copy.is_some());
+    }
+    // `PatchWriter.writePatches`: UTF-8 with `\n` whatever the file has, the `Subject:` header, the
+    // folder and `To clipboard` remembered, and the clipboard getting the same text.
+    #[test]
+    fn patch_create_writes_utf8_with_lf() {
+        use super::*;
+        use crate::patch::create::{PatchEntry, Version};
+        use crate::test_support::TempRepo;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let repo = TempRepo::new();
+        repo.commit(".gitattributes", b"* -text\n", "attributes");
+        repo.commit("a.txt", "uno\r\ndos\r\n".as_bytes(), "a");
+        fs::write(repo.path().join("a.txt"), "uno\r\ndós ñ\r\n").unwrap();
+        let app = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        let file = out.path().join("patches/fix.patch");
+        let entries = [PatchEntry {
+            path: "a.txt".to_string(),
+            old_path: None,
+            before: Some(Version::Head),
+            after: Some(Version::Disk),
+        }];
+        let options = CreateOptions {
+            base_path: repo.path().display().to_string(),
+            reverse: false,
+            message: Some("Fix ñ".to_string()),
+        };
+        let to_file = PatchTarget::File {
+            path: file.display().to_string(),
+        };
+        let unused = |_: &str| -> std::io::Result<()> { panic!("not the clipboard") };
+
+        let written = create_patch(
+            app.path(),
+            repo.path(),
+            data.path(),
+            &entries,
+            &options,
+            &to_file,
+            true,
+            unused,
+        )
+        .unwrap();
+
+        let bytes = fs::read(&file).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert_eq!(
+            written.file.as_deref(),
+            Some(file.display().to_string().as_str())
+        );
+        assert_eq!(written.snapshot, None);
+        assert!(!bytes.contains(&b'\r'), "{text}");
+        assert!(
+            text.starts_with("Subject: [PATCH] Fix ñ\n---\nIndex: a.txt\n"),
+            "{text}"
+        );
+        assert!(text.contains("\n-dos\n+dós ñ\n"), "{text}");
+        let defaults = settings::patch_defaults(app.path(), data.path());
+        assert_eq!(
+            defaults.folder,
+            Some(out.path().join("patches").display().to_string())
+        );
+        assert!(!defaults.to_clipboard);
+
+        let mut copied = String::new();
+        let none = create_patch(
+            app.path(),
+            repo.path(),
+            data.path(),
+            &entries,
+            &options,
+            &PatchTarget::Clipboard,
+            true,
+            |text: &str| {
+                copied = text.to_string();
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(none.file, None);
+        assert_eq!(copied, text);
+        assert!(settings::patch_defaults(app.path(), data.path()).to_clipboard);
+
+        // Copy as Patch remembers nothing, and a folder that is not a repository root is refused
+        // before anything is read or written.
+        let silent = TempDir::new().unwrap();
+        create_patch(
+            app.path(),
+            repo.path(),
+            silent.path(),
+            &entries,
+            &options,
+            &PatchTarget::Clipboard,
+            false,
+            |_: &str| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            settings::patch_defaults(app.path(), silent.path())
+                .folder
+                .as_deref(),
+            defaults.folder.as_deref()
+        );
+        assert!(!settings::patch_defaults(app.path(), silent.path()).to_clipboard);
+        fs::create_dir(repo.path().join("sub")).unwrap();
+        let elsewhere = out.path().join("elsewhere.patch");
+        let refused = create_patch(
+            app.path(),
+            &repo.path().join("sub"),
+            data.path(),
+            &entries,
+            &options,
+            &PatchTarget::File {
+                path: elsewhere.display().to_string(),
+            },
+            true,
+            unused,
+        );
+        assert!(refused.is_err());
+        assert!(!elsewhere.exists());
+    }
+
+    // Never lose work: a patch written over a file of the worktree leaves a recoverable copy of
+    // that file first. Outside the worktree the Overwrite question is all there is.
+    #[test]
+    fn overwriting_a_file_of_the_worktree_keeps_a_copy_first() {
+        use super::*;
+        use crate::patch::create::{PatchEntry, Version};
+        use crate::snapshots;
+        use crate::test_support::TempRepo;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one\n", "a");
+        repo.commit("notes.patch", b"my notes\n", "notes");
+        fs::write(repo.path().join("a.txt"), b"two\n").unwrap();
+        let app = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let entries = [PatchEntry {
+            path: "a.txt".to_string(),
+            old_path: None,
+            before: Some(Version::Head),
+            after: Some(Version::Disk),
+        }];
+        let options = CreateOptions::default();
+        let none = |_: &str| -> std::io::Result<()> { panic!("not the clipboard") };
+        let target = |path: &Path| PatchTarget::File {
+            path: path.display().to_string(),
+        };
+
+        let inside = repo.path().join("notes.patch");
+        let created = create_patch(
+            app.path(),
+            repo.path(),
+            data.path(),
+            &entries,
+            &options,
+            &target(&inside),
+            true,
+            none,
+        )
+        .unwrap();
+
+        let snapshot = created.snapshot.expect("a copy of notes.patch");
+        assert!(fs::read_to_string(&inside).unwrap().contains("+two"));
+        let kept = snapshots::list(data.path());
+        assert_eq!(kept[0].id, snapshot);
+        assert_eq!(kept[0].reason, BEFORE_OVERWRITING_PATCH);
+        assert_eq!(kept[0].entries.len(), 1);
+        assert_eq!(kept[0].entries[0].path, "notes.patch");
+        snapshots::restore(data.path(), repo.path(), &snapshot).unwrap();
+        assert_eq!(fs::read(&inside).unwrap(), b"my notes\n");
+
+        // A new file in the worktree has nothing to keep, and one outside it is not copied.
+        let fresh = repo.path().join("fresh.patch");
+        let outside = TempDir::new().unwrap();
+        let elsewhere = outside.path().join("x.patch");
+        fs::write(&elsewhere, b"old").unwrap();
+        for file in [&fresh, &elsewhere] {
+            let created = create_patch(
+                app.path(),
+                repo.path(),
+                data.path(),
+                &entries,
+                &options,
+                &target(file),
+                true,
+                none,
+            )
+            .unwrap();
+            assert_eq!(created.snapshot, None, "{}", file.display());
+            assert_eq!(
+                created.file.as_deref(),
+                Some(file.display().to_string().as_str())
+            );
+        }
+        // The restore above keeps its own copy; the patch made only the first one.
+        let made = snapshots::list(data.path())
+            .into_iter()
+            .filter(|snapshot| snapshot.reason == BEFORE_OVERWRITING_PATCH)
+            .count();
+        assert_eq!(made, 1);
+
+        // P19: through a linked folder the copy is of the file the link reaches in the worktree;
+        // a file inside `.git` is not copied.
+        repo.commit("sub/kept.patch", b"kept\n", "kept");
+        std::os::unix::fs::symlink(repo.path().join("sub"), repo.path().join("link")).unwrap();
+        let in_git = repo.path().join(".git/x.patch");
+        fs::write(&in_git, b"old").unwrap();
+        let through_link = repo.path().join("link/kept.patch");
+        let mut copied = Vec::new();
+        for file in [&through_link, &in_git] {
+            let created = create_patch(
+                app.path(),
+                repo.path(),
+                data.path(),
+                &entries,
+                &options,
+                &target(file),
+                true,
+                none,
+            )
+            .unwrap();
+            copied.push(created.snapshot);
+        }
+        let linked = copied[0].clone().expect("a copy of sub/kept.patch");
+        let taken = snapshots::list(data.path());
+        let taken = taken.iter().find(|snapshot| snapshot.id == linked).unwrap();
+        assert_eq!(taken.entries.len(), 1);
+        assert_eq!(taken.entries[0].path, "sub/kept.patch");
+        assert_eq!(copied[1], None);
+        assert_ne!(fs::read(&in_git).unwrap(), b"old");
+    }
+
+    // Writing a file takes the repository's lock, as every command that writes files does; the
+    // clipboard only reads.
+    #[test]
+    fn patch_create_writes_under_the_repository_lock() {
+        let source = include_str!("vcs_commands.rs");
+        let start = source.find("pub async fn patch_create(").unwrap();
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+
+        assert!(
+            body.contains("PatchTarget::File { .. } => TaskKind::Write"),
+            "{body}"
+        );
+        assert!(
+            body.contains("PatchTarget::Clipboard => TaskKind::Read"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn patch_paths_expand_the_home_folder() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(super::expand_home("~"), home);
+        assert_eq!(super::expand_home(" ~/x.patch "), format!("{home}/x.patch"));
+        assert_eq!(super::expand_home("/a/~/b"), "/a/~/b");
+        assert_eq!(super::expand_home("~other/b"), "~other/b");
+    }
+
+    // The check both commands give `shelve` and `shelve_silently`: a shelve started on one
+    // repository writes nothing once another one is open.
+    #[test]
+    fn a_shelve_started_before_another_repository_was_opened_writes_nothing() {
+        use super::*;
+        use crate::test_support::TempRepo;
+        use tempfile::TempDir;
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one\n", "a");
+        std::fs::write(repo.path().join("a.txt"), b"two\n").unwrap();
+        let other = TempRepo::new();
+        let data = TempDir::new().unwrap();
+        let state = AppState::default();
+        let open = |path: &Path| {
+            *state.repo.lock().unwrap() = Some(crate::commands::RepoSession {
+                path: path.to_path_buf(),
+            });
+        };
+        let entry = ShelveEntry {
+            path: "a.txt".to_string(),
+            old_path: None,
+            selection: None,
+        };
+        open(repo.path());
+        assert!(is_open(&state, repo.path()));
+
+        open(other.path());
+        let shelved = shelve(repo.path(), data.path(), &[entry], "Work", true, || {
+            is_open(&state, repo.path())
+        });
+
+        assert_eq!(
+            shelved.unwrap_err(),
+            GitError::Io(SWITCHED_BEFORE_SHELVING.to_string())
+        );
+        assert!(crate::shelf::list(data.path()).is_empty());
+        assert_eq!(std::fs::read(repo.path().join("a.txt")).unwrap(), b"two\n");
+    }
+
+    // Both commands are writes under the lock, tied to the repository they were asked for.
+    #[test]
+    fn shelving_runs_under_the_repository_lock_on_the_expected_repository() {
+        let source = include_str!("vcs_commands.rs");
+        for name in ["shelf_shelve", "shelf_shelve_silently"] {
+            let start = source.find(&format!("pub async fn {name}(")).unwrap();
+            let body = &source[start..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            assert!(body.contains("TaskKind::Write"), "{name}");
+            assert!(body.contains("current_repo(&state)? != repo"), "{name}");
+            assert!(body.contains("still_open(&app, &repo)"), "{name}");
+        }
     }
 }

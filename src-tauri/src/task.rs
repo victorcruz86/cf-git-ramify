@@ -177,6 +177,11 @@ impl TaskContext {
         self.shared.cherry_pick_suffix.load(Ordering::SeqCst)
     }
 
+    // The progress text of the task (`ProgressIndicator.setText`), until git reports its own.
+    pub fn set_text(&self, text: &str) {
+        self.report(text.to_string(), None);
+    }
+
     pub fn check_cancelled(&self) -> Result<(), GitError> {
         let expired = self
             .task

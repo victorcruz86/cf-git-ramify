@@ -1,6 +1,10 @@
 // Save the local changes before an operation and give them back afterwards, like
-// `GitPreservingProcess`. They are saved in the stash: a saved change stays in the repository and
-// survives a shutdown.
+// `GitPreservingProcess` with `GitChangesSaver`. Two savers, as `Clean working tree using:` says
+// for the repository (`GitSaveChangesPolicy`): the stash (`GitStashChangesSaver`) and the shelf
+// (`GitShelveChangesSaver`, `VcsShelveChangesSaver`), the default. Either way a saved change stays
+// in the repository's data or in git, and survives a shutdown.
+pub(crate) mod shelve;
+
 use std::collections::HashSet;
 use std::fs;
 use std::io;
@@ -12,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::branches;
 use crate::commit;
 use crate::git::{self, GitError};
+use crate::settings::{self, CleanTree};
 use crate::snapshots;
 use crate::storage;
 use crate::task::TaskContext;
@@ -26,11 +31,46 @@ pub(crate) const UNTRACKED_FILES: &str = "untracked working tree files would be 
 // Reading, changing and writing must not cross with the `pending` of opening the repository.
 static PENDING_LOCK: Mutex<()> = Mutex::new(());
 
+// What was saved, by which saver, and how to find it again: the stash entry by its hash, or the
+// shelved lists by their names in the store. A record without `kind` is a stash entry of an earlier
+// build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Saved {
+    #[serde(default = "stash_kind")]
+    pub kind: CleanTree,
+    // The stash entry; empty for a shelf.
+    #[serde(default)]
     pub sha: String,
     pub message: String,
+    // One list per changelist (`myShelvedLists`); empty for a stash.
+    #[serde(default)]
+    pub lists: Vec<SavedList>,
+}
+
+fn stash_kind() -> CleanTree {
+    CleanTree::Stash
+}
+
+impl Saved {
+    pub fn stash(sha: String, message: String) -> Self {
+        Self {
+            kind: CleanTree::Stash,
+            sha,
+            message,
+            lists: Vec::new(),
+        }
+    }
+}
+
+// A system list of the shelf: its name in the store, what the user sees (`<message> [<list>]`) and
+// the changelist it came from, which it goes back to (`None` with the staging area).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedList {
+    pub name: String,
+    pub description: String,
+    pub changelist: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -50,8 +90,9 @@ pub enum RestoreOutcome {
     Failed(String),
 }
 
-// What was saved and has not come back yet. It lives in the repository's data folder because the
-// notification does not survive a shutdown, and without it nothing in the app finds the entry.
+// What an earlier build saved and has not come back yet, in the repository's data folder: the
+// notification did not survive a shutdown. This build writes none (decision 10); the old ones
+// keep `Restore Changes` until their entry comes back or is gone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pending {
@@ -94,6 +135,18 @@ fn change_pending(data: &Path, change: impl FnOnce(&mut Vec<Pending>)) {
     }
 }
 
+// What an earlier build recorded, for the tests: this build writes no record.
+#[cfg(test)]
+pub(crate) fn record_earlier_build(data: &Path, sha: &str, title: &str, message: &str) {
+    change_pending(data, |list| {
+        list.push(Pending {
+            sha: sha.to_string(),
+            title: title.to_string(),
+            message: message.to_string(),
+        });
+    });
+}
+
 // What was recorded that is still in the stash. What is no longer there, someone took out, and it is forgotten.
 pub fn pending(repo: &Path, data: &Path) -> Result<Vec<Pending>, GitError> {
     let output = git::run(repo, &["stash", "list", "--format=%H"])?;
@@ -106,8 +159,13 @@ pub fn pending(repo: &Path, data: &Path) -> Result<Vec<Pending>, GitError> {
 }
 
 // `restore`, and the record is forgotten if there is nothing left to give back. Without the stage the entry is
-// kept, but what was on disk came back: there is nothing to offer on opening.
+// kept, but what was on disk came back: there is nothing to offer on opening. A shelf is unshelved;
+// it leaves no record.
 pub fn restore_tracked(ctx: &TaskContext, data: &Path, saved: &Saved) -> RestoreOutcome {
+    if saved.kind == CleanTree::Shelve {
+        return shelve::unshelve_saved(ctx, data, saved)
+            .unwrap_or_else(|error| RestoreOutcome::Failed(branches::text_of(error)));
+    }
     let outcome = restore(ctx, saved)
         .unwrap_or_else(|error| RestoreOutcome::Failed(branches::text_of(error)));
     if matches!(
@@ -153,7 +211,7 @@ pub fn save(ctx: &TaskContext, title: &str) -> Result<Option<Saved>, GitError> {
 }
 
 // `GitPreservingProcess`: the title with the time.
-fn dated(title: &str) -> String {
+pub fn dated(title: &str) -> String {
     format!("Uncommitted changes before {title} at {}", now_text())
 }
 
@@ -163,7 +221,7 @@ fn save_as(ctx: &TaskContext, message: &str) -> Result<Option<Saved>, GitError> 
     let message = message.to_string();
     ctx.git_to_the_end(&["stash", "save", &message])?;
     let sha = stash_top(ctx)?.filter(|top| Some(top) != before.as_ref());
-    Ok(sha.map(|sha| Saved { sha, message }))
+    Ok(sha.map(|sha| Saved::stash(sha, message)))
 }
 
 pub(crate) fn has_unmerged(ctx: &TaskContext) -> Result<bool, GitError> {
@@ -171,7 +229,7 @@ pub(crate) fn has_unmerged(ctx: &TaskContext) -> Result<bool, GitError> {
     Ok(!output.stdout.is_empty())
 }
 
-fn failed_text(error: GitError) -> Result<String, GitError> {
+pub(crate) fn failed_text(error: GitError) -> Result<String, GitError> {
     match error {
         GitError::Failed { stderr, stdout, .. } => {
             Ok(format!("{}\n{}", stderr.trim(), stdout.trim())
@@ -226,26 +284,80 @@ pub fn save_with_index_copy_as(
 ) -> Result<Option<Saved>, GitError> {
     ctx.check_cancelled()?;
     if !ctx.staging_area() {
-        let paths = snapshots::index_only(repo)?;
-        if !paths.is_empty() {
-            snapshots::create_for_index(data, repo, &paths, title).map_err(|error| {
-                GitError::Io(format!(
-                    "Could not save the backup copy and nothing was touched: {error}"
-                ))
-            })?;
-        }
+        keep_index_only(repo, data, title)?;
     }
-    let saved = save_as(ctx, message)?;
-    if let Some(Saved { sha, message }) = &saved {
-        change_pending(data, |list| {
-            list.push(Pending {
-                sha: sha.clone(),
-                title: title.to_string(),
-                message: message.clone(),
-            });
-        });
+    // Decision 10: no record for `Restore Changes`; the entry is reached through the Stash tab.
+    save_as(ctx, message)
+}
+
+fn backup_failed(error: io::Error) -> GitError {
+    GitError::Io(format!(
+        "Could not save the backup copy and nothing was touched: {error}"
+    ))
+}
+
+// What exists only in the stage, which the saver does not give back, goes to a copy first.
+fn keep_index_only(repo: &Path, data: &Path, title: &str) -> Result<(), GitError> {
+    let paths = snapshots::index_only(repo)?;
+    if !paths.is_empty() {
+        snapshots::create_for_index(data, repo, &paths, title).map_err(backup_failed)?;
     }
-    Ok(saved)
+    Ok(())
+}
+
+// `GitVcsSettings.getSaveChangesPolicy`: the repository's `Clean working tree using:`.
+pub fn saver(data: &Path) -> CleanTree {
+    settings::load_repo(data).clean_tree
+}
+
+// `GitChangesSaver.getSaver` with the repository's saver, and the title with the time.
+pub fn save_local(
+    ctx: &TaskContext,
+    repo: &Path,
+    data: &Path,
+    title: &str,
+) -> Result<Option<Saved>, GitError> {
+    save_local_as(ctx, repo, data, title, &dated(title))
+}
+
+// The same with the message given (the rebase's has no time).
+pub fn save_local_as(
+    ctx: &TaskContext,
+    repo: &Path,
+    data: &Path,
+    title: &str,
+    message: &str,
+) -> Result<Option<Saved>, GitError> {
+    save_local_keeping(ctx, repo, data, title, message).map_err(|failed| failed.error)
+}
+
+// A save that failed, and what it saved all the same: the shelf lists when the rollback after
+// them failed partway. Whoever reports it can still point at them (`View saved changes…`).
+#[derive(Debug)]
+pub struct SaveFailed {
+    pub error: GitError,
+    // Boxed: the error stays small on the path that does not fail.
+    pub saved: Option<Box<Saved>>,
+}
+
+impl From<GitError> for SaveFailed {
+    fn from(error: GitError) -> Self {
+        Self { error, saved: None }
+    }
+}
+
+// `save_local_as`, for whoever shows what a failed save left saved.
+pub fn save_local_keeping(
+    ctx: &TaskContext,
+    repo: &Path,
+    data: &Path,
+    title: &str,
+    message: &str,
+) -> Result<Option<Saved>, SaveFailed> {
+    match saver(data) {
+        CleanTree::Stash => Ok(save_with_index_copy_as(ctx, repo, data, title, message)?),
+        CleanTree::Shelve => shelve::shelve_as(ctx, repo, data, title, message),
+    }
 }
 
 // The entry is looked up by its hash: what someone else saves in the meantime changes the positions. If
@@ -523,6 +635,13 @@ mod tests {
         .unwrap()
     }
 
+    // What an earlier build saved: a stash entry and its record.
+    fn earlier(repo: &TempRepo, runner: &Runner, data: &Path) -> Saved {
+        let saved = save_tracked(repo, runner, data);
+        record_earlier_build(data, &saved.sha, "Checkout", &saved.message);
+        saved
+    }
+
     fn restore_recorded(
         repo: &TempRepo,
         runner: &Runner,
@@ -535,13 +654,25 @@ mod tests {
         })
     }
 
+    // Decision 10: `Restore Changes` is only for what earlier builds recorded.
     #[test]
-    fn saved_changes_stay_recorded_with_their_title_until_they_return() {
+    fn this_build_records_nothing() {
+        let repo = with_change();
+        let data = TempDir::new().unwrap();
+
+        save_tracked(&repo, &runner(), data.path());
+
+        assert_eq!(pending(repo.path(), data.path()), Ok(Vec::new()));
+        assert!(!data.path().join(PENDING_FILE).exists());
+    }
+
+    #[test]
+    fn an_earlier_record_stays_with_its_title_until_it_returns() {
         let repo = with_change();
         let data = TempDir::new().unwrap();
         let runner = runner();
 
-        let saved = save_tracked(&repo, &runner, data.path());
+        let saved = earlier(&repo, &runner, data.path());
 
         let expected = Pending {
             sha: saved.sha.clone(),
@@ -574,7 +705,7 @@ mod tests {
         let repo = with_change();
         let data = TempDir::new().unwrap();
         let runner = runner();
-        let saved = save_tracked(&repo, &runner, data.path());
+        let saved = earlier(&repo, &runner, data.path());
         repo.commit("a.txt", b"other\n", "two");
 
         let outcome = restore_recorded(&repo, &runner, data.path(), saved);
@@ -587,7 +718,7 @@ mod tests {
     fn popped_by_hand_is_no_longer_recorded() {
         let repo = with_change();
         let data = TempDir::new().unwrap();
-        save_tracked(&repo, &runner(), data.path());
+        earlier(&repo, &runner(), data.path());
         repo.git(&["stash", "pop", "-q"]);
 
         assert_eq!(pending(repo.path(), data.path()), Ok(Vec::new()));
@@ -601,7 +732,7 @@ mod tests {
         let repo = with_change();
         let data = TempDir::new().unwrap();
         let runner = runner();
-        let saved = save_tracked(&repo, &runner, data.path());
+        let saved = earlier(&repo, &runner, data.path());
         repo.git(&["stash", "drop", "-q"]);
 
         let outcome = restore_recorded(&repo, &runner, data.path(), saved);
@@ -621,7 +752,7 @@ mod tests {
         let data = TempDir::new().unwrap();
         let runner = runner();
         runner.set_staging_area(true);
-        let saved = save_tracked(&repo, &runner, data.path());
+        let saved = earlier(&repo, &runner, data.path());
         repo.commit("a.txt", b"1\n2\nother\n", "two");
 
         let outcome = restore_recorded(&repo, &runner, data.path(), saved);
@@ -639,7 +770,7 @@ mod tests {
 
         save_tracked(&repo, &runner(), data.path());
 
-        assert_eq!(pending(repo.path(), data.path()).unwrap().len(), 1);
+        assert_eq!(pending(repo.path(), data.path()), Ok(Vec::new()));
         assert!(data.path().join(PENDING_CORRUPT).exists());
     }
 
@@ -672,5 +803,35 @@ mod tests {
             Ok(RestoreOutcome::Restored)
         );
         assert_eq!(read(&repo, "a.txt"), "local\n");
+    }
+
+    // A record of an earlier build has only the stash's hash; the shelf policy does not change it.
+    #[test]
+    fn a_pending_stash_from_an_earlier_build_still_restores() {
+        let repo = with_change();
+        repo.git(&[
+            "stash",
+            "save",
+            "-q",
+            "Uncommitted changes before Update at then",
+        ]);
+        let sha = repo.git(&["rev-parse", "stash@{0}"]).trim().to_string();
+        let data = TempDir::new().unwrap();
+        let message = "Uncommitted changes before Update at then";
+        let record =
+            format!("[{{\"sha\":\"{sha}\",\"title\":\"Update\",\"message\":\"{message}\"}}]");
+        fs::write(data.path().join(PENDING_FILE), record).unwrap();
+        assert_eq!(saver(data.path()), CleanTree::Shelve);
+
+        let found = pending(repo.path(), data.path()).unwrap();
+        assert_eq!(found.len(), 1);
+        let sent = format!("{{\"sha\":\"{sha}\",\"message\":\"{}\"}}", found[0].message);
+        let saved: Saved = serde_json::from_str(&sent).unwrap();
+        assert_eq!(saved.kind, CleanTree::Stash);
+        let outcome = restore_recorded(&repo, &runner(), data.path(), saved);
+
+        assert_eq!(outcome, RestoreOutcome::Restored);
+        assert_eq!(read(&repo, "a.txt"), "local\n");
+        assert_eq!(pending(repo.path(), data.path()), Ok(Vec::new()));
     }
 }
