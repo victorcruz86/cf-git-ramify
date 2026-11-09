@@ -35,8 +35,10 @@ pub fn read(repo: &Path, include_ignored: bool) -> Result<Vec<FileChange>, GitEr
         "--untracked-files=all",
         "--ignore-submodules=dirty",
     ];
+    // `matching`: an ignored folder comes once, as `dir/`, and not file by file (with
+    // `--untracked-files=all` the traditional mode lists every file under `node_modules`).
     if include_ignored {
-        args.push("--ignored");
+        args.push("--ignored=matching");
     }
     Ok(parse(&git::run(repo, &args)?))
 }
@@ -99,7 +101,6 @@ mod tests {
     use super::*;
     use crate::test_support::TempRepo;
     use std::fs;
-    use std::process::Command;
 
     fn write(repo: &TempRepo, file: &str, contents: &str) {
         let target = repo.path().join(file);
@@ -178,7 +179,7 @@ mod tests {
         repo.commit("a.txt", b"other\n", "other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"main\n", "main");
-        let merge = Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "other"])
             .output()
@@ -231,6 +232,29 @@ mod tests {
         assert_eq!(change.state, FileState::Ignored);
         assert!(!change.staged);
         assert!(!change.unstaged);
+    }
+
+    #[test]
+    fn an_ignored_folder_comes_once_as_a_folder() {
+        let repo = TempRepo::new();
+        repo.commit(".gitignore", b"build/\n*.o\n", "ignore");
+        write(&repo, "build/deep/a.txt", "1");
+        write(&repo, "build/b.txt", "2");
+        write(&repo, "src/c.o", "3");
+
+        let ignored: Vec<_> = read(repo.path(), true)
+            .unwrap()
+            .into_iter()
+            .map(|change| (change.path, change.state))
+            .collect();
+
+        assert_eq!(
+            ignored,
+            [
+                ("build/".to_string(), FileState::Ignored),
+                ("src/c.o".to_string(), FileState::Ignored)
+            ]
+        );
     }
 
     #[test]

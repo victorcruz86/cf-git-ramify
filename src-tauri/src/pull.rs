@@ -344,7 +344,6 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
-    use std::process::Command;
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
@@ -365,7 +364,7 @@ mod tests {
 
     fn bare() -> TempDir {
         let dir = TempDir::new().unwrap();
-        let status = Command::new("git")
+        let status = crate::test_support::git_command()
             .args(["init", "-q", "--bare", "-b", "main"])
             .arg(dir.path())
             .status()

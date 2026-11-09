@@ -81,6 +81,22 @@ impl LogFilter {
     }
 }
 
+// The names of the branches (and `HEAD`) the Branch filter values match, as the file history passes
+// them to git (`GitLogProvider.getBranchLikeFilterParameters`).
+pub fn matching_branches(store: &CommitStore, values: &[String]) -> Vec<String> {
+    let filter = LogFilter {
+        branches: values.to_vec(),
+        ..LogFilter::default()
+    };
+    let mut seen = HashSet::new();
+    filter
+        .branch_refs(store)
+        .into_iter()
+        .map(|git_ref| git_ref.name.to_string())
+        .filter(|name| seen.insert(name.clone()))
+        .collect()
+}
+
 // `VcsLogBranchFilterImpl`, created as `fromBranchPatterns`. A name that exists is taken as is
 // before looking at the dash: a branch can be called `-x`.
 #[derive(Default)]
@@ -725,7 +741,7 @@ impl Highlighter {
     }
 
     // `VcsLogUtil.getSingleFilteredBranch`.
-    fn single_branch<'a>(store: &'a CommitStore, filter: &LogFilter) -> Option<&'a str> {
+    pub(crate) fn single_branch<'a>(store: &'a CommitStore, filter: &LogFilter) -> Option<&'a str> {
         match filter.branch_refs(store)[..] {
             [only] => Some(&*only.name),
             _ => None,

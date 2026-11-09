@@ -6,6 +6,7 @@
     drawRows,
     MAX_ROWS_TO_MEASURE,
     ROW_HEIGHT,
+    tableLayout,
     type ColumnWidths,
     type GraphElement,
     type GraphHighlight,
@@ -37,6 +38,8 @@
     // Click on a node or on an edge without an arrow.
     ongraphclick?: (target: GraphTarget) => void;
     oncontext?: (x: number, y: number) => void;
+    // `Not Cherry-Picked Commits`: the commits that keep their style, the others in grey.
+    notPicked?: ReadonlySet<string> | null;
   }
 
   let {
@@ -48,6 +51,7 @@
     onready,
     ongraphclick,
     oncontext,
+    notPicked = null,
   }: Props = $props();
 
   // Props are re-read on any change in the parent: a new cache, only if this changes.
@@ -81,6 +85,9 @@
   let nextHover: GraphTarget | null = null;
   let highlight: GraphHighlight | null = null;
   let hand = $state(false);
+  // Set when the table is unmounted: what git answers afterwards (a tab switch, a closed panel) has
+  // no table to select or scroll in.
+  let destroyed = false;
   let tip = $state.raw<(ArrowTooltip & { x: number; y: number }) | null>(null);
   const labelBounds = new Map<number, LabelBounds>();
 
@@ -123,7 +130,7 @@
     const wanted = saved.target ? [...saved.hashes, saved.target.hash] : saved.hashes;
     try {
       const found = await rowsOf([...new Set(wanted)]);
-      if (token !== restoring) return;
+      if (token !== restoring || destroyed) return;
       const { rows, scrollTop } = restoreSelection(saved, found, changed, ROW_HEIGHT);
       setSelection(rows);
       if (scrollTop !== null) scroller.scrollTop = scrollTop;
@@ -133,12 +140,14 @@
     await publish();
   }
 
-  export async function selectHash(hash: string): Promise<void> {
+  // `false` when the commit is not in the view, or the table is gone by the time git answers.
+  export async function selectHash(hash: string): Promise<boolean> {
     const row = (await rowsOf([hash])).get(hash);
-    if (row === undefined) return;
+    if (row === undefined || destroyed) return false;
     setSelection([row]);
     reveal(row);
     await publish();
+    return true;
   }
 
   // `VcsLogGraphTable.jumpToRow`.
@@ -209,10 +218,11 @@
     const hashes: string[] = [];
     for (const row of rows) {
       if (!cache.loaded(row)) await cache.ensure(row, row + 1);
-      if (token !== selecting) return;
+      if (token !== selecting || destroyed) return;
       const hash = cache.get(row)?.hash;
       if (hash) hashes.push(hash);
     }
+    if (destroyed) return;
     published = hashes;
     onselect(hashes);
   }
@@ -254,6 +264,7 @@
         now: Date.now(),
         highlight,
         labelBounds,
+        notPicked,
       });
     }
     if (range.end === range.start) return;
@@ -301,7 +312,9 @@
   function elementUnder(event: MouseEvent): { row: number; element: GraphElement | null } {
     const { row, x, y } = rowAt(event);
     const found = row < count ? cache.get(row) : undefined;
-    return { row, element: found ? elementAt(found.print, x, y) : null };
+    // The graph is drawn where the Subject column starts, after Author and Date in a file history.
+    const { subjectX } = tableLayout(scroller.clientWidth, options.columns, widths ?? INITIAL_WIDTHS);
+    return { row, element: found ? elementAt(found.print, x - subjectX, y) : null };
   }
 
   function mark(next: GraphHighlight | null, overGraph: boolean) {
@@ -439,6 +452,7 @@
     cache;
     count;
     options;
+    notPicked;
     untrack(() => {
       if (scroller) {
         clearHover();
@@ -451,6 +465,7 @@
     const observer = new ResizeObserver(resize);
     observer.observe(scroller);
     return () => {
+      destroyed = true;
       observer.disconnect();
       cancelAnimationFrame(frame);
     };

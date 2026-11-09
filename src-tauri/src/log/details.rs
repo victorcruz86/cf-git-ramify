@@ -292,15 +292,15 @@ pub fn selected_changes(
     Ok(SelectedChanges { commits, max_size })
 }
 
-struct Block {
-    hash: String,
-    parents: Vec<String>,
-    files: Vec<ChangedFile>,
+pub(crate) struct Block {
+    pub(crate) hash: String,
+    pub(crate) parents: Vec<String>,
+    pub(crate) files: Vec<ChangedFile>,
 }
 
 // After the format, `-z` leaves `\n` and the status-path pairs separated by nulls. With
 // `--diff-merges=separate` each parent with differences repeats the commit header.
-fn read_blocks(output: &str) -> Vec<Block> {
+pub(crate) fn read_blocks(output: &str) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut tokens = output.split('\0');
     while let Some(token) = tokens.next() {
@@ -423,7 +423,6 @@ mod tests {
     use crate::log::refs::RefKind;
     use crate::log::store;
     use crate::test_support::TempRepo;
-    use std::process::Command;
 
     fn store_of(repo: &TempRepo) -> CommitStore {
         store::load(repo.path()).unwrap()
@@ -461,7 +460,7 @@ mod tests {
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"main\n", "on main");
         repo.commit("c.txt", b"c\n", "c on main");
-        let merge = Command::new("git")
+        let merge = crate::test_support::git_command()
             .args(["merge", "-q", "--no-ff", "-m", "merge", "other"])
             .current_dir(repo.path())
             .output()

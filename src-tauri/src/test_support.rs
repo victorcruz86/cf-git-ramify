@@ -1,7 +1,7 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
 
 use tempfile::TempDir;
@@ -23,6 +23,60 @@ pub const DAMAGED_REFS: [&[u8]; 6] = [
     b"ref: refs/hea",
     b"ref: refs/heads/gone\n",
 ];
+
+// Every git the tests run sees none of this machine's configuration: not the system's
+// (`GIT_CONFIG_NOSYSTEM`), as the user's an empty file of the tests' own (`GIT_CONFIG_GLOBAL`), and
+// as `XDG_CONFIG_HOME` an empty folder of the tests' own, so that the default `core.excludesFile`
+// and `core.attributesFile` (`~/.config/git/ignore`, `attributes`) are not read either. `HOME`
+// stays as it is. `git::command` calls it under `cfg(test)`, so the code under test does too.
+pub fn isolate(command: &mut Command) -> &mut Command {
+    let (config, xdg) = isolated_places();
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", config)
+        .env("XDG_CONFIG_HOME", xdg)
+}
+
+// `git`, isolated: what every test module spawns instead of `Command::new("git")`.
+pub fn git_command() -> Command {
+    let mut command = Command::new("git");
+    isolate(&mut command);
+    command
+}
+
+// One file and one folder per temporary folder, created if missing and never truncated, so test
+// processes that run at once share them safely. Something in them means a test wrote a
+// `--global` setting: every test after it would read that, so the run stops instead.
+pub fn isolated_places() -> (&'static Path, &'static Path) {
+    static PLACES: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    let (file, xdg) = PLACES.get_or_init(|| {
+        let dir = std::env::temp_dir().join("rama-tests-git");
+        let xdg = dir.join("empty-xdg-config");
+        fs::create_dir_all(&xdg).unwrap();
+        let file = dir.join("empty-global-config");
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .unwrap();
+        let size = fs::metadata(&file).unwrap().len();
+        assert_eq!(
+            size,
+            0,
+            "{} must be empty: a test wrote a --global setting into it",
+            file.display()
+        );
+        let entries = fs::read_dir(&xdg).unwrap().count();
+        assert_eq!(
+            entries,
+            0,
+            "{} must be empty: a test wrote a --global setting into it",
+            xdg.display()
+        );
+        (file, xdg)
+    });
+    (file, xdg)
+}
 
 // Linear congruential generator: a test depends on no crate and does not change between runs.
 pub struct Random(pub u64);
@@ -99,7 +153,7 @@ impl TempRepo {
     }
 
     fn git_dated(&self, args: &[&str], date: &str) {
-        let status = Command::new("git")
+        let status = git_command()
             .args(args)
             .current_dir(self.path())
             .env("GIT_AUTHOR_DATE", date)
@@ -118,7 +172,7 @@ impl TempRepo {
         self.commit(file, b"other\n", "on other");
         self.git(&["checkout", "-q", "main"]);
         self.commit(file, b"main\n", "on main");
-        let merge = Command::new("git")
+        let merge = git_command()
             .current_dir(self.path())
             .args(["merge", "-q", "other"])
             .output()
@@ -131,7 +185,7 @@ impl TempRepo {
     }
 
     pub fn git(&self, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = git_command()
             .current_dir(self.path())
             .args(args)
             .output()
@@ -142,6 +196,25 @@ impl TempRepo {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    // Commits signed with an SSH key of its own (`ssh-keygen` ships with macOS, gpg may not), and
+    // `log.showSignature` on in this repository: `log` and `show` then print a signature check
+    // (`No signature`, since no allowed signers are set) before each record.
+    pub fn sign_commits(&self) {
+        let key = self.path().join(".git/test-signing-key");
+        if !key.exists() {
+            let status = Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(&key)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        self.git(&["config", "gpg.format", "ssh"]);
+        self.git(&["config", "user.signingkey", &key.to_string_lossy()]);
+        self.git(&["config", "commit.gpgsign", "true"]);
+        self.git(&["config", "log.showSignature", "true"]);
     }
 }
 
@@ -216,7 +289,7 @@ impl RepoHarness {
 
     // A command that must fail (a merge with a conflict): returns its output.
     pub fn git_fails(&self, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = git_command()
             .current_dir(self.path())
             .args(args)
             .env("GIT_EDITOR", "true")

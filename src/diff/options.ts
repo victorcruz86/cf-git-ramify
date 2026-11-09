@@ -9,7 +9,8 @@ export interface DiffOptions extends EditorOptions {
 
 // The places of DiffPlaces that rama has: the diff window, the commit dialog's `Diff` panel, the
 // Local Changes preview, the merge window, the diff docked in the log (also in the push dialog) and
-// the stash and shelf preview (`SavedPatchesUi.SAVED_PATCHES_UI_PLACE`, not one of DiffPlaces).
+// the stash and shelf preview (`SavedPatchesUi.SAVED_PATCHES_UI_PLACE`, not one of DiffPlaces), and
+// the read-only viewer, rama's stand-in for IntelliJ's editor.
 // Soft wrap is remembered for each one, as TextDiffSettingsHolder's PlaceSettings does.
 export type DiffPlace =
   | "Default"
@@ -17,7 +18,8 @@ export type DiffPlace =
   | "ChangesView"
   | "Merge"
   | "VcsLogView"
-  | "SavedPatchesUiPlace";
+  | "SavedPatchesUiPlace"
+  | "Viewer";
 
 const KEY = "diff.options";
 const WRAP_KEY = "diff.wrap.";
@@ -32,7 +34,8 @@ const DEFAULTS: Omit<DiffOptions, "wrap"> = {
   align: false,
 };
 
-// `USE_SOFT_WRAPS` is false in every place of IntelliJ; the user's `Default` has it on.
+// `USE_SOFT_WRAPS` is false in every place of IntelliJ; the user's `Default` has it on, and so do
+// the user's editors (H§7).
 const WRAP_DEFAULTS: Record<DiffPlace, boolean> = {
   Default: true,
   CommitDialog: false,
@@ -40,6 +43,7 @@ const WRAP_DEFAULTS: Record<DiffPlace, boolean> = {
   Merge: false,
   VcsLogView: false,
   SavedPatchesUiPlace: false,
+  Viewer: true,
 };
 
 export function loadWrap(place: DiffPlace): boolean {

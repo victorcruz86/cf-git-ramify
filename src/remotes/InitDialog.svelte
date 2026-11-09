@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import Dialog from "../lib/Dialog.svelte";
 
   // The app has no system folder picker: the path is typed.
@@ -9,7 +10,8 @@
 
   let { initialDirectory, onanswer }: Props = $props();
 
-  let directory = $state(initialDirectory);
+  // The field starts from the prop once: what is typed afterwards is the user's.
+  let directory = $state(untrack(() => initialDirectory));
   const valid = $derived(directory.trim() !== "");
 
   function submit() {

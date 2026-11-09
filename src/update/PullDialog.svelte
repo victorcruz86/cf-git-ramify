@@ -26,9 +26,10 @@
   let { info, options, reload, onanswer }: Props = $props();
 
   const first = untrack(() => info);
+  const firstRemote = chooseRemote(first) ?? "";
   let current = $state.raw(first);
-  let remote = $state(chooseRemote(first) ?? "");
-  let branch = $state(chooseBranch(first, remote || null, null));
+  let remote = $state(firstRemote);
+  let branch = $state(chooseBranch(first, firstRemote || null, null));
   let chosen = $state<PullOption[]>(untrack(() => [...options]));
   let showOptions = $state(false);
   let submitted = $state(false);

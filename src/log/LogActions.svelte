@@ -14,6 +14,7 @@
   import { matchLogShortcut, type ActionId } from "../lib/keymap";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { notify } from "../lib/notifications";
+  import type { LogChange } from "./changes";
   import { contextMenu, revisionsText, type VcsAction } from "./contextMenu";
   import { menuChecks, rewordFromKeyboard } from "./editing";
   import { adjacentLabel, jumpFailure, resolveTarget, tooltipRefs, type Target } from "./goto";
@@ -31,7 +32,16 @@
     filtered: boolean;
     onresetfilters: () => Promise<void>;
     onnewtab: () => Promise<void>;
-    onvcs?: (action: VcsAction) => void;
+    onvcs?: (action: VcsAction) => void | Promise<void>;
+    // The Paths filter, which Compare Versions and Compare with Local are limited to.
+    paths?: string[];
+    // `Create Patch...` of the chosen commits' changes.
+    oncreatepatch?: (changes: LogChange[]) => void;
+    // What the changes panel has loaded for the chosen commits (`VcsDataKeys.CHANGES` is
+    // `myChangesBrowser.getDirectChanges()`, `MainFrame.java:267-268`): the menu never waits for
+    // git, and while they load Create Patch... is off, as `VcsLogCreatePatchActionProvider.update`
+    // leaves it with no changes.
+    changes?: LogChange[];
   }
 
   let {
@@ -44,6 +54,9 @@
     onresetfilters,
     onnewtab,
     onvcs,
+    paths = [],
+    oncreatepatch,
+    changes = [],
   }: Props = $props();
 
   const COMMIT_MENU = "Commit";
@@ -165,6 +178,7 @@
         commits.length > 0 && onvcs
           ? await menuChecks(commits.map(({ hash }) => hash)).catch(() => undefined)
           : undefined;
+      const loaded = changes;
       const items = contextMenu(
         { commits, parents, children },
         { currentBranch },
@@ -175,6 +189,9 @@
           vcs: onvcs,
           protectedBranches: $protectedBranches,
           editing,
+          paths,
+          createPatch:
+            oncreatepatch && loaded.length > 0 ? () => oncreatepatch(loaded) : undefined,
         },
       );
       if (items.length > 0) menu = { x, y, items, label: COMMIT_MENU };

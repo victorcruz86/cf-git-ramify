@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,9 +7,15 @@ import type { BranchList } from "../lib/api";
 import BranchesPanel from "./BranchesPanel.svelte";
 import { whileFetching } from "../update/flow";
 import { branchOptions, defaultBranchOptions, favorites } from "./state";
+import { compareBranches } from "../compare/actions";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("../compare/actions", () => ({
+  compareBranches: vi.fn(async () => {}),
+  showBranchesDiff: vi.fn(async () => {}),
+  showDiffWithWorkingTree: vi.fn(async () => {}),
+}));
 
 const LIST: BranchList = {
   local: [
@@ -364,6 +370,151 @@ test("context_menu_with_the_branch_actions", async () => {
       ref: { name: "side", kind: "local" },
     }),
   );
+});
+
+// `MultipleLocalBranchActions` (`BranchesDashboardActions.kt:68-71`): with several branches chosen, a
+// right click inside the selection keeps it and shows their menu. Compare Branches and Show Files
+// Diff exist only with exactly two (`BranchesPairActionBase`), the first against the second in
+// the order of the tree.
+test("compare_branches_needs_two_selected", async () => {
+  const { onvcs } = await panel();
+  const remote = screen.getAllByRole("treeitem", { name: "main" })[1];
+  await fireEvent.click(row("side"));
+  await fireEvent.click(remote, { metaKey: true });
+
+  await fireEvent.contextMenu(remote);
+  let menu = await screen.findByRole("menu", { name: "Branches" });
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.getAttribute("aria-label"))).toEqual([
+    "Compare Branches",
+    "Show Files Diff",
+    "Update Selected",
+    "Delete branches",
+  ]);
+  expect(row("side").getAttribute("aria-selected")).toBe("true");
+  expect(remote.getAttribute("aria-selected")).toBe("true");
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Compare Branches" }));
+  expect(compareBranches).toHaveBeenCalledWith("side", "origin/main");
+
+  await fireEvent.click(row("main"), { metaKey: true });
+  await fireEvent.contextMenu(row("side"));
+  menu = await screen.findByRole("menu", { name: "Branches" });
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.getAttribute("aria-label"))).toEqual([
+    "Update Selected",
+    "Delete branches",
+  ]);
+  // The current branch cannot be deleted; `main` tracks `origin/main`, so Update Selected is on.
+  expect((within(menu).getByRole("menuitem", { name: "Delete branches" }) as HTMLButtonElement).disabled).toBe(true);
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Update Selected" }));
+  // `updateBranches`: those that track a branch, at once.
+  await waitFor(() => expect(onvcs).toHaveBeenCalledWith({ kind: "updateBranches", names: ["main"] }));
+
+  // Outside the selection, a right click chooses only that row and shows its own menu.
+  await fireEvent.click(row("side"));
+  await fireEvent.contextMenu(remote);
+  expect(await screen.findByRole("menuitem", { name: "Checkout" })).toBeTruthy();
+});
+
+// `DeleteBranchAction.delete` (`BranchesDashboardActions.kt:303-321`): the local branches one by one,
+// then every remote one with a single question (`GitDeleteRemoteBranchOperation`).
+test("deleting_two_remote_branches_asks_once", async () => {
+  const list: BranchList = { ...LIST, remote: ["origin/a", "origin/b"] };
+  const base = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) =>
+    command === "branch_list" ? list : base(command, args),
+  );
+  const { onvcs } = await panel();
+  const first = row("a");
+  const second = row("b");
+  await fireEvent.click(row("side"));
+  await fireEvent.click(first, { metaKey: true });
+  await fireEvent.click(second, { metaKey: true });
+
+  await fireEvent.contextMenu(second);
+  const menu = await screen.findByRole("menu", { name: "Branches" });
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete branches" }));
+
+  await waitFor(() =>
+    expect(onvcs).toHaveBeenCalledWith({ kind: "deleteRemotes", names: ["origin/a", "origin/b"] }),
+  );
+  expect(vi.mocked(onvcs).mock.calls).toEqual([
+    [{ kind: "ref", operation: "delete", ref: { name: "side", kind: "local" } }],
+    [{ kind: "deleteRemotes", names: ["origin/a", "origin/b"] }],
+  ]);
+});
+
+// `BranchActionsBuilder.build`: HEAD is not one of the chosen branches. With two more it is still
+// the menu of several; with one more, the current branch's menu.
+test("head_does_not_count_for_the_menu_of_several", async () => {
+  await panel();
+  await fireEvent.click(screen.getByRole("treeitem", { name: "HEAD (Current Branch)" }));
+  await fireEvent.click(row("side"), { metaKey: true });
+
+  await fireEvent.contextMenu(row("side"));
+  let menu = await screen.findByRole("menu", { name: "main" });
+  expect(within(menu).queryByRole("menuitem", { name: "Checkout" })).toBeNull();
+  expect(within(menu).getByRole("menuitem", { name: "Rename…" })).toBeTruthy();
+  await fireEvent.keyDown(menu, { key: "Escape" });
+
+  await fireEvent.click(screen.getAllByRole("treeitem", { name: "main" })[1], { metaKey: true });
+  await fireEvent.contextMenu(row("side"));
+  menu = await screen.findByRole("menu", { name: "Branches" });
+  expect(within(menu).getByRole("menuitem", { name: "Compare Branches" })).toBeTruthy();
+});
+
+// `CurrentBranchActions` (`BranchesDashboardActions.kt:165-167`) comes from the repository's current
+// branch, not from a visible row: on HEAD alone, and with HEAD and one branch while its group is
+// folded.
+test("the_current_branch_menu_does_not_need_its_row", async () => {
+  await panel();
+  await fireEvent.contextMenu(screen.getByRole("treeitem", { name: "HEAD (Current Branch)" }));
+  let menu = await screen.findByRole("menu", { name: "main" });
+  expect(within(menu).getByRole("menuitem", { name: "Rename…" })).toBeTruthy();
+  await fireEvent.keyDown(menu, { key: "Escape" });
+
+  await fireEvent.click(row("side"));
+  await fireEvent.click(screen.getByRole("treeitem", { name: "HEAD (Current Branch)" }), { metaKey: true });
+  // Folding Local leaves no visible row of `main`.
+  await fireEvent.dblClick(row("Local"));
+  expect(screen.queryAllByRole("treeitem", { name: "main" })).toHaveLength(1);
+  await fireEvent.contextMenu(screen.getByRole("treeitem", { name: "HEAD (Current Branch)" }));
+  menu = await screen.findByRole("menu", { name: "main" });
+  expect(within(menu).getByRole("menuitem", { name: "Push…" })).toBeTruthy();
+});
+
+// `disableActionIfAnyRepositoryIsFresh`: before the first commit HEAD has no hash, and a fetched
+// remote branch's comparisons are off.
+test("before_the_first_commit_the_comparisons_are_off", async () => {
+  const base = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) =>
+    command === "repo_state"
+      ? { operation: null, branch: "main", label: "main", head: "" }
+      : base(command, args),
+  );
+  await panel();
+
+  await fireEvent.contextMenu(screen.getAllByRole("treeitem", { name: "main" })[1]);
+  const menu = await screen.findByRole("menu");
+  for (const name of ["Compare with 'main'", "Show Diff with Working Tree"]) {
+    expect((within(menu).getByRole("menuitem", { name }) as HTMLButtonElement).disabled, name).toBe(true);
+  }
+});
+
+// `ShowBranchDiffAction` (`B:604`): the toolbar's diff button and ⌘D compare each chosen branch
+// that is not the current one with the current one; with only the current one it is off.
+test("compare_with_current_compares_the_chosen_branches_with_the_current_one", async () => {
+  await panel();
+  expect(button("Compare with Current").disabled).toBe(true);
+  await fireEvent.click(row("main"));
+  expect(button("Compare with Current").disabled).toBe(true);
+
+  await fireEvent.click(row("side"), { metaKey: true });
+  await fireEvent.click(button("Compare with Current"));
+  expect(compareBranches).toHaveBeenLastCalledWith("side", "main");
+  expect(compareBranches).toHaveBeenCalledTimes(1);
+
+  vi.mocked(compareBranches).mockClear();
+  await fireEvent.keyDown(screen.getByRole("tree"), { key: "d", metaKey: true });
+  expect(compareBranches).toHaveBeenCalledWith("side", "main");
 });
 
 test("searching_filters_and_opens_everything", async () => {

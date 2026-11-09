@@ -394,7 +394,6 @@ pub fn unmerged_branches(ctx: &TaskContext) -> Result<Vec<String>, GitError> {
 mod tests {
     use super::*;
     use crate::test_support::RepoHarness;
-    use std::process::Command;
     use tempfile::TempDir;
 
     // `side` adds `b.txt` and `c.txt` on top of `base`, and `main` stays at `base`: it fast-forwards.
@@ -1129,7 +1128,7 @@ mod tests {
         harness.git(&["checkout", "-q", "side"]);
         if stop == "edit" {
             // Stopped at `edit` on the first commit of `side`, with a clean index.
-            let output = std::process::Command::new("git")
+            let output = crate::test_support::git_command()
                 .current_dir(harness.path())
                 .args(["rebase", "-i", "-X", "theirs", "main"])
                 .env("GIT_SEQUENCE_EDITOR", "sed -i.bak '1s/^pick/edit/'")
@@ -1272,7 +1271,7 @@ mod tests {
         harness.repo.commit("b.txt", b"b\n", "side");
         harness.git(&["checkout", "-q", "main"]);
         let origin = TempDir::new().unwrap();
-        let init = Command::new("git")
+        let init = crate::test_support::git_command()
             .args(["init", "-q", "--bare"])
             .arg(origin.path())
             .status()

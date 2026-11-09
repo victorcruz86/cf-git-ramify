@@ -9,7 +9,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::branches::{self, invalid, Repo};
+use crate::diff;
 use crate::git::{self, GitError};
+use crate::history;
 use crate::merge3::{self, Block, Whitespace};
 use crate::operation::{self, Operation};
 use crate::snapshots;
@@ -88,6 +90,28 @@ pub struct Sides {
     // The `merge3` blocks with `Whitespace::Default`; a missing version counts as
     // empty, and with a binary there are no blocks.
     pub blocks: Vec<Block>,
+    // What `Show Details` of the left and the right title shows, if anything (`merge_details`).
+    pub details: [Option<SideDetails>; 2],
+}
+
+// What a side's `Show Details` shows (`getTitleWithCommitDetailsCustomizer` and
+// `getTitleWithCommitsRangeDetailsCustomizer`): one commit, or the commits of `from..to`. Full
+// hashes, which reach git as they are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SideDetails {
+    Commit { hash: String },
+    Range { from: String, to: String },
+}
+
+// A commit of a side's range (`MergeConflictMultipleCommitInfoDialog`): whether it touched the
+// conflicted file is what `Filter by conflicted file` keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeCommit {
+    pub hash: String,
+    pub subject: String,
+    pub conflicted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -247,10 +271,10 @@ fn commit_of(repo: &Path, name: &str) -> Result<Option<String>, GitError> {
 }
 
 // `GitHistoryUtils.getMergeBase`: without it, the titles are the usual ones.
-fn has_merge_base(repo: &Path, one: &str, other: &str) -> Result<bool, GitError> {
+fn merge_base(repo: &Path, one: &str, other: &str) -> Result<Option<String>, GitError> {
     match git::run(repo, &["merge-base", one, other]) {
-        Ok(_) => Ok(true),
-        Err(GitError::Failed { code: Some(1), .. }) => Ok(false),
+        Ok(output) => Ok(Some(String::from_utf8_lossy(&output).trim().to_string())),
+        Err(GitError::Failed { code: Some(1), .. }) => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -374,7 +398,8 @@ fn onto_of(repo: &Path) -> Result<Option<String>, GitError> {
 }
 
 fn picked_of(repo: &Path, hash: &str) -> Result<Option<Picked>, GitError> {
-    let args = ["show", "-s", "--format=%an%x00%s", hash];
+    let [no, signatures] = history::NO_SIGNATURES;
+    let args = [no, signatures, "show", "-s", "--format=%an%x00%s", hash];
     let output = git::run(repo, &args)?;
     let text = String::from_utf8_lossy(&output);
     Ok(text
@@ -460,45 +485,75 @@ impl Flow {
         }
     }
 
-    // `getTitleCustomizerList`: without what it needs, the titles of `MergeDialogCustomizer`.
-    fn titles(&self, repo: &Path) -> Result<[String; 3], GitError> {
-        let defaults = DEFAULT_TITLES.map(str::to_string);
+    // `getTitleCustomizerList`: the titles and what the `Show Details` beside the left and the
+    // right one show (`merge_details`). Only a merge, a rebase or a cherry-pick has them, and only
+    // when its commits and their merge base resolve; otherwise, the titles of
+    // `MergeDialogCustomizer` and no details.
+    fn titles(&self, repo: &Path) -> Result<Titles, GitError> {
+        let defaults = Titles {
+            texts: DEFAULT_TITLES.map(str::to_string),
+            details: [None, None],
+        };
         let (Some(other), Some(current)) = (&self.other, &self.current) else {
             return Ok(defaults);
         };
-        let titles = |left: String, right: String| [left, RESULT.to_string(), right];
+        let titled = |left: String, right: String, details: [SideDetails; 2]| Titles {
+            texts: [left, RESULT.to_string(), right],
+            details: details.map(Some),
+        };
+        let range = |from: &str, to: &str| SideDetails::Range {
+            from: from.to_string(),
+            to: to.to_string(),
+        };
+        let commit = |hash: &str| SideDetails::Commit {
+            hash: hash.to_string(),
+        };
         match self.operation {
-            Some(Operation::Merging) if has_merge_base(repo, &self.head, &other.hash)? => {
-                Ok(titles(
+            Some(Operation::Merging) => {
+                let Some(base) = merge_base(repo, &self.head, &other.hash)? else {
+                    return Ok(defaults);
+                };
+                Ok(titled(
                     format!("Changes from {current}"),
                     format!("Changes from {}", other.presentable()),
+                    [range(&base, &self.head), range(&base, &other.hash)],
                 ))
             }
             Some(Operation::Rebasing) => {
                 let Some(applied) = &self.rebase_head else {
                     return Ok(defaults);
                 };
-                if !has_merge_base(repo, applied, &other.hash)? {
+                let Some(base) = merge_base(repo, applied, &other.hash)? else {
                     return Ok(defaults);
-                }
+                };
                 let right = match &other.branch {
                     Some(branch) => format!("Already rebased commits and commits from {branch}"),
                     None => "Already rebased commits".to_string(),
                 };
-                Ok(titles(
+                Ok(titled(
                     format!("Rebasing {} from {current}", short(applied)),
                     right,
+                    [commit(applied), range(&base, &self.head)],
                 ))
             }
-            Some(Operation::CherryPicking) if has_merge_base(repo, &other.hash, &self.head)? => {
-                Ok(titles(
+            Some(Operation::CherryPicking) => {
+                let Some(base) = merge_base(repo, &other.hash, &self.head)? else {
+                    return Ok(defaults);
+                };
+                Ok(titled(
                     "Local Changes".to_string(),
                     format!("Changes from cherry-pick {}", short(&other.hash)),
+                    [range(&base, &self.head), commit(&other.hash)],
                 ))
             }
             _ => Ok(defaults),
         }
     }
+}
+
+struct Titles {
+    texts: [String; 3],
+    details: [Option<SideDetails>; 2],
 }
 
 // `UnstashMergeDialogCustomizer`: with an operation in progress the conflicts are that operation's.
@@ -642,19 +697,93 @@ pub fn sides(repo: &Repo, path: &str) -> Result<Sides, GitError> {
         }
         _ => Vec::new(),
     };
+    // An unstash has no operation, and so no details.
+    let titles = match unstash {
+        Some(texts) => Titles {
+            texts: texts.titles,
+            details: [None, None],
+        },
+        None => flow.titles(repo)?,
+    };
     Ok(Sides {
         path: path.to_string(),
         base,
         yours,
         theirs,
-        titles: match unstash {
-            Some(texts) => texts.titles,
-            None => flow.titles(repo)?,
-        },
+        titles: titles.texts,
         hash,
         reversed,
         blocks,
+        details: titles.details,
     })
+}
+
+// `readFullDetails(.., "<from>..<to>")` of a range's `Show Details`, newest first, and whether each
+// commit touched `path` (`affectedPaths.contains(file)`: a path before or after a change). Its
+// `GitCommitRequirements.DEFAULT` reads a merge as a combined diff (`-c`): a merge that resolved
+// the file touched it.
+pub fn range_commits(
+    repo: &Repo,
+    from: &str,
+    to: &str,
+    path: &str,
+) -> Result<Vec<RangeCommit>, GitError> {
+    diff::check_hash(from)?;
+    diff::check_hash(to)?;
+    let range = format!("{from}..{to}");
+    let args = git::exact(&[
+        "-c",
+        "log.showSignature=false",
+        "log",
+        "-z",
+        "-c",
+        "--name-status",
+        "-M",
+        "--encoding=UTF-8",
+        "--format=%x01%H%x02%s",
+        "--end-of-options",
+        &range,
+        "--",
+    ]);
+    let output = repo.ctx.git(&args)?.stdout;
+    Ok(parse_range_commits(&output, path))
+}
+
+// Each commit is `\x01<hash>\x02<subject>\0`, then `\n<status>\0<path>\0` per change, with two
+// paths for a rename or a copy (`R100`). A merge's combined statuses (`\0MM\0<path>\0`) have one
+// letter per parent and only the final path.
+fn is_copy_or_rename(status: &str) -> bool {
+    let mut chars = status.chars();
+    matches!(chars.next(), Some('R' | 'C')) && chars.all(|char| char.is_ascii_digit())
+}
+
+fn parse_range_commits(output: &str, path: &str) -> Vec<RangeCommit> {
+    let mut commits: Vec<RangeCommit> = Vec::new();
+    let mut tokens = output.split('\0');
+    while let Some(token) = tokens.next() {
+        let token = token.strip_prefix('\n').unwrap_or(token);
+        if token.is_empty() {
+            continue;
+        }
+        if let Some(header) = token.strip_prefix('\x01') {
+            let (hash, subject) = header.split_once('\x02').unwrap_or((header, ""));
+            commits.push(RangeCommit {
+                hash: hash.to_string(),
+                subject: subject.to_string(),
+                conflicted: false,
+            });
+            continue;
+        }
+        let paths = if is_copy_or_rename(token) { 2 } else { 1 };
+        for _ in 0..paths {
+            if tokens.next() == Some(path) {
+                if let Some(commit) = commits.last_mut() {
+                    commit.conflicted = true;
+                }
+            }
+        }
+    }
+    commits
 }
 
 // Git commands over many paths, in batches and with the paths as literals.
@@ -1203,6 +1332,30 @@ mod tests {
         assert!(!found.reversed);
     }
 
+    // `picked_of` runs git without a task: with signed commits and `log.showSignature` on, the
+    // signature check must not get into the author or the subject.
+    #[test]
+    fn signatures_stay_out_of_the_cherry_pick_description() {
+        let harness = RepoHarness::new();
+        harness.repo.sign_commits();
+        harness.diverged();
+        assert!(harness
+            .git(&["show", "-s", "--format=%an", "side"])
+            .contains("No signature"));
+        harness.git_fails(&["cherry-pick", "side"]);
+        let picked = harness.git(&["rev-parse", "--short=8", "CHERRY_PICK_HEAD"]);
+
+        let found = session_of(&harness);
+
+        assert_eq!(
+            found.description,
+            format!(
+                "Conflicts during cherry-picking commit {} made by Test\nside",
+                picked.trim()
+            )
+        );
+    }
+
     #[test]
     fn a_revert_describes_the_commit_it_undoes() {
         let harness = RepoHarness::new();
@@ -1220,6 +1373,203 @@ mod tests {
                 "Conflicts during revert of commit {} made by Test\nmain",
                 reverted.trim()
             )
+        );
+    }
+
+    fn full(harness: &RepoHarness, revision: &str) -> String {
+        harness.git(&["rev-parse", revision]).trim().to_string()
+    }
+
+    fn range(from: &str, to: &str) -> Option<SideDetails> {
+        Some(SideDetails::Range {
+            from: from.to_string(),
+            to: to.to_string(),
+        })
+    }
+
+    fn commit(hash: &str) -> Option<SideDetails> {
+        Some(SideDetails::Commit {
+            hash: hash.to_string(),
+        })
+    }
+
+    #[test]
+    fn show_details_appears_only_in_merge_rebase_and_cherry_pick() {
+        // A merge: both sides are the commits of each branch since the merge base.
+        let harness = merging();
+        let (base, main, side) = (
+            full(&harness, "main~1"),
+            full(&harness, "main"),
+            full(&harness, "side"),
+        );
+        assert_eq!(
+            sides_of(&harness, "a.txt").details,
+            [range(&base, &main), range(&base, &side)]
+        );
+
+        // A rebase: the commit being applied, and what is already on top of the new base.
+        let harness = rebasing();
+        let (base, head, applied) = (
+            full(&harness, "main~1"),
+            full(&harness, "HEAD"),
+            full(&harness, "REBASE_HEAD"),
+        );
+        assert_eq!(
+            sides_of(&harness, "a.txt").details,
+            [commit(&applied), range(&base, &head)]
+        );
+
+        // A cherry-pick: the local commits since the merge base, and the commit being picked.
+        let harness = RepoHarness::new();
+        harness.diverged();
+        harness.git_fails(&["cherry-pick", "side"]);
+        let (base, head, picked) = (
+            full(&harness, "main~1"),
+            full(&harness, "HEAD"),
+            full(&harness, "CHERRY_PICK_HEAD"),
+        );
+        assert_eq!(
+            sides_of(&harness, "a.txt").details,
+            [range(&base, &head), commit(&picked)]
+        );
+
+        // A revert keeps the usual titles, without details.
+        let harness = RepoHarness::new();
+        harness.diverged();
+        harness.repo.commit("a.txt", b"other\n", "again");
+        harness.git_fails(&["revert", "--no-edit", "HEAD~1"]);
+        assert_eq!(sides_of(&harness, "a.txt").details, [None, None]);
+    }
+
+    #[test]
+    fn a_range_side_lists_its_commits_filtered_by_the_conflicted_file() {
+        let harness = RepoHarness::new();
+        harness.repo.commit("a.txt", b"base\n", "base");
+        harness.repo.commit("old.txt", b"old\n", "old");
+        let base = full(&harness, "HEAD");
+        harness.git(&["checkout", "-q", "-b", "side"]);
+        harness.repo.commit("a.txt", b"side\n", "touches a");
+        harness.repo.commit("b.txt", b"b\n", "touches b");
+        harness.git(&["mv", "old.txt", "renamed.txt"]);
+        harness.git(&["commit", "-q", "-m", "renames old"]);
+        let side = full(&harness, "HEAD");
+        let (from, to) = (base.clone(), side.clone());
+
+        let found = harness
+            .run(move |repo| range_commits(repo, &from, &to, "old.txt"))
+            .unwrap();
+
+        let shown: Vec<(&str, bool)> = found
+            .iter()
+            .map(|commit| (commit.subject.as_str(), commit.conflicted))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("renames old", true),
+                ("touches b", false),
+                ("touches a", false)
+            ]
+        );
+        assert_eq!(found[0].hash, side);
+        let (from, to) = (base.clone(), side.clone());
+        let found = harness
+            .run(move |repo| range_commits(repo, &from, &to, "a.txt"))
+            .unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|commit| commit.conflicted)
+                .collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        // Only full hashes reach git.
+        let failed = harness.run(move |repo| range_commits(repo, "--all", &side, "a.txt"));
+        assert!(failed.is_err());
+    }
+
+    #[test]
+    fn a_merge_that_resolved_the_conflicted_file_passes_the_filter() {
+        let harness = RepoHarness::new();
+        // Signed commits with `log.showSignature` on: the check git prints must not get into the
+        // subjects.
+        harness.repo.sign_commits();
+        harness.repo.commit("a.txt", b"base\n", "base");
+        harness.repo.commit("c.txt", b"c\n", "c");
+        let base = full(&harness, "HEAD");
+        harness.git(&["checkout", "-q", "-b", "side"]);
+        harness.repo.commit("a.txt", b"side\n", "side changes a");
+        harness.git(&["checkout", "-q", "-b", "other", "main"]);
+        harness.repo.commit("c.txt", b"other\n", "other changes c");
+        harness.git(&["checkout", "-q", "main"]);
+        harness.repo.commit("a.txt", b"main\n", "main changes a");
+        harness.git_fails(&["merge", "side"]);
+        harness.write("a.txt", "resolved\n");
+        harness.git(&["commit", "-q", "-a", "-m", "merge resolves a"]);
+        // A clean merge: `c.txt` is the same as on one of the parents.
+        harness.git(&["merge", "-q", "--no-ff", "-m", "merge leaves a", "other"]);
+        let head = full(&harness, "HEAD");
+
+        let mut found: Vec<(String, bool)> = harness
+            .run(move |repo| range_commits(repo, &base, &head, "a.txt"))
+            .unwrap()
+            .into_iter()
+            .map(|commit| (commit.subject, commit.conflicted))
+            .collect();
+        found.sort();
+
+        let expected = [
+            ("main changes a", true),
+            ("merge leaves a", false),
+            ("merge resolves a", true),
+            ("other changes c", false),
+            ("side changes a", true),
+        ];
+        assert_eq!(
+            found,
+            expected.map(|(subject, conflicted)| (subject.to_string(), conflicted))
+        );
+    }
+
+    // A file renamed on one side and changed by the merge is a combined `RM` with its final path
+    // only: the record after it is the next commit's, not a second path.
+    #[test]
+    fn a_combined_rename_of_a_merge_has_one_path() {
+        let harness = RepoHarness::new();
+        let lines: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        harness.write("r.txt", &lines);
+        harness.repo.commit("a.txt", b"base\n", "base");
+        let base = full(&harness, "HEAD");
+        harness.git(&["checkout", "-q", "-b", "side"]);
+        harness.git(&["mv", "r.txt", "r2.txt"]);
+        harness.repo.commit("a.txt", b"side\n", "side renames r");
+        harness.git(&["checkout", "-q", "main"]);
+        harness.repo.commit("a.txt", b"main\n", "main changes a");
+        harness.git_fails(&["merge", "side"]);
+        harness.write("a.txt", "resolved\n");
+        harness.write("r2.txt", &format!("{lines}merged\n"));
+        harness.git(&["add", "-A"]);
+        harness.git(&["commit", "-q", "-m", "merge changes r2"]);
+        let head = full(&harness, "HEAD");
+        let combined = harness.git(&["show", "-c", "--name-status", "--format=", "HEAD"]);
+        assert!(combined.contains("RM\tr2.txt"), "{combined}");
+
+        let mut found: Vec<(String, bool)> = harness
+            .run(move |repo| range_commits(repo, &base, &head, "r2.txt"))
+            .unwrap()
+            .into_iter()
+            .map(|commit| (commit.subject, commit.conflicted))
+            .collect();
+        found.sort();
+
+        let expected = [
+            ("main changes a", false),
+            ("merge changes r2", true),
+            ("side renames r", true),
+        ];
+        assert_eq!(
+            found,
+            expected.map(|(subject, conflicted)| (subject.to_string(), conflicted))
         );
     }
 

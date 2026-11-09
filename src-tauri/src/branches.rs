@@ -680,8 +680,18 @@ pub fn delete_remote(
         failures: Vec::new(),
     };
     if also_local {
-        for name in trackers(repo.path, &format!("{remote}/{branch}"))? {
-            match delete(repo, &name) {
+        // The task runs as `TaskKind::Remote`, which does not hold the repository's write lock:
+        // the local deletions take it, as `branch_delete` (`TaskKind::Write`) does.
+        let tracking = format!("{remote}/{branch}");
+        let deleted = repo
+            .ctx
+            .exclusive(|| -> Result<Vec<Result<Deleted, GitError>>, GitError> {
+                let names = trackers(repo.path, &tracking)?;
+                Ok(names.iter().map(|name| delete(repo, name)).collect())
+            })
+            .unwrap_or(Err(GitError::Cancelled))?;
+        for result in deleted {
+            match result {
                 Ok(deleted) => outcome.local.push(deleted),
                 Err(error) => outcome.failures.push(text_of(error)),
             }
@@ -844,9 +854,10 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::{symlink, PermissionsExt};
     use std::path::PathBuf;
-    use std::process::Command;
     use std::sync::Arc;
+    use std::thread;
     use std::time::Duration;
+    use std::time::Instant;
     use tempfile::TempDir;
 
     struct Harness {
@@ -854,6 +865,7 @@ mod tests {
         data: TempDir,
         console: Arc<Console>,
         runner: Runner,
+        locks: Arc<RepoLocks>,
     }
 
     impl Harness {
@@ -863,12 +875,8 @@ mod tests {
 
         fn around(repo: TempRepo) -> Self {
             let console = Arc::<Console>::default();
-            let runner = Runner::with(
-                Arc::<RepoLocks>::default(),
-                console.clone(),
-                None,
-                Duration::from_secs(5),
-            );
+            let locks = Arc::<RepoLocks>::default();
+            let runner = Runner::with(locks.clone(), console.clone(), None, Duration::from_secs(5));
             let data = TempDir::new().unwrap();
             // The tests written before the shelf saver speak of the stash.
             crate::settings::save_clean_tree(data.path(), CleanTree::Stash).unwrap();
@@ -877,7 +885,30 @@ mod tests {
                 data,
                 console,
                 runner,
+                locks,
             }
+        }
+
+        // As `branch_delete_remote` runs it: a task that talks to `origin`, outside the write lock.
+        fn run_remote<T: Send + 'static>(
+            &self,
+            work: impl FnOnce(&Repo) -> T + Send + 'static,
+        ) -> std::sync::mpsc::Receiver<T> {
+            let path = self.repo.path().to_path_buf();
+            let data = self.data.path().to_path_buf();
+            let (send, receive) = std::sync::mpsc::channel();
+            let kind = crate::task::TaskKind::Remote("origin".to_string());
+            self.runner
+                .start(self.repo.path(), kind, "test".to_string(), move |ctx| {
+                    let result = work(&Repo {
+                        ctx,
+                        path: &path,
+                        data: &data,
+                    });
+                    send.send(result).unwrap();
+                    Ok(())
+                });
+            receive
         }
 
         fn run<T: Send + 'static>(&self, work: impl FnOnce(&Repo) -> T + Send + 'static) -> T {
@@ -965,7 +996,7 @@ mod tests {
     // A clone of a bare remote with `main` and `origin/x` one commit ahead.
     fn cloned() -> (Harness, TempDir) {
         let bare = TempDir::new().unwrap();
-        let status = Command::new("git")
+        let status = crate::test_support::git_command()
             .args(["init", "-q", "--bare", "-b", "main"])
             .arg(bare.path())
             .status()
@@ -1011,7 +1042,7 @@ mod tests {
     fn stopped_merge() -> Harness {
         let harness = two_branches();
         harness.repo.commit("a.txt", b"main\n", "four");
-        let merged = Command::new("git")
+        let merged = crate::test_support::git_command()
             .current_dir(harness.repo.path())
             .args(["merge", "other"])
             .output()
@@ -1025,7 +1056,7 @@ mod tests {
     fn stopped_rebase() -> Harness {
         let harness = two_branches();
         harness.repo.commit("a.txt", b"main\n", "four");
-        let rebased = Command::new("git")
+        let rebased = crate::test_support::git_command()
             .current_dir(harness.repo.path())
             .args(["rebase", "other"])
             .output()
@@ -1409,7 +1440,7 @@ mod tests {
             smart(repo, "Checkout", || {
                 fs::write(path.join("a.txt"), "another\n").unwrap();
                 let commit = ["commit", "-q", "-a", "-m", "another"];
-                assert!(Command::new("git")
+                assert!(crate::test_support::git_command()
                     .args(commit)
                     .current_dir(&path)
                     .status()
@@ -1435,7 +1466,7 @@ mod tests {
             smart(repo, "Checkout", || {
                 fs::write(path.join("a.txt"), "another\n").unwrap();
                 let commit = ["commit", "-q", "-a", "-m", "another"];
-                assert!(Command::new("git")
+                assert!(crate::test_support::git_command()
                     .args(commit)
                     .current_dir(&path)
                     .status()
@@ -1860,7 +1891,9 @@ mod tests {
         harness.git(&["checkout", "-q", "y"]);
 
         let outcome = harness
-            .run(|repo| delete_remote(repo, "origin", "x", true))
+            .run_remote(|repo| delete_remote(repo, "origin", "x", true))
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap()
             .unwrap();
 
         let names: Vec<&str> = outcome.local.iter().map(|d| d.name.as_str()).collect();
@@ -1873,7 +1906,7 @@ mod tests {
         );
         assert_eq!(harness.git(&["branch", "--list", "x"]), "");
         assert!(harness.git(&["branch", "--list", "y"]).contains('y'));
-        let refs = Command::new("git")
+        let refs = crate::test_support::git_command()
             .args(["for-each-ref", "refs/heads/x"])
             .current_dir(bare.path())
             .output()
@@ -1881,8 +1914,50 @@ mod tests {
         assert!(refs.stdout.is_empty());
     }
 
+    // `branch_delete_remote` runs as `TaskKind::Remote`: the push does not wait for the
+    // repository's writes, but deleting the local trackers does, as `branch_delete` waits.
+    #[test]
+    fn delete_remote_deletes_the_locals_inside_the_write_lock() {
+        let (harness, _bare) = cloned();
+        harness.git(&["fetch", "-q", "origin"]);
+        harness.git(&["branch", "-q", "--track", "x", "origin/x"]);
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (locked, wait_locked) = std::sync::mpsc::channel::<()>();
+        let locks = harness.locks.clone();
+        let repo = harness.repo.path().to_path_buf();
+        let writer = thread::spawn(move || {
+            locks.run(&repo, || {
+                locked.send(()).unwrap();
+                held.recv().unwrap();
+            })
+        });
+        wait_locked.recv().unwrap();
+
+        let done = harness.run_remote(|repo| delete_remote(repo, "origin", "x", true));
+        let pushed = Instant::now();
+        while !harness.ran("push --progress --porcelain origin :refs/heads/x") {
+            assert!(
+                pushed.elapsed() < Duration::from_secs(30),
+                "the push did not run"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            done.try_recv().is_err(),
+            "it must wait for the write in progress"
+        );
+        assert!(harness.git(&["branch", "--list", "x"]).contains('x'));
+
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        let outcome = done.recv_timeout(Duration::from_secs(60)).unwrap().unwrap();
+        assert_eq!(outcome.local.len(), 1);
+        assert_eq!(harness.git(&["branch", "--list", "x"]), "");
+    }
+
     fn in_bare(bare: &TempDir, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = crate::test_support::git_command()
             .args(args)
             .current_dir(bare.path())
             .output()

@@ -5,16 +5,18 @@
     branchList,
     onBranchSyncChanged,
     onRepoChanged,
+    repoState,
     type BranchList,
     type BranchSync,
   } from "../lib/api";
   import Icon from "../lib/Icon.svelte";
   import { fetching } from "../update/flow";
-  import { matchBranchPanelShortcut } from "../lib/keymap";
+  import { matchBranchPanelShortcut, matchShortcut } from "../lib/keymap";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { isProtected, type VcsAction } from "../log/contextMenu";
   import {
     branchActions,
+    branchesOf,
     buildTree,
     highlighted,
     refOf,
@@ -24,6 +26,9 @@
     type GroupNode,
     type TreeNode,
   } from "./model";
+  import { compareBranches, showBranchesDiff } from "../compare/actions";
+  import { errorText } from "../lib/errors";
+  import { notify } from "../lib/notifications";
   import {
     branchOptions,
     favorites,
@@ -33,13 +38,14 @@
     toggleFavorite,
   } from "./state";
 
-  // The log's branches panel: `BranchesDashboardUi`, without `Compare` (phase 4) or `Show My Branches`.
+  // The log's branches panel: `BranchesDashboardUi`, without `Show My Branches`.
   interface Props {
     active: boolean;
     onfilter: (branches: string[]) => void;
     onnavigate: (branch: string) => void;
     onhide: () => void;
-    onvcs?: (action: VcsAction) => void;
+    // What it returns is awaited when several branches go one after the other.
+    onvcs?: (action: VcsAction) => void | Promise<void>;
     onfetch?: () => Promise<unknown>;
   }
 
@@ -52,6 +58,9 @@
   const MANY_NODES = 30000;
 
   let list = $state.raw<BranchList | null>(null);
+  // HEAD's hash, empty before the first commit (`Repository.isFresh`), which turns the
+  // comparisons off.
+  let head = $state<string | null>(null);
   let sync = $state.raw<Record<string, BranchSync>>({});
   let text = $state("");
   let selected = $state.raw<string[]>([]);
@@ -105,9 +114,10 @@
     readSync();
     try {
       await refs.note();
-      const branches = await branchList();
+      const [branches, state] = await Promise.all([branchList(), repoState().catch(() => null)]);
       if (token !== readToken) return;
       list = branches;
+      head = state?.head ?? null;
       if (firstRead) {
         firstRead = false;
         const many = branches.local.length + branches.remote.length > MANY_NODES;
@@ -192,6 +202,7 @@
       if (single?.section !== "remote") run("rename");
     } else if (action === "Git.New.Branch.In.Log") run("newBranch");
     else if (action === "Git.Log.Branches.Navigate.Log.To.Selected.Branch") navigate();
+    else if (matchShortcut(event) === "Diff.ShowDiff") compareWithCurrent();
     else return false;
     event.preventDefault();
     event.stopPropagation();
@@ -204,18 +215,57 @@
     if (!event.metaKey && !event.ctrlKey) event.stopPropagation();
   }
 
-  function contextmenu(event: MouseEvent, branch: BranchNode) {
+  // `guessRepo.currentBranch`: the current branch whatever is folded or filtered in the tree.
+  function currentBranchNode(): BranchNode | null {
+    const name = list?.current ?? null;
+    if (name === null) return null;
+    const found = branchesOf(tree).find((node) => node.current && node.section === "local");
+    if (found) return found;
+    const tracked = list?.local.find((local) => local.name === name)?.tracked ?? null;
+    return {
+      kind: "branch",
+      id: `local:${name}`,
+      section: "local",
+      name,
+      label: name,
+      current: true,
+      favorite: false,
+      tracked,
+      match: null,
+    };
+  }
+
+  // `branch` is `null` on the HEAD row.
+  function contextmenu(event: MouseEvent, branch: BranchNode | null) {
     event.preventDefault();
-    selected = [branch.id];
+    // A right click inside the selection keeps it (`BranchesTreeComponent`); outside it chooses
+    // only that row.
+    const id = branch?.id ?? HEAD_ID;
+    if (!selected.includes(id)) selected = [id];
+    // `BranchActionsBuilder.build` (`BranchesDashboardActions.kt:128-170`): the branches chosen,
+    // HEAD not counted; several give their own menu; HEAD chosen, alone or with one branch, gives
+    // the current branch's menu (`CurrentBranchActions`, `:165-167`).
+    if (selectedBranches.length > 1) {
+      menu = {
+        x: event.clientX,
+        y: event.clientY,
+        label: "Branches",
+        items: severalItems(selectedBranches),
+      };
+      return;
+    }
+    const shown = selected.includes(HEAD_ID) ? currentBranchNode() : branch;
+    if (!shown) return;
     menu = {
       x: event.clientX,
       y: event.clientY,
-      label: branch.name,
-      items: branchActions(branch, {
+      label: shown.name,
+      items: branchActions(shown, {
         current: list?.current ?? null,
         remotes: (list?.remote.length ?? 0) > 0,
         onvcs,
         protectedBranches: $protectedBranches,
+        head,
       }),
     };
   }
@@ -257,6 +307,80 @@
 
   function run(operation: "newBranch" | "delete" | "update" | "rename") {
     if (single) onvcs?.({ kind: "ref", operation, ref: refOf(single) });
+  }
+
+  const failed = (failure: unknown) => notify({ kind: "error", title: errorText(failure) });
+
+  // `ShowBranchDiffAction` (`Compare with Current`, `B:604`, the toolbar's diff button and ⌘D):
+  // each chosen branch that is not the current one against the current one.
+  const others = $derived(selectedBranches.filter((branch) => !branch.current));
+
+  function compareWithCurrent() {
+    const start = list?.current ?? "HEAD";
+    for (const branch of others) compareBranches(branch.name, start).catch(failed);
+  }
+
+  // `DeleteBranchAction.delete` (`BranchesDashboardActions.kt:303-321`): the local branches first,
+  // each as its own deletion, then all the remote ones with one question
+  // (`GitDeleteRemoteBranchOperation`).
+  async function deleteSeveral(branches: BranchNode[]) {
+    const locals = branches.filter((branch) => branch.section !== "remote");
+    const remotes = branches.filter((branch) => branch.section === "remote");
+    for (const branch of locals) await onvcs?.({ kind: "ref", operation: "delete", ref: refOf(branch) });
+    if (remotes.length > 0) {
+      await onvcs?.({ kind: "deleteRemotes", names: remotes.map((branch) => branch.name) });
+    }
+  }
+
+  // `MultipleLocalBranchActions` (`BranchesDashboardActions.kt:68-71`), the menu of several chosen
+  // branches: `ShowArbitraryBranchesDiffAction` (`Compare Branches`, `B:605`) and
+  // `ShowArbitraryBranchesFileDiffAction` (`Show Files Diff`, `B:607`), only with exactly two
+  // (`BranchesPairActionBase`, `:350-371`), then `UpdateSelectedBranchAction` (only with remotes, on
+  // when one of them tracks a branch, `:224-262`) and `DeleteBranchAction` (`Delete branches`, off
+  // with the current branch or a protected remote one, `:264-296`).
+  function severalItems(branches: BranchNode[]): MenuItem[] {
+    const [one, two] = branches;
+    const pair: MenuItem[] =
+      branches.length === 2
+        ? [
+            {
+              label: "Compare Branches",
+              title: "Compare selected branches with each other",
+              run: () => void compareBranches(one.name, two.name).catch(failed),
+            },
+            {
+              label: "Show Files Diff",
+              title: "Show diff between the selected branch heads",
+              run: () => void showBranchesDiff(one.name, two.name).catch(failed),
+            },
+          ]
+        : [];
+    const tracking = branches.filter((branch) => branch.section !== "remote" && branch.tracked !== null);
+    const update: MenuItem[] =
+      (list?.remote.length ?? 0) > 0
+        ? [
+            {
+              label: "Update Selected",
+              disabled: !onvcs || tracking.length === 0 || $fetching,
+              run: () =>
+                void onvcs?.({ kind: "updateBranches", names: tracking.map((branch) => branch.name) }),
+            },
+          ]
+        : [];
+    const undeletable = branches.some(
+      (branch) =>
+        branch.current ||
+        (branch.section === "remote" && isProtected(refOf(branch), $protectedBranches)),
+    );
+    return [
+      ...pair,
+      ...update,
+      {
+        label: "Delete branches",
+        disabled: !onvcs || undeletable,
+        run: () => void deleteSeveral(branches),
+      },
+    ];
   }
 
   function navigate() {
@@ -326,6 +450,7 @@
         single.current ||
         (single.section === "remote" && isProtected(refOf(single), $protectedBranches)),
     )}
+    {@render toolbarButton("Compare with Current", "diff", compareWithCurrent, others.length === 0)}
     {@render toolbarButton("Fetch All Remotes", "fetch", fetchRemotes, !onfetch || $fetching)}
     {@render toolbarButton(
       "Mark/Unmark As Favorite",
@@ -374,6 +499,7 @@
           style:padding-left="24px"
           onclick={(event) => select(event, HEAD_ID)}
           ondblclick={updateFilter}
+          oncontextmenu={(event) => contextmenu(event, null)}
         >
           <span class="label">{HEAD_LABEL}</span>
         </div>

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ConflictSides, MergeBlock, Settings } from "../lib/api";
+import type { ConflictSides, MergeBlock, RangeCommit, Settings } from "../lib/api";
 import MergeWindow from "./MergeWindow.svelte";
 import { unprocessedMessage, withSeparator } from "./model";
 
@@ -42,6 +42,7 @@ const SIDES: ConflictSides = {
   hash: "h",
   reversed: false,
   blocks: [CONFLICT],
+  details: [null, null],
 };
 
 // One change on each side, without conflict.
@@ -710,4 +711,200 @@ test("abort_and_rollback_closes_the_patch_merge_as_aborted", async () => {
   await answer("Abort Patch", "Abort and Rollback");
 
   await waitFor(() => expect(doneArgs()).toEqual([{ result: "abort" }]));
+});
+
+const HEAD = "1".repeat(40);
+const BASE = "2".repeat(40);
+const PICKED = "3".repeat(40);
+const [ONE, TWO, THREE] = ["a", "b", "c"].map((letter) => letter.repeat(40));
+
+// A cherry-pick: the local commits since the merge base on the left, the picked one on the right.
+const PICKING: ConflictSides = {
+  ...SIDES,
+  titles: ["Local Changes", "Result", "Changes from cherry-pick 33333333"],
+  details: [
+    { kind: "range", from: BASE, to: HEAD },
+    { kind: "commit", hash: PICKED },
+  ],
+};
+
+const RANGE: RangeCommit[] = [
+  { hash: ONE, subject: "touches b", conflicted: false },
+  { hash: TWO, subject: "touches a", conflicted: true },
+  { hash: THREE, subject: "touches c", conflicted: false },
+];
+
+const changed = (hash: string, path: string) => ({
+  hash,
+  group: {
+    parent: null,
+    subject: null,
+    base: "f".repeat(40),
+    merge: false,
+    files: [
+      { path: "other.txt", oldPath: null, status: "M" },
+      { path, oldPath: null, status: "M" },
+    ],
+    size: 2,
+  },
+});
+
+function mockDetails(sides: ConflictSides) {
+  vi.mocked(invoke).mockClear();
+  mockCommands({
+    conflict_sides: task(sides),
+    merge_range_commits: task(RANGE),
+    // One commit's changes, and those of several.
+    commit_changes_of: (args: { hash: string }) => [changed(args.hash, "a.txt").group],
+    commit_changes_start: (args: { hashes: string[] }) =>
+      task({ commits: args.hashes.map((hash) => changed(hash, "a.txt")), maxSize: 2 })(),
+    commit_details: (args: { hashes: string[] }) =>
+      args.hashes.map((hash) => ({
+        hash,
+        subject: `subject ${hash[0]}`,
+        body: "body",
+        author: "Ana",
+        authorEmail: "ana@example.com",
+        authorTime: 100,
+        committer: "Ana",
+        committerEmail: "ana@example.com",
+        commitTime: 100,
+        samePerson: true,
+        refs: [],
+        parents: [],
+        links: {},
+      })),
+    task_cancel: () => undefined,
+    file_sides: () => ({
+      old: { kind: "text", content: "a\n" },
+      new: { kind: "text", content: "b\n" },
+    }),
+  });
+}
+
+const titleTexts = () =>
+  [...document.querySelectorAll(".rm-merge-title")].map((title) => [
+    title.querySelector(".rm-merge-title-text")?.textContent ?? title.textContent,
+    title.querySelector(".rm-merge-title-link")?.textContent ?? null,
+  ]);
+
+test("show_details_appears_only_in_merge_rebase_and_cherry_pick", async () => {
+  mockDetails(PICKING);
+  await open();
+
+  // At the right of the left and the right title, not the result's.
+  expect(titleTexts()).toEqual([
+    ["Local Changes", "Show Details"],
+    ["Result", null],
+    ["Changes from cherry-pick 33333333", "Show Details"],
+  ]);
+  cleanup();
+
+  // Without what the operation gives (a revert, an unstash, a patch), the titles alone.
+  mockDetails(SIDES);
+  await open();
+  expect(titleTexts().map(([, link]) => link)).toEqual([null, null, null]);
+  cleanup();
+
+  // A binary file has them too.
+  const binary = { kind: "binary" as const };
+  mockDetails({ ...PICKING, yours: binary, theirs: binary, base: binary, blocks: [] });
+  await open();
+  expect(screen.getAllByRole("button", { name: "Show Details" })).toHaveLength(2);
+});
+
+test("a_single_commit_shows_its_changes_with_the_conflicted_file_and_its_message", async () => {
+  mockDetails(PICKING);
+  await open();
+
+  await fireEvent.click(document.querySelectorAll<HTMLElement>(".rm-merge-title-link")[1]);
+
+  const dialog = await screen.findByRole("dialog", { name: "Changes from cherry-pick 33333333" });
+  await waitFor(() => expect(calls("commit_changes_of")).toHaveLength(1));
+  expect(calls("commit_changes_of")[0][1]).toEqual({ hash: PICKED, mode: "merged" });
+  const message = within(dialog).getByLabelText("Commit message");
+  await waitFor(() => expect(message.textContent).toBe("subject 3\n\nbody"));
+  const chosen = await within(dialog).findByRole("treeitem", { name: "a.txt", selected: true });
+  expect(chosen).toBeTruthy();
+  // Keys belong to the dialog: ⌘⏎ does not apply the merge underneath.
+  await fireEvent.keyDown(window, { key: "Enter", metaKey: true });
+  expect(calls("conflict_resolve")).toHaveLength(0);
+
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a_range_side_lists_its_commits_filtered_by_the_conflicted_file", async () => {
+  mockDetails(PICKING);
+  await open();
+
+  await fireEvent.click(document.querySelectorAll<HTMLElement>(".rm-merge-title-link")[0]);
+
+  const dialog = await screen.findByRole("dialog", { name: "Local Changes" });
+  expect(calls("merge_range_commits")[0][1]).toEqual({ from: BASE, to: HEAD, path: "a.txt" });
+  const list = await within(dialog).findByRole("listbox", { name: "Commits" });
+  const subjects = () => within(list).getAllByRole("option").map((option) => option.textContent?.trim());
+  const filter = within(dialog).getByRole("checkbox", { name: "Filter by conflicted file" });
+  expect((filter as HTMLInputElement).checked).toBe(true);
+  // Only the commits that touched the file, the first one selected.
+  expect(subjects()).toEqual(["touches a"]);
+  await waitFor(() => expect(calls("commit_changes_of").at(-1)?.[1]).toMatchObject({ hash: TWO }));
+
+  // Without the filter every commit shows, and the selection stays.
+  await fireEvent.click(filter);
+  expect(subjects()).toEqual(["touches b", "touches a", "touches c"]);
+  const selected = () =>
+    within(list)
+      .getAllByRole("option")
+      .filter((option) => option.getAttribute("aria-selected") === "true")
+      .map((option) => option.textContent?.trim());
+  expect(selected()).toEqual(["touches a"]);
+
+  // Several selected: their changes together.
+  await fireEvent.click(within(list).getByRole("option", { name: "touches c" }), { metaKey: true });
+  await waitFor(() =>
+    expect(calls("commit_changes_start").at(-1)?.[1]).toMatchObject({ hashes: [TWO, THREE] }),
+  );
+
+  // Filtering again keeps what still shows.
+  await fireEvent.click(filter);
+  expect(selected()).toEqual(["touches a"]);
+
+  await fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("the_range_list_has_a_speed_search_and_a_double_click_shows_the_diff", async () => {
+  mockDetails(PICKING);
+  await open();
+  await fireEvent.click(document.querySelectorAll<HTMLElement>(".rm-merge-title-link")[0]);
+  const dialog = await screen.findByRole("dialog", { name: "Local Changes" });
+  const filter = await within(dialog).findByRole("checkbox", { name: "Filter by conflicted file" });
+  await fireEvent.click(filter);
+  const list = within(dialog).getByRole("listbox", { name: "Commits" });
+  const selected = () =>
+    within(list)
+      .getAllByRole("option")
+      .filter((option) => option.getAttribute("aria-selected") === "true")
+      .map((option) => option.textContent?.trim());
+
+  // Typing goes to the first subject that matches, and the arrows go between the matches.
+  for (const key of "touches c") await fireEvent.keyDown(list, { key });
+  expect(within(list).getByRole("status").textContent).toBe("touches c");
+  expect(selected()).toEqual(["touches c"]);
+  await fireEvent.keyDown(list, { key: "Backspace" });
+  await fireEvent.keyDown(list, { key: "ArrowUp" });
+  expect(selected()).toEqual(["touches a"]);
+  await fireEvent.keyDown(list, { key: "Escape" });
+  expect(within(list).queryByRole("status")).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Local Changes" })).toBeTruthy();
+
+  // A double click on a change opens its diff over the dialog.
+  const change = await within(dialog).findByRole("treeitem", { name: "a.txt" });
+  await fireEvent.dblClick(change);
+  const diff = await screen.findByRole("dialog", { name: "a.txt" });
+  await waitFor(() => expect(calls("file_sides")).toHaveLength(1));
+  await fireEvent.click(within(diff).getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "a.txt" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Local Changes" })).toBeTruthy();
 });

@@ -18,6 +18,7 @@ use crate::branches::{self, CheckoutMode, CheckoutOutcome, Repo, ResetMode};
 use crate::commit;
 use crate::editor::{Ask, EditKind, EditorHandler, Form, Prompt, Request};
 use crate::git::{self, GitError};
+use crate::history;
 use crate::operation::{self, Operation};
 use crate::rebase::{self, Kept, Outcome, Process, Rebased};
 use crate::settings;
@@ -1050,6 +1051,8 @@ fn commits_of(path: &Path, entries: Vec<Entry>) -> Result<Vec<RebaseCommit>, Git
         return Ok(Vec::new());
     }
     let mut args = vec![
+        history::NO_SIGNATURES[0],
+        history::NO_SIGNATURES[1],
         "log",
         "--no-walk=unsorted",
         "--format=%H%x00%B%x00",
@@ -1763,7 +1766,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let output = Command::new("git")
+        let output = crate::test_support::git_command()
             .current_dir(harness.path())
             .args(["rebase", "-i", base])
             .env("GIT_SEQUENCE_EDITOR", &script)
@@ -2140,6 +2143,44 @@ mod tests {
             harness.run(|repo| ok_or_text(autosquash_with(repo, "--root", Arc::new(Trivial))));
 
         assert!(refused.is_err());
+    }
+
+    // `commits_of` runs git without a task: with signed commits and `log.showSignature` on, the
+    // signature check git prints must not get into the hashes or the messages.
+    #[test]
+    fn signatures_stay_out_of_the_interactive_rows() {
+        let harness = RepoHarness::new();
+        harness.repo.sign_commits();
+        let hashes: Vec<String> = ["base", "A", "B"]
+            .iter()
+            .map(|name| {
+                harness
+                    .repo
+                    .commit(&format!("{name}.txt"), name.as_bytes(), name)
+            })
+            .collect();
+        assert!(harness
+            .git(&["log", "-1", "--format=%H"])
+            .contains("No signature"));
+
+        let first = hashes[1].clone();
+        let start = harness
+            .run(move |repo| ok_or_text(interactive_start(repo, &first)))
+            .unwrap();
+
+        let rows: Vec<(String, String)> = start
+            .commits
+            .unwrap()
+            .into_iter()
+            .map(|commit| (commit.full, commit.message))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (hashes[1].clone(), "A".to_string()),
+                (hashes[2].clone(), "B".to_string())
+            ]
+        );
     }
 
     #[test]

@@ -5,8 +5,11 @@
   import { store, stored } from "../lib/storage";
   import FilePane from "../diff/FilePane.svelte";
   import { loadOptions, storeWrap } from "../diff/options";
+  import { errorText } from "../lib/errors";
+  import { openInViewer } from "../viewer/window";
   import ChangesPanel from "./ChangesPanel.svelte";
   import type { CheckinRequest } from "./checkin";
+  import { showDiffOnDoubleClick } from "./showOnDoubleClick";
 
   // `VcsConfiguration.LOCAL_CHANGES_DETAILS_PREVIEW_SHOWN` (default true) and the proportion of
   // `PreviewDiffSplitterComponent` (0.3 for the tree), under IntelliJ's keys.
@@ -51,8 +54,8 @@
     panel?.focusTree();
   }
 
-  export function rollback() {
-    panel?.requestRollback();
+  export function rollback(paths?: string[]) {
+    panel?.requestRollback(paths);
   }
 
   // After a commit of this list from the dialog: if it is not the active one and was left empty, its
@@ -79,6 +82,21 @@
 
   function showDiff(file: FileChange, comparison?: StageComparison) {
     onshowdiff?.(file, comparison);
+  }
+
+  // `LocalChangesListView`'s double click and Enter (`ChangesViewManager.java:361-369`): the
+  // sources of the selection (`OpenSourceUtil.openSourcesFrom`), in rama's viewer; a file that is
+  // not on disk opens nothing. With `Show on Double-Click` ▸ `Diff`, the diff
+  // (`isPreviewOnDoubleClickAllowed`, `isPreviewOnEnterAllowed`, 641-651).
+  function open(file: FileChange, comparison?: StageComparison) {
+    if (showDiffOnDoubleClick()) {
+      showDiff(file, comparison);
+      return;
+    }
+    const selected = panel?.selectedChanges().paths ?? [];
+    const paths = selected.includes(file.path) ? selected : [file.path];
+    const targets = paths.map((path) => ({ path, revision: null, line: null }));
+    openInViewer(targets).catch((failure) => panel?.notify("error", errorText(failure)));
   }
 
   // `ChangesView.SingleClickPreview`.
@@ -152,7 +170,7 @@
       checkable={false}
       toolbar="vertical"
       onrefresh={() => version++}
-      onopen={showDiff}
+      onopen={open}
       onshowdiff={showDiff}
       onselection={(_paths, _lists, lead) => (previewPath = lead)}
       oncheckinfiles={checkinFiles}

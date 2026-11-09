@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import { sideMessage, sideText, unchangedText } from "./sides";
+import type { RevisionSides } from "../lib/api";
+import { sameSides, sideMessage, sideText, unchangedText } from "./sides";
 
 test("no_message_for_text", () => {
   expect(sideMessage({ kind: "text", content: "hello" })).toBeNull();
@@ -31,4 +32,24 @@ test("two_equal_sides_have_no_changes", () => {
   );
   expect(unchangedText({ old: text, new: { kind: "absent" } }, "HEAD")).toBeNull();
   expect(unchangedText({ old: text, new: { kind: "text", content: "b\n" } }, "HEAD")).toBeNull();
+});
+
+test("two_revision_sides_differ_by_their_preview_and_binary_fields", () => {
+  const sides: RevisionSides = {
+    old: { kind: "binary" },
+    new: { kind: "binary" },
+    hunks: [],
+    editable: false,
+    note: null,
+    hash: null,
+    conflicted: false,
+    oldPreview: false,
+    newPreview: false,
+    identical: true,
+  };
+
+  expect(sameSides(sides, { ...sides })).toBe(true);
+  expect(sameSides(sides, { ...sides, identical: false })).toBe(false);
+  expect(sameSides(sides, { ...sides, oldPreview: true })).toBe(false);
+  expect(sameSides(sides, { ...sides, newPreview: true })).toBe(false);
 });

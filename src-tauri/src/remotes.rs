@@ -446,7 +446,7 @@ mod tests {
 
     fn bare() -> TempDir {
         let dir = TempDir::new().unwrap();
-        let status = Command::new("git")
+        let status = crate::test_support::git_command()
             .args(["init", "-q", "--bare", "-b", "main"])
             .arg(dir.path())
             .status()

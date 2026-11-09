@@ -326,6 +326,10 @@
     wrap: boolean;
     onedit: () => void;
     onaction: (action: VersionAction) => void;
+    // A merge of the file history (`MergedChangeDiffRequestProvider`): the three versions as they
+    // are, without arrows, under their own titles.
+    readOnly?: boolean;
+    titles?: [string, string, string];
   }
 
   export class VersionEditors {
@@ -343,7 +347,7 @@
         changesField.init(() => changes),
         linesField,
         lineNumbers(),
-        versionsGutter,
+        config.readOnly ? [] : versionsGutter,
         gutterBackground,
         highlightActiveLine(),
         highlightActiveLineGutter(),
@@ -354,15 +358,14 @@
         EditorView.updateListener.of((update) => this.onupdate(update)),
       ];
       const editable = [history(), keymap.of([...defaultKeymap, ...historyKeymap])];
+      const fixed = (text: string) => [common(text), EditorState.readOnly.of(true), keymap.of(defaultKeymap)];
       this.panes = new ThreePanes(parent, {
         className: "rm-merge",
-        titles: ["HEAD", "Staged", "Local"],
+        titles: config.titles ?? ["HEAD", "Staged", "Local"],
         docs: [head, staged, local],
-        extensions: [
-          [common(head), EditorState.readOnly.of(true), keymap.of(defaultKeymap)],
-          [common(staged), editable],
-          [common(local), editable],
-        ],
+        extensions: config.readOnly
+          ? [fixed(head), fixed(staged), fixed(local)]
+          : [fixed(head), [common(staged), editable], [common(local), editable]],
         mapLine: (from, to, line) => this.mapLine(from, to, line),
         bands: (side) => this.bands(side),
         synced: config.synced,

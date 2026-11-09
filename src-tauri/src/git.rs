@@ -297,6 +297,9 @@ pub(crate) fn command(binary: &Path, repo: &Path, args: &[&str]) -> Result<Comma
         .env("GIT_OPTIONAL_LOCKS", "0")
         // `GitCommand.IJ_HANDLER_MARKER_ENV`: lets the user's hooks tell that the IDE runs git.
         .env("INTELLIJ_GIT_EXECUTABLE", "true");
+    // The tests' git does not read the machine's configuration; the app's does.
+    #[cfg(test)]
+    crate::test_support::isolate(&mut command);
     Ok(command)
 }
 
@@ -473,6 +476,106 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    // The tests read no configuration of the machine (`test_support::isolate`), neither through
+    // the code under test nor through the git they spawn themselves: only the repository's.
+    #[test]
+    fn the_tests_git_reads_only_the_repository_configuration() {
+        let repo = TempRepo::new();
+        let scopes = |output: &[u8]| -> Vec<String> {
+            let mut scopes: Vec<String> = String::from_utf8_lossy(output)
+                .lines()
+                .filter_map(|line| line.split('\t').next())
+                .map(str::to_string)
+                .collect();
+            scopes.dedup();
+            scopes
+        };
+        let args = ["config", "--list", "--show-scope"];
+
+        let through_run = run(repo.path(), &args).unwrap();
+        let spawned = crate::test_support::git_command()
+            .current_dir(repo.path())
+            .args(args)
+            .output()
+            .unwrap();
+
+        assert_eq!(scopes(&through_run), ["local"]);
+        assert_eq!(scopes(&spawned.stdout), ["local"]);
+    }
+
+    // Paths that the user's own `~/.config/git/ignore` (git's default `core.excludesFile`) would
+    // ignore, plus a few common ones.
+    fn paths_the_user_would_ignore() -> Vec<String> {
+        let mut paths: Vec<String> = [".DS_Store", ".claude/x", ".idea/x", "x.log", "x.swp"]
+            .map(str::to_string)
+            .to_vec();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let file = home.map(|home| home.join(".config/git/ignore"));
+        let text = file
+            .and_then(|file| fs::read_to_string(file).ok())
+            .unwrap_or_default();
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with(['#', '!']) || line.contains(['[', '\\']) {
+                continue;
+            }
+            let folder = line.ends_with('/');
+            let name = line.trim_matches('/').replace(['*', '?'], "x");
+            paths.push(if folder { format!("{name}/x") } else { name });
+        }
+        paths
+    }
+
+    // Git also reads `$XDG_CONFIG_HOME/git/ignore` and `attributes` (by default under `~/.config`)
+    // without any setting: the tests point `XDG_CONFIG_HOME` at an empty folder of their own, and
+    // no path is ignored or given an attribute by a file outside the repository.
+    #[test]
+    fn the_tests_git_reads_no_ignore_or_attributes_file_of_the_user() {
+        let repo = TempRepo::new();
+        let (_, xdg) = crate::test_support::isolated_places();
+        let command = crate::test_support::git_command();
+        let set = command
+            .get_envs()
+            .find(|(name, _)| *name == "XDG_CONFIG_HOME")
+            .and_then(|(_, value)| value);
+        assert_eq!(set, Some(xdg.as_os_str()));
+        assert_eq!(fs::read_dir(xdg).unwrap().count(), 0);
+        let input: String = paths_the_user_would_ignore()
+            .iter()
+            .map(|path| format!("{path}\n"))
+            .collect();
+
+        // `check-ignore` exits with 1 when nothing is ignored.
+        let mut check = crate::test_support::git_command();
+        let mut child = check
+            .current_dir(repo.path())
+            .args(["check-ignore", "--no-index", "-v", "-n", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let ignored = child.wait_with_output().unwrap();
+        let attributes = run_with_input(
+            repo.path(),
+            &["check-attr", "-a", "--stdin"],
+            input.as_bytes(),
+        )
+        .unwrap();
+
+        let ignored = String::from_utf8_lossy(&ignored.stdout);
+        let matched: Vec<&str> = ignored
+            .lines()
+            .filter(|line| !line.starts_with("::"))
+            .collect();
+        assert!(matched.is_empty(), "{matched:?}");
+        assert_eq!(String::from_utf8_lossy(&attributes), "");
     }
 
     #[test]
@@ -661,7 +764,7 @@ mod tests {
             linked.to_str().unwrap(),
         ]);
         let in_linked = |args: &[&str]| {
-            let output = std::process::Command::new("git")
+            let output = crate::test_support::git_command()
                 .current_dir(&linked)
                 .args(args)
                 .output()

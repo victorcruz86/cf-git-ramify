@@ -1,4 +1,4 @@
-import type { FileSides, Side, WorktreeSides } from "../lib/api";
+import type { FileSides, RevisionSides, Side, WorktreeSides } from "../lib/api";
 
 const BYTES_IN_MB = 1024 * 1024;
 
@@ -17,13 +17,35 @@ export function sideText(side: Side): string {
   return side.kind === "text" ? side.content : "";
 }
 
-// Two identical text sides: a mode change or a rename without edits.
-export function unchangedText(sides: FileSides, against: string): string | null {
+// `DB:41`, `DB:42`, `DB:46-47`, `DB:273`.
+export const IDENTICAL_TEXT = "Contents are identical";
+export const TOO_LARGE_TEXT = "Files are too large to compare";
+export const BINARY_IDENTICAL_TEXT = "Files contents are identical";
+export const BINARY_DIFFERENT_TEXT = "Files contents are different";
+export const PREVIEW_TEXT = "File is too large. Only preview is loaded.";
+
+// Two identical text sides: a mode change or a rename without edits. Without `against`, the
+// comparison of two revisions, with 241's text.
+export function unchangedText(sides: FileSides, against: string | null): string | null {
   if (sides.old.kind !== "text" || sides.new.kind !== "text") return null;
-  return sides.old.content === sides.new.content ? `No changes compared to ${against}` : null;
+  if (sides.old.content !== sides.new.content) return null;
+  return against === null ? IDENTICAL_TEXT : `No changes compared to ${against}`;
 }
 
-export function sameSides(left: WorktreeSides, right: WorktreeSides): boolean {
+// What two revisions show instead of the editors: two previews cannot be compared, and a binary
+// side is compared by its bytes, as `BinaryDiffViewer` does.
+export function revisionsMessage(sides: RevisionSides): string | null {
+  if (sides.oldPreview && sides.newPreview) return TOO_LARGE_TEXT;
+  if (sides.identical !== null) {
+    return sides.identical ? BINARY_IDENTICAL_TEXT : BINARY_DIFFERENT_TEXT;
+  }
+  return sideMessage(sides.old) ?? sideMessage(sides.new);
+}
+
+export function sameSides(
+  left: WorktreeSides | RevisionSides,
+  right: WorktreeSides | RevisionSides,
+): boolean {
   return (
     left.hash === right.hash &&
     left.editable === right.editable &&
@@ -33,6 +55,15 @@ export function sameSides(left: WorktreeSides, right: WorktreeSides): boolean {
     left.old.kind === right.old.kind &&
     left.new.kind === right.new.kind &&
     left.hunks.length === right.hunks.length &&
-    left.hunks.every((hunk, index) => hunk.id === right.hunks[index].id)
+    left.hunks.every((hunk, index) => hunk.id === right.hunks[index].id) &&
+    sameRevisionFields(left, right)
+  );
+}
+
+// Two revisions also differ by what is cut or binary: a binary has no text to tell them apart.
+function sameRevisionFields(left: WorktreeSides, right: WorktreeSides): boolean {
+  const [a, b] = [left as Partial<RevisionSides>, right as Partial<RevisionSides>];
+  return (
+    a.identical === b.identical && a.oldPreview === b.oldPreview && a.newPreview === b.newPreview
   );
 }

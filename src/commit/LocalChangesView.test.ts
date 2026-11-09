@@ -208,7 +208,33 @@ test("Preview Diff shows the selected file's diff without line checkboxes and is
   expect(calls("worktree_sides")).toHaveLength(reads);
 });
 
-test("double click opens the diff", async () => {
+// `SHOW_DIFF_ON_DOUBLE_CLICK` is false by default: a double click and Enter open the source of the
+// selection in the viewer.
+test("double click opens the source in the viewer", async () => {
+  mockCommands({ viewer_open: () => undefined });
+  const onshowdiff = vi.fn();
+  await open({ onshowdiff });
+
+  await fireEvent.click(row("a.txt"));
+  await fireEvent.dblClick(row("a.txt"));
+
+  expect(calls("viewer_open").map(([, args]) => args)).toEqual([
+    { targets: [{ path: "a.txt", revision: null, line: null }] },
+  ]);
+  await fireEvent.click(row("b.txt"), { metaKey: true });
+  await fireEvent.keyDown(screen.getByRole("tree"), { key: "Enter" });
+  expect(calls("viewer_open").at(-1)?.[1]).toEqual({
+    targets: [
+      { path: "a.txt", revision: null, line: null },
+      { path: "b.txt", revision: null, line: null },
+    ],
+  });
+  expect(onshowdiff).not.toHaveBeenCalled();
+});
+
+// `Show on Double-Click` ▸ `Diff` on: the diff instead.
+test("double click opens the diff with Show on Double-Click set to Diff", async () => {
+  localStorage.setItem("VcsApplicationSettings.SHOW_DIFF_ON_DOUBLE_CLICK", "true");
   mockCommands();
   const onshowdiff = vi.fn();
   await open({ onshowdiff });
@@ -217,6 +243,7 @@ test("double click opens the diff", async () => {
 
   expect(onshowdiff).toHaveBeenCalledTimes(1);
   expect(onshowdiff.mock.calls[0][0].path).toBe("a.txt");
+  expect(calls("viewer_open")).toEqual([]);
 });
 
 test("Commit… with nothing selected asks for the whole list and Commit File… for the selected files", async () => {

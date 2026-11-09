@@ -137,6 +137,9 @@ export interface DrawOptions {
   widths: ColumnWidths;
   now: number;
   highlight?: GraphHighlight | null;
+  // `Not Cherry-Picked Commits` (`DeepComparator.getStyle`): once known, the commits not picked
+  // keep their style and every other row, selected or not, takes the merge commits' grey.
+  notPicked?: ReadonlySet<string> | null;
   // Filled in with where the labels of each painted row end up.
   labelBounds?: Map<number, LabelBounds>;
 }
@@ -152,7 +155,10 @@ export interface TableCell {
   width: number;
 }
 
+// `subjectX` is where the Subject column (graph, references and subject) starts: 0 in the main
+// log, after Author and Date in a file history (`FileHistoryUiProperties`).
 export interface TableLayout {
+  subjectX: number;
   subjectWidth: number;
   cells: TableCell[];
 }
@@ -176,22 +182,31 @@ export function graphCellWidth(print: PrintRow, metrics: GraphMetrics): number {
   return Math.trunc((print.width / 2) * metrics.nodeWidth);
 }
 
-// `Subject` takes what the other columns leave, and is always the first.
+// The columns in their order. `Subject` takes what the others leave; without it in the list it goes
+// first, as the main log has always had it.
 export function tableLayout(
   width: number,
   columns: LogColumn[],
   widths: ColumnWidths,
 ): TableLayout {
-  const shown = columns.filter((column) => column !== "subject") as (keyof ColumnWidths)[];
-  const used = shown.reduce((total, column) => total + widths[column], 0);
-  let x = Math.max(0, width - used);
-  const subjectWidth = x;
-  const cells = shown.map((column) => {
-    const cell = { column, x, width: widths[column] };
-    x += widths[column];
-    return cell;
-  });
-  return { subjectWidth, cells };
+  const ordered: LogColumn[] = columns.includes("subject") ? columns : ["subject", ...columns];
+  const others = ordered.filter((column) => column !== "subject") as (keyof ColumnWidths)[];
+  const used = others.reduce((total, column) => total + widths[column], 0);
+  const subjectWidth = Math.max(0, width - used);
+  let x = 0;
+  let subjectX = 0;
+  const cells: TableCell[] = [];
+  for (const column of ordered) {
+    if (column === "subject") {
+      subjectX = x;
+      x += subjectWidth;
+      continue;
+    }
+    const cellWidth = widths[column as keyof ColumnWidths];
+    cells.push({ column, x, width: cellWidth });
+    x += cellWidth;
+  }
+  return { subjectX, subjectWidth, cells };
 }
 
 export const authorText = (row: LogRow) => row.author + (row.samePerson ? "" : "*");
@@ -268,7 +283,7 @@ export function nodeAt(print: PrintRow, x: number, y: number): boolean {
 
 export function drawRows(draw: DrawOptions): void {
   const { context, width, height, scrollTop, range, rowAt, selected, options, widths, now } = draw;
-  const { highlight, labelBounds } = draw;
+  const { highlight, labelBounds, notPicked = null } = draw;
   const layout = tableLayout(width, options.columns, widths);
 
   context.fillStyle = COLORS.background;
@@ -287,7 +302,8 @@ export function drawRows(draw: DrawOptions): void {
       context.fillStyle = isSelected ? COLORS.selection : COLORS.currentBranch;
       context.fillRect(0, top, width, ROW_HEIGHT);
     }
-    const labels = drawText(context, row, top, layout, isSelected, options, now);
+    const unmatched = notPicked !== null && !notPicked.has(row.hash);
+    const labels = drawText(context, row, top, layout, isSelected, options, now, unmatched);
     if (labels) labelBounds?.set(index, labels);
     paintGraphRow(
       context,
@@ -296,6 +312,7 @@ export function drawRows(draw: DrawOptions): void {
       top,
       layout.subjectWidth,
       highlight ? (element) => isHighlighted(highlight, index, element) : undefined,
+      layout.subjectX,
     );
   }
 }
@@ -362,12 +379,13 @@ export function paintGraphRow(
   top: number,
   clipWidth: number,
   isSelected: (element: GraphElement) => boolean = () => false,
+  left = 0,
 ): void {
   context.save();
   context.beginPath();
-  context.rect(0, top, clipWidth, metrics.rowHeight);
+  context.rect(left, top, clipWidth, metrics.rowHeight);
   context.clip();
-  context.translate(0, top);
+  context.translate(left, top);
   context.lineCap = "round";
   context.lineJoin = "bevel";
   const selected: GraphElement[] = [];
@@ -576,13 +594,15 @@ function drawText(
   isSelected: boolean,
   options: LogOptions,
   now: number,
+  unmatched: boolean,
 ): LabelBounds | null {
   const y = top + ROW_HEIGHT / 2;
-  const merge = options.highlights.mergeCommits && row.highlight.muted && !isSelected;
+  const merge = (options.highlights.mergeCommits && row.highlight.muted && !isSelected) || unmatched;
   const bold = options.highlights.myCommits && row.highlight.bold;
-  const graph = graphCellWidth(row.print, METRICS);
+  const graph = layout.subjectX + graphCellWidth(row.print, METRICS);
+  const subjectEnd = layout.subjectX + layout.subjectWidth;
   const subject = row.subject.replaceAll("\t", " ").trim();
-  const cell = Math.max(0, layout.subjectWidth - graph);
+  const cell = Math.max(0, subjectEnd - graph);
 
   context.save();
   context.beginPath();
@@ -604,7 +624,7 @@ function drawText(
   const color = merge ? COLORS.merge : COLORS.text;
   const left = options.refsOnLeft;
   const textX = left && width > 0 ? graph + width + LABEL_RIGHT : graph;
-  const labelsX = left ? graph : Math.max(graph, layout.subjectWidth - width);
+  const labelsX = left ? graph : Math.max(graph, subjectEnd - width);
   context.font = FONT;
   context.fillStyle = color;
   context.fillText(subject, textX, y);

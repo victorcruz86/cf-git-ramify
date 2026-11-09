@@ -50,6 +50,8 @@ use crate::worktree_diff::{self, ThreeSides, Written};
 const BRANCH_SYNC_EVENT: &str = "branch-sync-changed";
 // Per remote. One that does not answer must not leave anyone waiting: ssh takes minutes to give up.
 const CHECK_LIMIT: Duration = Duration::from_secs(60);
+// `merge.dialog.customizer.collecting.details.progress` (B:1293).
+const COLLECTING_DETAILS: &str = "Collecting Commits Details…";
 const ADDING_FILES: &str = "Adding Files to VCS…";
 const ADDING_REMOTE: &str = "Adding Remote…";
 const CHANGING_REMOTE: &str = "Changing Remote…";
@@ -429,6 +431,20 @@ pub async fn conflict_sides(
 ) -> Result<TaskId, ApiError> {
     read(&app, &state, LOADING_REVISIONS, move |repo| {
         conflicts::sides(repo, &path)
+    })
+}
+
+// The commits of a range of the merge window's `Show Details` (`SideDetails::Range`).
+#[tauri::command]
+pub async fn merge_range_commits(
+    from: String,
+    to: String,
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, COLLECTING_DETAILS, move |repo| {
+        conflicts::range_commits(repo, &from, &to, &path)
     })
 }
 
@@ -2581,7 +2597,7 @@ mod tests {
     }
 
     // Reads change nothing: there is nothing to save beforehand.
-    const READS: [&str; 36] = [
+    const READS: [&str; 37] = [
         "merge_message",
         "shelf_lists",
         "shelf_sides",
@@ -2592,6 +2608,7 @@ mod tests {
         "staging_three_sides",
         "conflicts_session",
         "conflict_sides",
+        "merge_range_commits",
         "merge_blocks",
         "fetch_all",
         "fetch_remote",
@@ -2628,14 +2645,19 @@ mod tests {
 
     #[test]
     fn mutating_without_saving_the_diff_is_not_allowed() {
-        let source = include_str!("vcs_commands.rs");
-        let source = &source[..source.find("#[cfg(test)]").unwrap()];
+        let code = |source: &'static str| &source[..source.find("#[cfg(test)]").unwrap()];
+        let source = [
+            code(include_str!("vcs_commands.rs")),
+            code(include_str!("get_version.rs")),
+        ]
+        .concat();
+        let source = source.as_str();
         let commands: Vec<&str> = source
             .split("pub async fn ")
             .skip(1)
             .map(|rest| &rest[..rest.find('(').unwrap()])
             .collect();
-        assert_eq!(commands.len(), 107, "{commands:?}");
+        assert_eq!(commands.len(), 110, "{commands:?}");
         let unsaved = |name: &&&str| {
             !READS.contains(name) && !ELSEWHERE.contains(name) && !WHILE_SAVING.contains(name)
         };

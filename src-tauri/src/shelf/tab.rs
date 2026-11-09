@@ -343,6 +343,91 @@ pub fn restore(data: &Path, names: &[String], now: SystemTime) -> io::Result<()>
     Ok(())
 }
 
+// rama's own recovery of what the store erased (`<data>/shelf-erased/`, kept 30 days): a folder
+// of it moved by hand into `<data>/shelf-restore/` goes back into the store when the repository
+// opens, before the cleanup.
+const RESTORE_DIR: &str = "shelf-restore";
+
+fn not_one_list() -> io::Error {
+    shelf::invalid("The folder does not hold one shelved changelist")
+}
+
+// What `restore_requested` brought back, and what it left where it was, with why.
+#[derive(Debug, Default)]
+pub struct RestoredErased {
+    pub lists: Vec<ShelvedList>,
+    pub errors: Vec<String>,
+}
+
+// Each folder of `<data>/shelf-restore/`, as `shelf-erased/` keeps a list (its folder `<name>/`
+// and `<name>.xml`), back into the store.
+pub fn restore_requested(data: &Path, now: SystemTime) -> RestoredErased {
+    let mut done = RestoredErased::default();
+    let base = data.join(RESTORE_DIR);
+    let Ok(entries) = fs::read_dir(&base) else {
+        return done;
+    };
+    let mut folders: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    folders.sort();
+    for folder in folders {
+        match restore_erased(data, &folder, now) {
+            Ok(list) => done.lists.push(list),
+            Err(error) => done.errors.push(format!("{}: {error}", folder.display())),
+        }
+    }
+    done
+}
+
+// `restore` (`RestoreShelvedChange`) for a list the store erased: its folder and its XML go back
+// into the store, and the list is no longer deleted and is dated now, so that the weekly cleanup
+// does not erase it again. Nothing moves when a list has that name or the folder does not hold
+// one list.
+fn restore_erased(data: &Path, erased: &Path, now: SystemTime) -> io::Result<ShelvedList> {
+    let _guard = shelf::lock();
+    let xmls: Vec<String> = fs::read_dir(erased)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|file| file.strip_suffix(".xml").map(str::to_string))
+        .collect();
+    let [name] = xmls.as_slice() else {
+        return Err(not_one_list());
+    };
+    let folder = erased.join(name);
+    if !shelf::valid_name(name) || !folder.symlink_metadata().is_ok_and(|meta| meta.is_dir()) {
+        return Err(not_one_list());
+    }
+    let root = shelf::shelf_root(data);
+    let (target, xml) = (root.join(name), shelf::xml_file(&root, name));
+    if target.symlink_metadata().is_ok() || xml.symlink_metadata().is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("A shelved changelist named {name} exists"),
+        ));
+    }
+    fs::create_dir_all(&root)?;
+    fs::rename(&folder, &target)?;
+    if let Err(error) = fs::rename(shelf::xml_file(erased, name), &xml) {
+        let _ = fs::rename(&target, &folder);
+        return Err(error);
+    }
+    let Ok(mut list) = find(data, name) else {
+        // Not a list of this store (its XML names another place): it goes back where it was.
+        let _ = fs::rename(&xml, shelf::xml_file(erased, name));
+        let _ = fs::rename(&target, &folder);
+        return Err(not_one_list());
+    };
+    list.deleted = false;
+    list.date_ms = millis(now);
+    shelf::store(data, &list)?;
+    let _ = fs::remove_dir(erased);
+    Ok(list)
+}
+
 //
 // Import Patches… and Import to Shelf
 //
@@ -1528,6 +1613,63 @@ mod tests {
         let restored = the_list(&harness, &three.name);
         assert!(!restored.deleted);
         assert_eq!(restored.date_ms, 90);
+    }
+
+    // Part 3's N3: a list the weekly cleanup erased, moved by hand from `shelf-erased/` into
+    // `shelf-restore/`, comes back whole (its binary copy too), no longer deleted and dated now,
+    // so the next cleanup keeps it. One whose name is taken again stays where it was put.
+    #[test]
+    fn a_list_restored_from_erased_survives_the_next_cleanup() {
+        const DAY: u64 = 24 * 60 * 60 * 1000;
+        let harness = RepoHarness::new();
+        harness.repo.commit("a.txt", LINES.as_bytes(), "first");
+        let data = harness.data.path();
+        let list = shelve(
+            &harness,
+            "Old work",
+            &[("a.txt", Some("a\n"))],
+            &[("x.png", Some(&[0, 1, 2]))],
+        );
+        delete(data, std::slice::from_ref(&list.name), &[], at(DAY)).unwrap();
+        assert_eq!(shelf::cleanup(data, at(9 * DAY)).unwrap(), 1);
+        assert!(find(data, &list.name).is_err());
+        let erased = data.join(format!("shelf-erased/{}-{}", 9 * DAY, list.name));
+        assert!(erased.is_dir());
+        fs::create_dir_all(data.join("shelf-restore")).unwrap();
+        let request = data.join("shelf-restore").join(erased.file_name().unwrap());
+        fs::rename(&erased, &request).unwrap();
+
+        let restored = restore_requested(data, at(10 * DAY));
+
+        assert_eq!(restored.lists.len(), 1, "{restored:?}");
+        assert!(restored.errors.is_empty(), "{restored:?}");
+        assert!(!request.exists());
+        let back = the_list(&harness, &list.name);
+        assert!(!back.deleted);
+        assert_eq!(back.date_ms, 10 * DAY);
+        assert_eq!(back.binaries.len(), 1);
+        assert_eq!(
+            fs::read(back.binaries[0].shelved.as_ref().unwrap()).unwrap(),
+            [0, 1, 2]
+        );
+        assert_eq!(shelf::cleanup(data, at(40 * DAY)).unwrap(), 0);
+        assert!(!the_list(&harness, &list.name).deleted);
+
+        // The name is taken: the request stays, and says why.
+        let other = shelve(&harness, "Other", &[("a.txt", Some("b\n"))], &[]);
+        delete(data, std::slice::from_ref(&other.name), &[], at(41 * DAY)).unwrap();
+        delete(data, std::slice::from_ref(&other.name), &[], at(41 * DAY)).unwrap();
+        let erased = data.join(format!("shelf-erased/{}-{}", 41 * DAY, other.name));
+        let request = data.join("shelf-restore").join(erased.file_name().unwrap());
+        fs::rename(&erased, &request).unwrap();
+        shelve(&harness, "Other", &[("a.txt", Some("c\n"))], &[]);
+
+        let refused = restore_requested(data, at(42 * DAY));
+
+        assert!(refused.lists.is_empty());
+        assert_eq!(refused.errors.len(), 1, "{refused:?}");
+        assert!(request.join(format!("{}.xml", other.name)).is_file());
+        assert!(request.join(&other.name).is_dir());
     }
 
     #[test]

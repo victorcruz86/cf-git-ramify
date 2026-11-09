@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
+  onDiffRequest,
+  onGitAction,
+  onGitFileAction,
+  onViewerOpen,
   branchesContaining,
   commitChangesOf,
   commitChangesStart,
@@ -28,6 +33,7 @@ import {
 } from "./api";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
 
 const selection: LineSelection[] = [
   { hunk: "h1", lines: null },
@@ -214,5 +220,40 @@ describe("three-way merge", () => {
       right: "c\n",
       policy: "ignore",
     });
+  });
+});
+
+// `emit_to(label, …)` also reaches a listener registered without a target (`{ kind: "Any" }`,
+// tauri `match_any_or_filter`): the Git actions sent to one window are heard by that window only.
+describe("a_targeted_git_action_reaches_its_own_window_only", () => {
+  const targetOf = (event: string) =>
+    vi.mocked(listen).mock.calls.filter(([name]) => name === event).at(-1)?.[2];
+
+  it("the main window listens as main, the viewer as viewer", async () => {
+    vi.mocked(listen).mockClear();
+    window.history.replaceState(null, "", "/index.html");
+    await onGitAction(() => {});
+    expect(targetOf("git-action")).toEqual({ target: "main" });
+    await onGitFileAction(() => {});
+    expect(targetOf("git-file-action")).toEqual({ target: "main" });
+
+    window.history.replaceState(null, "", "/index.html?window=viewer");
+    await onGitAction(() => {});
+    expect(targetOf("git-action")).toEqual({ target: "viewer" });
+    window.history.replaceState(null, "", "/");
+  });
+
+  // `viewer_open` sends `viewer-open` to the viewer and `diff_open` sends `diff-request` to the
+  // diff window (`emit_to`): another window that imports these helpers does not hear them.
+  it("the viewer and the diff window hear their own requests only", async () => {
+    vi.mocked(listen).mockClear();
+    window.history.replaceState(null, "", "/index.html?window=viewer");
+    await onViewerOpen(() => {});
+    expect(targetOf("viewer-open")).toEqual({ target: "viewer" });
+
+    window.history.replaceState(null, "", "/index.html?window=diff");
+    await onDiffRequest(() => {});
+    expect(targetOf("diff-request")).toEqual({ target: "diff" });
+    window.history.replaceState(null, "", "/");
   });
 });

@@ -109,7 +109,9 @@ export type DialogRequest =
     }
   | { kind: "localCommits"; title: string; message: string; rebase: boolean }
   | { kind: "unmerged"; title: string; message: string; commits: LostCommit[] }
-  | { kind: "deleteRemote"; branch: string; tracking: string[] }
+  // `confirmRemoteBranchDeletion`: one question for all the remote branches, with the local
+  // branches that track any of them, except the current one.
+  | { kind: "deleteRemote"; branches: string[]; tracking: string[] }
   | { kind: "reset"; source: string; target: ResetTarget; mode: ResetMode }
   | { kind: "resetHead"; branch: string }
   | { kind: "tag"; hash: string | null }
@@ -133,6 +135,8 @@ export interface BranchUi {
   showStashes?: () => void;
   // `Update` of a branch: it is the Update Project flow, which lives in `src/update`.
   updateBranch?: (name: string) => Promise<void>;
+  // `updateBranches`: several at once, one notification, the current one last.
+  updateBranches?: (names: string[]) => Promise<void>;
   // The push dialog, which lives in `src/push`.
   pushBranch?: (name: string) => Promise<void>;
   pushUpTo?: (hash: string) => Promise<void>;
@@ -578,14 +582,30 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
     if (deleted) notifyDeleted(deleted, started);
   }
 
-  async function deleteRemote(branch: string) {
-    const failure = `Failed to delete remote branch ${branch}`;
-    const tracking = await attempt(failure, () => api.trackers(branch));
-    if (!tracking) return;
-    const answer = await ui.ask<{ alsoLocal: boolean }>({ kind: "deleteRemote", branch, tracking });
+  // `GitDeleteRemoteBranchOperation.execute`: the trackers of every branch, one question for all of
+  // them, then each deletion with its own notification (`doDeleteRemote`, `notifySuccessfulDeletion`);
+  // with `Delete tracking local branches`, each takes its own trackers with it.
+  async function deleteRemote(...branches: string[]) {
+    const trackers: string[][] = [];
+    for (const branch of branches) {
+      const found = await attempt(failedRemote(branch), () => api.trackers(branch));
+      if (!found) return;
+      trackers.push(found);
+    }
+    const tracking = [...new Set(trackers.flat())];
+    const answer = await ui.ask<{ alsoLocal: boolean }>({ kind: "deleteRemote", branches, tracking });
     if (!answer) return;
+    for (const [index, branch] of branches.entries()) {
+      await deleteOneRemote(branch, answer.alsoLocal && trackers[index].length > 0);
+    }
+  }
+
+  const failedRemote = (branch: string) => `Failed to delete remote branch ${branch}`;
+
+  async function deleteOneRemote(branch: string, alsoLocal: boolean) {
+    const failure = failedRemote(branch);
     const started = generation;
-    const outcome = await attempt(failure, () => api.deleteRemote(branch, answer.alsoLocal));
+    const outcome = await attempt(failure, () => api.deleteRemote(branch, alsoLocal));
     if (!outcome) return;
     const also = outcome.local.map(({ name }) => name);
     const plural = also.length === 1 ? "branch" : "branches";
@@ -700,6 +720,10 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
     if (action.kind === "newBranch") return newBranchAt(action.hash);
     if (action.kind === "newTag") return tag(action.hash);
     if (action.kind === "ref") return runOnRef(action.operation, action.ref);
+    if (action.kind === "deleteRemotes") return deleteRemote(...action.names);
+    if (action.kind === "updateBranches") {
+      return ui.updateBranches?.(action.names) ?? Promise.resolve();
+    }
     // Cherry-Pick, Revert Commit and the selected changes belong to `src/log/applying.ts`.
     if (action.kind === "cherryPick" || action.kind === "revert") return Promise.resolve();
     if (action.kind === "applyPaths") return Promise.resolve();

@@ -1,0 +1,1 @@
+{ "identifier": "selection-history", "windows": ["selection-history"], "permissions": ["core:event:default"] }

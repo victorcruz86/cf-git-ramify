@@ -1,25 +1,32 @@
 <script lang="ts">
   import Dialog from "../lib/Dialog.svelte";
 
+  // `GitBranchUiHandlerImpl.confirmRemoteBranchDeletion` (`B:1253-1257`): one or several remote
+  // branches.
   interface Props {
-    branch: string;
-    // The local branches that track it, except the current one.
+    branches: string[];
+    // The local branches that track any of them, except the current one.
     tracking: string[];
     onanswer: (answer: { alsoLocal: boolean } | null) => void;
   }
 
-  let { branch, tracking, onanswer }: Props = $props();
+  let { branches, tracking, onanswer }: Props = $props();
+
+  const several = $derived(branches.length > 1);
 
   let alsoLocal = $state(false);
 </script>
 
 <Dialog
-  title="Delete Remote Branch"
+  title={several ? "Delete Remote Branches" : "Delete Remote Branch"}
   onclose={() => onanswer(null)}
   onsubmit={() => onanswer({ alsoLocal })}
   width={420}
 >
-  <p>Delete remote branch {branch}?</p>
+  <p>
+    {several ? "Delete remote branches" : "Delete remote branch"}
+    {branches.join(", ")}?
+  </p>
   {#if tracking.length > 0}
     <label class="checkbox-label">
       <input type="checkbox" bind:checked={alsoLocal} />
@@ -33,7 +40,7 @@
   {/if}
   {#snippet footer()}
     <button type="button" class="button" onclick={() => onanswer(null)}>Cancel</button>
-    <button class="button default" data-autofocus>Delete</button>
+    <button class="button default" data-autofocus>{several ? "Delete All" : "Delete"}</button>
   {/snippet}
 </Dialog>
 

@@ -256,7 +256,8 @@ class FoldWidget extends WidgetType {
   }
 }
 
-// An old line in the unified view: a block of its own per line, so the margin has a checkbox and a
+// A line of the other side in the unified view: an old line, or a new one when the document is the
+// left side (`MASTER_SIDE = LEFT`). A block of its own per line, so the margin has a checkbox and a
 // number on each one.
 class OldLineWidget extends WidgetType {
   constructor(
@@ -265,11 +266,13 @@ class OldLineWidget extends WidgetType {
     readonly text: string,
     readonly spans: readonly { from: number; to: number; className: string }[],
     readonly background: string,
+    readonly side: Side = "old",
   ) {
     super();
   }
   eq(other: OldLineWidget) {
     return (
+      other.side === this.side &&
       other.line === this.line &&
       other.text === this.text &&
       other.background === this.background &&
@@ -312,16 +315,21 @@ function oldTree(doc: Text, current: Language) {
   return tree;
 }
 
+const otherSide = (side: Side): Side => (side === "old" ? "new" : "old");
+
 function oldLineWidgets(state: EditorState, model: Model, hunk: Hunk): OldLineWidget[] {
   const doc = model.other;
+  const side = otherSide(model.side);
   const current = state.facet(language);
   const tree = current && oldTree(doc, current);
-  const words = showsWords(model, hunk) ? wordChanges(hunk, doc, state.doc) : [];
-  const hunkFrom = lineFrom(doc, hunk.oldStart);
+  const [oldDoc, newDoc] = side === "old" ? [doc, state.doc] : [state.doc, doc];
+  const words = showsWords(model, hunk) ? wordChanges(hunk, oldDoc, newDoc) : [];
+  const first = sideStart(hunk, side);
+  const hunkFrom = lineFrom(doc, first);
   const type = changeType(hunk);
   const widgets: OldLineWidget[] = [];
-  for (let index = 0; index < hunk.oldLines; index++) {
-    const lineNumber = hunk.oldStart + index;
+  for (let index = 0; index < sideLines(hunk, side); index++) {
+    const lineNumber = first + index;
     if (lineNumber >= doc.lines) break;
     const line = doc.line(lineNumber + 1);
     const spans: { from: number; to: number; className: string }[] = [];
@@ -341,8 +349,10 @@ function oldLineWidgets(state: EditorState, model: Model, hunk: Hunk): OldLineWi
       );
     }
     for (const change of words) {
-      const from = Math.max(hunkFrom + change.fromA, line.from);
-      const to = Math.min(hunkFrom + change.toA, line.to);
+      const [start, end] =
+        side === "old" ? [change.fromA, change.toA] : [change.fromB, change.toB];
+      const from = Math.max(hunkFrom + start, line.from);
+      const to = Math.min(hunkFrom + end, line.to);
       if (from < to) {
         spans.push({
           from: from - line.from,
@@ -352,7 +362,7 @@ function oldLineWidgets(state: EditorState, model: Model, hunk: Hunk): OldLineWi
       }
     }
     const lineBackground = lineClass(model, hunk, type);
-    widgets.push(new OldLineWidget(hunk, lineNumber, line.text, spans, lineBackground));
+    widgets.push(new OldLineWidget(hunk, lineNumber, line.text, spans, lineBackground, side));
   }
   return widgets;
 }
@@ -390,11 +400,13 @@ function buildBlocks(state: EditorState, model: Model, onexpand: (run: FoldRun) 
       }
     }
     if (model.unified) {
+      // The old lines go before the new ones: before the hunk on the new side, after it on the old.
+      const at = side === "old" ? start + lines : start;
       for (const widget of oldLineWidgets(state, model, hunk)) {
-        const atEnd = start >= doc.lines;
+        const atEnd = at >= doc.lines;
         ranges.push(
           Decoration.widget({ widget, block: true, side: atEnd ? 1 : -1 }).range(
-            lineFrom(doc, start),
+            lineFrom(doc, at),
           ),
         );
       }
@@ -559,7 +571,9 @@ interface Target {
 // What is at the height of the mouse: a document line or an old line of the unified view.
 function targetAt(view: EditorView, clientY: number): Target | null {
   const block = view.elementAtHeight(clientY - view.documentTop);
-  if (block.widget instanceof OldLineWidget) return { side: "old", line: block.widget.line };
+  if (block.widget instanceof OldLineWidget) {
+    return { side: block.widget.side, line: block.widget.line };
+  }
   if (block.widget) return null;
   const { side } = view.state.field(modelField);
   return { side, line: view.state.doc.lineAt(block.from).number - 1 };
@@ -574,7 +588,7 @@ const checkGutter = gutter({
   },
   widgetMarker(view, widget) {
     if (!(widget instanceof OldLineWidget)) return null;
-    const check = marginOf(view.state.field(modelField), "old").get(widget.line);
+    const check = marginOf(view.state.field(modelField), widget.side).get(widget.line);
     return check ? new CheckMarker(check) : null;
   },
   lineMarkerChange: (update) =>
@@ -645,16 +659,19 @@ class NumberMarker extends GutterMarker {
   }
 }
 
-// The column of numbers of the old version in the unified view.
+// The column of numbers of the other side in the unified view: the old version, or the new one
+// when the document is the left side.
 const oldNumbers = gutter({
   class: "rm-old-numbers",
   lineMarker(view, block) {
     const model = view.state.field(modelField);
     const line = view.state.doc.lineAt(block.from).number - 1;
     const inside = model.hunks.some(
-      (hunk) => line >= hunk.newStart && line < hunk.newStart + hunk.newLines,
+      (hunk) =>
+        line >= sideStart(hunk, model.side) &&
+        line < sideStart(hunk, model.side) + sideLines(hunk, model.side),
     );
-    return inside ? null : new NumberMarker(mapLine(model.hunks, line, "new"));
+    return inside ? null : new NumberMarker(mapLine(model.hunks, line, model.side));
   },
   widgetMarker: (_view, widget) =>
     widget instanceof OldLineWidget ? new NumberMarker(widget.line) : null,
@@ -739,7 +756,9 @@ function foldsFor(
 export class DiffEditors {
   readonly dom: HTMLDivElement;
   private oldView: EditorView | null = null;
+  // The right editor, or the only one in the unified view, whose document is `mainSide`.
   private newView: EditorView;
+  private readonly mainSide: Side;
   private divider: SVGSVGElement | null = null;
   private saved: Text;
   private data: DiffData;
@@ -756,6 +775,9 @@ export class DiffEditors {
       data: DiffData;
       draft: string | null;
       editable: boolean;
+      // The side that is typed into: the local one, on the left when a comparison puts it there
+      // (`MASTER_SIDE`). The unified view then shows the left text, with the right lines as blocks.
+      editSide?: Side;
       unified: boolean;
       embedded: boolean;
       options: EditorOptions;
@@ -774,8 +796,12 @@ export class DiffEditors {
     ];
     const oldDoc = documentOf(config.data.oldText);
     const newDoc = documentOf(config.data.newText);
-    const newText = config.draft ?? config.data.newText;
-    this.saved = newDoc;
+    const editsOld = config.editSide === "old";
+    this.mainSide = config.unified && editsOld ? "old" : "new";
+    const oldText = (editsOld ? config.draft : null) ?? config.data.oldText;
+    const newText = (editsOld ? null : config.draft) ?? config.data.newText;
+    this.saved = editsOld ? oldDoc : newDoc;
+    const mainOld = this.mainSide === "old";
     const folds = foldsFor(this.data, oldDoc.lines, newDoc.lines, this.options, this.expanded);
     const model = (side: Side, other: Text): Model => ({
       side,
@@ -800,11 +826,11 @@ export class DiffEditors {
       this.oldView = new EditorView({
         parent: oldHost,
         state: EditorState.create({
-          doc: config.data.oldText,
+          doc: oldText,
           extensions: [
             separatorExtension(config.data.oldText),
             common,
-            editableExtensions(false, config.handlers),
+            editableExtensions(editsOld && config.editable, config.handlers),
             modelField.init(() => model("old", newDoc)),
             blocksField,
             gutterBackground,
@@ -824,12 +850,12 @@ export class DiffEditors {
     this.newView = new EditorView({
       parent: newHost,
       state: EditorState.create({
-        doc: newText,
+        doc: mainOld ? oldText : newText,
         extensions: [
-          separatorExtension(config.data.newText),
+          separatorExtension(mainOld ? config.data.oldText : config.data.newText),
           common,
-          editableExtensions(config.editable, config.handlers),
-          modelField.init(() => model("new", oldDoc)),
+          editableExtensions((mainOld || !editsOld) && config.editable, config.handlers),
+          modelField.init(() => (mainOld ? model("old", newDoc) : model("new", oldDoc))),
           blocksField,
           gutterBackground,
           config.unified ? oldNumbers : [],
@@ -890,7 +916,8 @@ export class DiffEditors {
   private measureSpacers() {
     const left = this.oldView;
     const right = this.newView;
-    if (!left || !this.measures() || right.state.field(modelField).stale) return;
+    const stale = left?.state.field(modelField).stale || right.state.field(modelField).stale;
+    if (!left || !this.measures() || stale) return;
     const boundaries = boundariesOf(this.data.hunks, left.state.doc.lines, right.state.doc.lines);
     const spacers = alignSpacers(
       boundaries,
@@ -971,8 +998,11 @@ export class DiffEditors {
   }
 
   private refreshFolds() {
-    const oldLines = this.oldView?.state.doc.lines ?? this.newView.state.field(modelField).other.lines;
-    const lines = this.newView.state.doc.lines;
+    const main = this.newView.state;
+    const other = main.field(modelField).other.lines;
+    const oldLines =
+      this.oldView?.state.doc.lines ?? (this.mainSide === "old" ? main.doc.lines : other);
+    const lines = this.mainSide === "old" ? other : main.doc.lines;
     const folds = this.dirty ? [] : foldsFor(this.data, oldLines, lines, this.options, this.expanded);
     this.push(() => ({ folds }));
     this.drawDivider();
@@ -983,21 +1013,26 @@ export class DiffEditors {
     this.refreshFolds();
   }
 
+  // The editor that is typed into.
+  private get editView(): EditorView {
+    return this.config.editSide === "old" && this.oldView ? this.oldView : this.newView;
+  }
+
   get dirty(): boolean {
-    return !this.newView.state.doc.eq(this.saved);
+    return !this.editView.state.doc.eq(this.saved);
   }
 
   content(): string {
-    return this.newView.state.sliceDoc();
+    return this.editView.state.sliceDoc();
   }
 
   // What is sent to disk: what was typed afterwards is not saved.
   snapshot(): Text {
-    return this.newView.state.doc;
+    return this.editView.state.doc;
   }
 
   textOf(doc: Text): string {
-    return doc.sliceString(0, doc.length, this.newView.state.lineBreak);
+    return doc.sliceString(0, doc.length, this.editView.state.lineBreak);
   }
 
   markSaved(doc: Text) {
@@ -1010,13 +1045,14 @@ export class DiffEditors {
   fits(data: DiffData, editable: boolean): boolean {
     return (
       editable === this.config.editable &&
-      this.newView.state.lineBreak === lineSeparator(data.newText) &&
+      this.newView.state.lineBreak ===
+        lineSeparator(this.mainSide === "old" ? data.oldText : data.newText) &&
       (!this.oldView || this.oldView.state.lineBreak === lineSeparator(data.oldText))
     );
   }
 
   focus() {
-    this.newView.focus();
+    this.editView.focus();
   }
 
   setSelection(selection: LineSelection[]) {
@@ -1063,11 +1099,13 @@ export class DiffEditors {
   // Replaces the content without losing the position: only what differs is replaced.
   setData(data: DiffData) {
     this.data = data;
+    const mainOld = this.mainSide === "old";
     if (this.oldView) replaceText(this.oldView, data.oldText);
-    replaceText(this.newView, data.newText);
-    const oldDoc = this.oldView?.state.doc ?? documentOf(data.oldText);
-    const newDoc = this.newView.state.doc;
-    this.saved = newDoc;
+    replaceText(this.newView, mainOld ? data.oldText : data.newText);
+    const oldDoc =
+      this.oldView?.state.doc ?? (mainOld ? this.newView.state.doc : documentOf(data.oldText));
+    const newDoc = mainOld ? documentOf(data.newText) : this.newView.state.doc;
+    this.saved = this.editView.state.doc;
     const folds = foldsFor(data, oldDoc.lines, newDoc.lines, this.options, this.expanded);
     for (const view of this.views()) {
       const { side } = view.state.field(modelField);
@@ -1145,7 +1183,7 @@ export class DiffEditors {
   showFirstChange() {
     const first = this.data.hunks[0];
     if (!first) return;
-    const position = lineFrom(this.newView.state.doc, first.newStart);
+    const position = lineFrom(this.newView.state.doc, sideStart(first, this.mainSide));
     this.newView.dispatch({
       selection: EditorSelection.cursor(position),
       effects: EditorView.scrollIntoView(position, { y: "center" }),

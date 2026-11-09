@@ -810,3 +810,23 @@ test("a_conflict_alone_offers_no_patch_items", async () => {
 
   expect(within(menu).queryByRole("menuitem", { name: /Patch/ })).toBeNull();
 });
+
+// `Git ▸ Rollback...` of the Project tree or the viewer (`RollbackAction` with files): the Rollback
+// Changes dialog with the changes at or under its paths checked, staged and unstaged both going
+// back to HEAD; never the selection of the staging tree.
+test("rollback_from_the_git_file_menu_uses_its_paths_in_staging_mode", async () => {
+  mockCommands({ rollback_files: () => "snapshot" });
+  const view = await open();
+  await fireEvent.click(rows("b.txt")[0]);
+
+  view.component.rollback(["a.txt"]);
+
+  const dialog = await screen.findByRole("dialog", { name: "Rollback Changes" });
+  const checked = within(dialog)
+    .getAllByRole("checkbox")
+    .filter((box) => (box as HTMLInputElement).checked)
+    .map((box) => box.closest('[role="treeitem"]')?.getAttribute("aria-label") ?? box.getAttribute("aria-label"));
+  expect(checked.join(" ")).toContain("a.txt");
+  expect(checked.join(" ")).not.toContain("b.txt");
+  expect(calls("staging_revert")).toHaveLength(0);
+});

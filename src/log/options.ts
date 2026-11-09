@@ -55,9 +55,24 @@ export const defaultOptions = (main = false): LogOptions => ({
   splits: { table: 0.7, details: 0.7, diff: 0.7, branches: 0.3 },
 });
 
+// A file history tab: `FileHistoryUiProperties.State` (details hidden, the diff preview on the
+// right) and the user's `vcs.history.diff.splitter.proportion` (G§13).
+export function historyOptions(): LogOptions {
+  const options = defaultOptions();
+  return {
+    ...options,
+    // `Root, Author, Date, Commit`, Root hidden with one repository.
+    columns: ["author", "date", "subject"],
+    showDetails: false,
+    diffPreview: true,
+    diffPreviewAt: "right",
+    splits: { ...options.splits, diff: 0.706 },
+  };
+}
+
 // What was saved may come from another version: what is missing takes its default value.
-export function readOptions(stored: unknown, main = false): LogOptions {
-  const options = defaultOptions(main);
+export function readOptions(stored: unknown, main = false, defaults = defaultOptions(main)): LogOptions {
+  const options = defaults;
   if (typeof stored !== "object" || stored === null) return options;
   const values = stored as Partial<LogOptions>;
   return {

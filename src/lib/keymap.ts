@@ -1,5 +1,6 @@
 export type ActionId =
   | "ActivateCommitToolWindow"
+  | "ActivateProjectToolWindow"
   | "ActivateVersionControlToolWindow"
   | "ChangesView.AddUnversioned"
   | "ChangesView.GroupBy.Directory"
@@ -23,6 +24,7 @@ export type ActionId =
   | "Vcs.Log.GoToParent"
   | "Vcs.Log.GoToRef"
   | "Vcs.Log.Refresh"
+  | "Vcs.Log.ShowAllAffected"
   | "Vcs.Log.ShowTooltip"
   | "Vcs.Push"
   | "Vcs.ShowMessageHistory"
@@ -34,6 +36,7 @@ const BINDINGS: Record<string, ActionId> = {
   "Alt+Meta+K": "Git.Commit.And.Push.Executor",
   "Meta+T": "Vcs.UpdateProject",
   "Meta+Shift+K": "Vcs.Push",
+  "Meta+1": "ActivateProjectToolWindow",
   "Meta+0": "ActivateCommitToolWindow",
   "Meta+9": "ActivateVersionControlToolWindow",
   "Alt+Meta+Z": "ChangesView.Revert",
@@ -56,6 +59,7 @@ const BINDINGS: Record<string, ActionId> = {
   "Meta+-": "CollapseAll",
   "Meta+,": "ShowSettings",
   "Meta+R": "Vcs.Log.Refresh",
+  "Ctrl+Meta+A": "Vcs.Log.ShowAllAffected",
   "Meta+F": "Vcs.Log.GoToRef",
   "Meta+L": "Vcs.Log.FocusTextFilter",
   ArrowRight: "Vcs.Log.GoToParent",
@@ -167,4 +171,41 @@ const DIFF_BINDINGS: Record<string, DiffActionId> = {
 
 export function matchDiffShortcut(event: KeyboardEvent): DiffActionId | null {
   return DIFF_BINDINGS[chord(event)] ?? null;
+}
+
+export type ChangesBrowserActionId = "EditSource";
+
+// They apply with focus in a changes browser of the log: `EditSource` is ⌘↓ and F4 in the Mac keymap
+// (`Mac OS X 10.5+.xml:448-450`).
+const CHANGES_BROWSER_BINDINGS: Record<string, ChangesBrowserActionId> = {
+  "Meta+ArrowDown": "EditSource",
+  F4: "EditSource",
+};
+
+export function matchChangesBrowserShortcut(event: KeyboardEvent): ChangesBrowserActionId | null {
+  return CHANGES_BROWSER_BINDINGS[chord(event)] ?? null;
+}
+
+export type ViewerActionId = "CloseContent";
+
+// The viewer window's tabs: `CloseContent` is ⌘W (`Mac OS X 10.5+.xml:369`).
+const VIEWER_BINDINGS: Record<string, ViewerActionId> = {
+  "Meta+W": "CloseContent",
+};
+
+export function matchViewerShortcut(event: KeyboardEvent): ViewerActionId | null {
+  return VIEWER_BINDINGS[chord(event)] ?? null;
+}
+
+export type ProjectViewActionId = "ProjectViewEditSource";
+
+// They apply with focus in the Project tree: `ProjectViewEditSource` takes the shortcut of
+// `EditSource` (`LangActions.xml:844`), ⌘↓ and F4.
+const PROJECT_VIEW_BINDINGS: Record<string, ProjectViewActionId> = {
+  "Meta+ArrowDown": "ProjectViewEditSource",
+  F4: "ProjectViewEditSource",
+};
+
+export function matchProjectViewShortcut(event: KeyboardEvent): ProjectViewActionId | null {
+  return PROJECT_VIEW_BINDINGS[chord(event)] ?? null;
 }

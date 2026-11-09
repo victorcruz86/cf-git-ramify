@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from "svelte";
   import {
     appVersion,
+    branchList,
     changelistsGet,
     diffWindowOpen,
     commitMode,
@@ -9,13 +10,17 @@
     emitComparison,
     emitSelectionLost,
     emitSelectionState,
+    gitMenuCurrentFile,
     gitMenuEnable,
-    initialRepo,
+    initialTarget,
     notifyRepoChanged,
     onAppActivated,
+    onAnnotationShowInLog,
+    onSelectionHistoryShowAffected,
     onAppDeactivated,
     onDiffReady,
     onGitAction,
+    onGitFileAction,
     onLeaveRefused,
     onOpenSettings,
     onRepoChanged,
@@ -57,11 +62,21 @@
   import {
     keepSelected,
     onTabRequested,
+    stripeWindows,
     toolWindows,
     type ContentId,
+    type SelectedContents,
     type TabRequest,
-    type ToolWindowId,
   } from "./lib/tabs";
+  import {
+    activation,
+    forgetToolWindows,
+    onWindowActivationRequested,
+    registeredToolWindows,
+    toolWindow,
+    windowOfAction,
+    type ToolWindowId,
+  } from "./shell/toolWindows";
   import { taskResult } from "./lib/tasks";
   import TaskStatus from "./lib/TaskStatus.svelte";
   import type { CheckinRequest } from "./commit/checkin";
@@ -77,6 +92,7 @@
   } from "./commit/dialogStore";
   import CommitView, { type CommitDraft } from "./commit/CommitView.svelte";
   import LocalChangesView from "./commit/LocalChangesView.svelte";
+  import { showOnDoubleClickItems } from "./commit/showOnDoubleClick";
   import ConsoleView from "./console/ConsoleView.svelte";
   import { ROW_HEIGHT } from "./log/draw";
   import LogPanel from "./log/LogPanel.svelte";
@@ -118,23 +134,52 @@
   import { showTabStep } from "./stash/flow";
   import StashTab from "./stash/StashTab.svelte";
   import VersionControlWindow from "./vcs/VersionControlWindow.svelte";
+  import ProjectTree from "./tree/ProjectTree.svelte";
+  import ChangesToolWindow from "./changes/ChangesToolWindow.svelte";
+  import RepositoryBrowser from "./repositories/RepositoryBrowser.svelte";
+  import GetDialog from "./changes/GetDialog.svelte";
+  import { openInViewer } from "./viewer/window";
+  import {
+    CURRENT_FILE_ACTIONS,
+    currentFileItems,
+    currentFileTitle,
+    fileActionRun,
+    gitSubmenu,
+    isFileAction,
+    runInPlace,
+    type FileTarget,
+    type GitFileActionId,
+    type GitFileSelection,
+    type GitFileState,
+  } from "./files/gitFileMenu";
+  import { addFiles } from "./files/addFiles";
+  import { showAllAffected, showHistoryOf } from "./compare/actions";
+  import { emptyFilters } from "./log/filters";
+  import { openLogTab } from "./log/tabKinds";
+  import { nothingToCompare } from "./compare/popups";
 
   const PUSH_ACTION: ActionId = "Vcs.Push";
   const COMMIT_ACTION: ActionId = "CheckinProject";
   const BRANCHES_ACTION: ActionId = "Git.Branches";
-  // `ToolWindowChanges` is the branch icon in the new UI; `ToolWindowCommit` is the commit one.
-  const WINDOWS: Record<ToolWindowId, { label: string; icon: string; shortcut: string }> = {
-    commit: { label: "Commit", icon: "commit", shortcut: "⌘0" },
-    git: { label: "Git", icon: "vcs", shortcut: "⌘9" },
-  };
 
   let version = $state("");
   let repoPath = $state("");
   let info = $state<RepoInfo | null>(null);
-  // The tool window in front and, per window, the tab it shows: a window comes back on the tab it had.
+  // The tool window in front, the one before it (which comes back when the one in front hides) and, per
+  // window, the tab it shows: a window comes back on the tab it had.
   let activeWindow = $state<ToolWindowId>("git");
-  let selected = $state<Record<ToolWindowId, ContentId>>({ commit: "local-changes", git: "local-changes" });
+  let previousWindow: ToolWindowId | null = null;
+  let selected = $state<SelectedContents>({
+    project: null,
+    commit: "local-changes",
+    changes: null,
+    repositories: null,
+    git: "local-changes",
+  });
   let opening = $state(false);
+  // The Project tree reads the disk and `git status --ignored` on every change: it is built the
+  // first time its window comes to the front in this repository, and kept from then on.
+  let projectShown = $state(false);
   let logPanel = $state<LogPanel>();
   let commitView = $state<CommitView>();
   let stashTab = $state<StashTab>();
@@ -149,6 +194,8 @@
   // whatever its state. They are read again whenever the repository changes.
   let shelfEntries = $state.raw<ShelfEntry[]>([]);
   let shelfRequest = 0;
+  // The last read of the lists failed: the next `repo-changed` reads them again, whatever it says.
+  let shelfUnread = false;
   let shelfTab = $state<ShelfTab>();
   let localChanges = $state<LocalChangesView>();
   // What the Commit view had when the mode went modal: it comes back with the non-modal mode.
@@ -169,8 +216,8 @@
     "log",
     "console",
   ]);
-  const windows = $derived(toolWindows(mode, available));
-  const stripeWindows = $derived((["commit", "git"] as const).filter((id) => windows[id]));
+  const windows = $derived(toolWindows(mode, available, $registeredToolWindows));
+  const stripe = $derived(stripeWindows(windows));
   // A selected tab that went away (the last stash dropped) leaves its window on the first one.
   const shown = $derived(keepSelected(windows, selected));
   const tab = $derived(windows[activeWindow] ? shown[activeWindow] : null);
@@ -215,6 +262,8 @@
       // If it does not open, we stay in the current repository, with whatever was half done.
       const opened = await repoOpen(repoPath.trim());
       select("commit");
+      projectShown = false;
+      forgetToolWindows();
       stashes = [];
       stashError = null;
       shelfEntries = [];
@@ -228,6 +277,9 @@
       branchesPopup = null;
       info = opened;
       syncMenu(opened.state);
+      treeFiles = [];
+      treeChanges = false;
+      void readBranchesToCompare();
       branchDialogs?.repositoryChanged(opened);
       void loadStashes();
       void loadShelf();
@@ -240,7 +292,14 @@
   }
 
   function windowOf(id: ContentId): ToolWindowId | null {
-    return (["commit", "git"] as const).find((window) => windows[window]?.includes(id)) ?? null;
+    return stripe.find((window) => windows[window]?.includes(id)) ?? null;
+  }
+
+  function front(id: ToolWindowId) {
+    if (id === "project") projectShown = true;
+    if (activeWindow === id) return;
+    previousWindow = activeWindow;
+    activeWindow = id;
   }
 
   // `commit` is wherever Local Changes is: its own window or a tab of `Git`.
@@ -249,7 +308,7 @@
     const owner = windowOf(id);
     if (!owner) return null;
     selected[owner] = id;
-    activeWindow = owner;
+    front(owner);
     return id;
   }
 
@@ -273,17 +332,108 @@
     if (asked && available.includes("shelf")) untrack(() => void showTab("shelf"));
   });
 
-  // `Vcs.Show.Shelf` (`VcsShowToolWindowTabAction`), only while the tab is there.
-  function toggleShelf() {
-    const owner = windowOf("shelf");
+  // `Vcs.Show.Shelf` and `Vcs.Show.Log` (`VcsShowToolWindowTabAction`), only while the tab is there.
+  function toggleTab(id: "shelf" | "log") {
+    const owner = windowOf(id);
     if (!owner) return;
     const focused = contentArea?.contains(document.activeElement) ?? false;
-    const step = showTabStep(activeWindow === owner && focused, shown[owner] === "shelf");
-    if (step !== "hide") void showTab("shelf");
+    const step = showTabStep(activeWindow === owner && focused, shown[owner] === id);
+    if (step !== "hide") void showTab(id);
+  }
+  const toggleShelf = () => toggleTab("shelf");
+
+  // The Git file menu of the main window (`Git ▸` of the Project tree, `Git > Current File`): the
+  // tree's selection while the Project window is the active one. Choosing an entry of the viewer's
+  // editor menu that only this window can do arrives as `git-file-action`.
+  let treeFiles = $state.raw<FileTarget[]>([]);
+  let treeChanges = $state(false);
+  let branchesToCompare = $state(false);
+  let windowFocused = $state(document.hasFocus());
+
+  const fileMenuState = (): GitFileState => ({
+    hasChanges: treeChanges,
+    conflicts: hasConflicts,
+    hasCommits: (repoNow?.head ?? "") !== "",
+    branchesToCompare,
+    run: (id, files) => void runFileAction(id, files),
+  });
+  const mainFileSelection = $derived<GitFileSelection>({
+    files: info && projectShown && activeWindow === "project" ? treeFiles : [],
+    editor: false,
+  });
+
+  // `GitFileActionGroup.update`: while this window has the focus it says what Current File is.
+  $effect(() => {
+    if (!windowFocused) return;
+    const selection = mainFileSelection;
+    const state = fileMenuState();
+    gitMenuCurrentFile(currentFileTitle(selection), currentFileItems(selection, state)).catch(
+      () => {},
+    );
+  });
+
+  // On open and on each `repo-changed`: what arrives for an earlier request is dropped.
+  let branchesRequest = 0;
+  async function readBranchesToCompare() {
+    const token = ++branchesRequest;
+    let some: boolean;
+    try {
+      some = !nothingToCompare(await branchList());
+    } catch {
+      some = false;
+    }
+    if (token === branchesRequest) branchesToCompare = some;
   }
 
-  // On open and when `repo-changed` says a command wrote the store. What arrives for an earlier
-  // request is dropped.
+  async function runFileAction(id: GitFileActionId, files: FileTarget[]) {
+    const current = info;
+    if (!current) return;
+    try {
+      if (await runInPlace(id, files)) return;
+      const paths = files.map((target) => target.path);
+      if (id === "CheckinFiles") await requestCommit({ request: { kind: "files", paths, lists: [] } });
+      else if (id === "Git.Add") await addFiles(current.path, paths);
+      else if (id === "ChangesView.Revert") await rollbackLocalChanges(paths);
+      else if (id === "Git.ResolveConflicts") void branchDialogs?.resolveConflicts();
+      else if (id === "Vcs.ShowTabbedFileHistory") await showHistoryOf(files);
+    } catch (failure) {
+      showError(failure);
+    }
+  }
+
+  // From the viewer: its file, which it has checked the entry for. The targets are built as local
+  // files with no status: the ids that come here (Commit File…, Add, Show History, Rollback…,
+  // Resolve Conflicts…) only use the paths, and the viewer only has files.
+  function fileActionFromViewer({ id, paths }: { id: string; paths: string[] }) {
+    if (!isFileAction(id) || modalOpen() || !info) return;
+    showWindow().catch(() => {});
+    void runFileAction(
+      id,
+      paths.map((path) => ({ path, dir: false, state: null })),
+    );
+  }
+
+  // A click on an annotated line in the viewer (`GitAnnotationAspect.showAffectedPaths`): its commit
+  // selected in the Log's main tab, the first `log` tab (`VcsLogNavigationUtil.jumpToRevisionAsync`).
+  function annotationInLog(hash: string) {
+    if (modalOpen() || !info) return;
+    showWindow().catch(() => {});
+    void openLogTab("log", "", () => ({ name: "", filters: emptyFilters() }), {
+      matches: () => true,
+      select: hash,
+    });
+  }
+
+  // `Show All Affected Files` of a row of the `History for Selection` window: the commit in the
+  // `Changes` window, with the file as it was there chosen.
+  function affectedFromSelectionHistory({ hash, path }: { hash: string; path: string }) {
+    if (modalOpen() || !info) return;
+    showWindow().catch(() => {});
+    showAllAffected(hash, path).catch(showError);
+  }
+
+  // On open, when `repo-changed` says a command wrote the store, and on any `repo-changed` after a read
+  // that failed. What arrives for an earlier request is dropped.
   async function loadShelf() {
     const token = ++shelfRequest;
     const started = shelfSettingsGeneration();
@@ -296,8 +446,9 @@
       if (JSON.stringify(lists) !== JSON.stringify(shelfEntries)) shelfEntries = lists;
       // A save since the read began wins over what it read.
       if (repoSettings) loadedShelfSettings(repoSettings.shelf ?? NO_SHELF_SETTINGS, started);
+      shelfUnread = false;
     } catch {
-      // The next change of the repository reads it again.
+      if (token === shelfRequest) shelfUnread = true;
     }
   }
 
@@ -367,10 +518,18 @@
     if (shown !== selected) selected = shown;
   });
 
-  // ⌘0 and ⌘9, or the stripe: a window that does not exist now does nothing, and neither does the one in front.
-  function activateWindow(id: ToolWindowId) {
+  // A window that exists comes to the front on the tab it had.
+  function bringToFront(id: ToolWindowId) {
     if (!windows[id] || activeWindow === id) return;
-    void showTab(selected[id]);
+    const content = selected[id];
+    if (content) void showTab(content);
+    else front(id);
+  }
+
+  // ⌘1, ⌘0 and ⌘9, or the stripe: `ActivateToolWindowAction` (`toolWindows.ts`).
+  function toggleWindow(id: ToolWindowId) {
+    const next = activation(id, activeWindow, previousWindow, (window) => windows[window] !== null);
+    if (next) bringToFront(next);
   }
 
   // The mode is the only thing that moves contents between windows. Each window starts on its first tab
@@ -383,8 +542,8 @@
     }
     settings = next;
     if (mode === before) return;
-    selected = { commit: windows.commit?.[0] ?? "local-changes", git: windows.git[0] };
-    activeWindow = windows.commit ? "commit" : "git";
+    selected = { ...selected, commit: windows.commit?.[0] ?? "local-changes", git: windows.git?.[0] ?? null };
+    front(windows.commit ? "commit" : "git");
   }
 
   function showError(failure: unknown) {
@@ -393,10 +552,11 @@
 
   // What a commit entry point does in non-modal mode (`requestCommit` decides): the Commit tool window comes
   // to the front and takes the request, or the message of Fixup… and Squash Into… with its executor.
-  async function commitInView({ prefilled, rebaseFrom, head }: CommitRequestInput) {
+  async function commitInView({ request, prefilled, rebaseFrom, head }: CommitRequestInput) {
     await showTab("commit");
     if (prefilled === undefined) {
-      commitView?.checkin();
+      if (request.kind === "files") commitView?.checkinFiles(request.paths);
+      else commitView?.checkin();
       return;
     }
     commitView?.propose({
@@ -447,8 +607,8 @@
       return;
     }
     if (!info) return;
-    if (action === "ActivateCommitToolWindow") activateWindow("commit");
-    else if (action === "ActivateVersionControlToolWindow") activateWindow("git");
+    const target = windowOfAction(action);
+    if (target) toggleWindow(target);
     else if (action === "CheckinProject" && tab !== "local-changes") void checkinFromLog();
     // `Commit and Push…` is an executor: IntelliJ's action works with a dialog open only, so outside it the
     // modal commit opens the dialog, where the executor is in the drop-down.
@@ -507,6 +667,11 @@
       return () => requestExecutor("shelve", wholeProject);
     }
     if (action === "Vcs.Show.Shelf") return toggleShelf;
+    if (action === "Vcs.Show.Log") return () => toggleTab("log");
+    // `Git > Current File` is the focused window's: without the focus it is not this one's.
+    if ((CURRENT_FILE_ACTIONS as string[]).includes(action)) {
+      return document.hasFocus() ? fileActionRun(mainFileSelection, fileMenuState(), action) : null;
+    }
     // rama's own: the Shelf tab's `Import from .idea`, also while the tab is not there.
     if (action === "Shelf.ImportFromIdea") return () => void shelfActions.importIdea(current.path);
     // `ChangesView.Revert`: Local Changes' Rollback, in front.
@@ -528,9 +693,9 @@
     return null;
   }
 
-  async function rollbackLocalChanges() {
+  async function rollbackLocalChanges(paths?: string[]) {
     await showTab("commit");
-    (mode === "modal" ? localChanges : commitView)?.rollback();
+    (mode === "modal" ? localChanges : commitView)?.rollback(paths);
   }
 
   // Apply Patch is tied to the repository and the HEAD it was opened on, and to its lists when
@@ -682,6 +847,7 @@
   onMount(() => {
     routeCommitRequests({ mode: () => mode, nonModal: commitInView });
     const stopTabRequests = onTabRequested(showTab);
+    const stopWindowRequests = onWindowActivationRequested(bringToFront);
     const stops = [
       // The change goes back only to the owner.
       onSelectionChanged((change) => {
@@ -700,6 +866,9 @@
       onSettingsChanged(settingsChanged),
       onOpenSettings(() => (settingsOpen = true)),
       onGitAction(gitAction),
+      onGitFileAction(fileActionFromViewer),
+      onAnnotationShowInLog(annotationInLog),
+      onSelectionHistoryShowAffected(affectedFromSelectionHistory),
       onAppActivated(appActivated),
       onAppDeactivated(appDeactivated),
       onRepoChanged(refreshState),
@@ -708,6 +877,7 @@
     return () => {
       routeCommitRequests(null);
       stopTabRequests();
+      stopWindowRequests();
       stops.forEach((stop) => stop.then((unlisten) => unlisten()));
     };
   });
@@ -742,13 +912,14 @@
     if (!info) return;
     if (change.stash) void loadStashes();
     // `SHELF_TOPIC`: only a command that wrote the store makes the lists be read again.
-    if (change.shelf) void loadShelf();
+    if (change.shelf || shelfUnread) void loadShelf();
     try {
       status = await repoState();
     } catch {
       return;
     }
     syncMenu(status);
+    void readBranchesToCompare();
     void branchDialogs?.repositoryRefreshed();
   }
 
@@ -757,10 +928,14 @@
     try {
       version = await appVersion();
       applySettings(await settingsGet());
-      const initial = await initialRepo();
+      // `rama <file>[:<line>]` also shows the file, once its repository is open (decision 1).
+      const initial = await initialTarget();
       if (initial) {
-        repoPath = initial;
+        repoPath = initial.repo;
         await open();
+        if (info && initial.file !== null) {
+          await openInViewer({ path: initial.file, revision: null, line: initial.line });
+        }
       }
       if (info && (await perfEnabled())) {
         measuring = true;
@@ -778,7 +953,11 @@
   }
 </script>
 
-<svelte:window onkeydown={keydown} />
+<svelte:window
+  onkeydown={keydown}
+  onfocus={() => (windowFocused = true)}
+  onblur={() => (windowFocused = false)}
+/>
 
 <main>
   <!-- An apply is modal from its OK to its end (`applyInProgress`): what is underneath is inert. -->
@@ -817,16 +996,16 @@
   {#if info}
     <div class="workspace" inert={$applying}>
       <div class="stripe" role="tablist" aria-orientation="vertical" aria-label="Tool windows">
-        {#each stripeWindows as id (id)}
-          {@const { label, icon, shortcut } = WINDOWS[id]}
+        {#each stripe as id (id)}
+          {@const { label, icon, shortcut } = toolWindow(id)}
           <button
             type="button"
             role="tab"
             class="stripe-button"
             aria-label={label}
             aria-selected={activeWindow === id}
-            title="{label} ({shortcut})"
-            onclick={() => activateWindow(id)}
+            title={shortcut ? `${label} (${shortcut})` : label}
+            onclick={() => toggleWindow(id)}
           >
             <Icon name={icon} size={20} />
           </button>
@@ -840,21 +1019,57 @@
             toolWindow="commit"
             label="Commit"
             contents={windows.commit}
-            selected={shown.commit}
+            selected={shown.commit ?? windows.commit[0]}
             onselect={(id, focus) => void (focus ? showTab(id) : select(id))}
           />
         {/if}
-        {#if activeWindow === "git" && windows.git.length > 0}
+        {#if activeWindow === "git" && windows.git && windows.git.length > 0}
+          {@const gitSelected = shown.git ?? windows.git[0]}
           <VersionControlWindow
             toolWindow="git"
             label="Git"
             contents={windows.git}
-            selected={shown.git}
+            selected={gitSelected}
+            options={gitSelected === "local-changes" && mode === "modal"
+              ? showOnDoubleClickItems
+              : undefined}
             onselect={(id, focus) => void (focus ? showTab(id) : select(id))}
           />
         {/if}
 
         <div class="panes">
+          <!-- The Project tool window: the repository's folders as the disk has them. -->
+          <div class="pane" class:hidden={activeWindow !== "project"} role="region" aria-label="Project">
+            {#key info}
+              {#if info && projectShown}
+                <ProjectTree
+                  root={info.path}
+                  active={activeWindow === "project"}
+                  gitMenu={(files) => gitSubmenu({ files, editor: false }, fileMenuState())}
+                  onfiles={(files, changed) => {
+                    treeFiles = files;
+                    treeChanges = changed;
+                  }}
+                />
+              {/if}
+            {/key}
+          </div>
+
+          <!-- The Changes tool window: registered on first use, one tab (`ChangesBrowserToolWindow`). -->
+          {#if windows.changes}
+            <div class="pane" class:hidden={activeWindow !== "changes"} role="region" aria-label="Changes">
+              <ChangesToolWindow repo={info.path} active={activeWindow === "changes"} />
+            </div>
+          {/if}
+
+          <!-- The Repositories tool window: registered on first use, the repository at a revision
+               (`RepositoryBrowser`); one repository per window, so one tab. -->
+          {#if windows.repositories}
+            <div class="pane" class:hidden={activeWindow !== "repositories"} role="region" aria-label="Repositories">
+              <RepositoryBrowser repo={info.path} active={activeWindow === "repositories"} />
+            </div>
+          {/if}
+
           <!-- Local Changes: without checkboxes in modal mode, the Commit view in non-modal mode. -->
           <div class="pane" class:hidden={tab !== "local-changes"}>
             {#key info}
@@ -938,6 +1153,7 @@
               <LogPanel
                 bind:this={logPanel}
                 active={tab === "log"}
+                root={info?.path ?? ""}
                 onready={logReady}
                 onvcs={(action) => branchDialogs?.run(action)}
                 onfetch={() => branchDialogs?.fetch() ?? Promise.resolve()}
@@ -1015,6 +1231,7 @@
 <!-- After the Create Patch dialog: Patch File Settings opens on top of it. -->
 <PatchDialogs />
 <ShelfDialogs />
+<GetDialog />
 <Notifications />
 
 {#if settingsOpen && settings}

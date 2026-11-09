@@ -18,6 +18,7 @@ test("matrix_shortcuts", () => {
   expect(press({ key: "˚", code: "KeyK", metaKey: true, altKey: true })).toBe(
     "Git.Commit.And.Push.Executor",
   );
+  expect(press({ key: "1", code: "Digit1", metaKey: true })).toBe("ActivateProjectToolWindow");
   expect(press({ key: "0", code: "Digit0", metaKey: true })).toBe("ActivateCommitToolWindow");
   expect(press({ key: "z", code: "KeyZ", metaKey: true, altKey: true })).toBe("ChangesView.Revert");
   expect(press({ key: "Ω", code: "KeyZ", ctrlKey: true, altKey: true })).toBeNull();

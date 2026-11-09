@@ -81,6 +81,17 @@ pub fn write_atomic_with(
     bytes: &[u8],
     permissions: Option<fs::Permissions>,
 ) -> io::Result<()> {
+    write_atomic_if(path, bytes, permissions, || Ok(true)).map(drop)
+}
+
+// Same, and `ready` says, right before the temporary file replaces `path`, whether it still may:
+// `false` leaves `path` as it is, removes the temporary file and returns `false`.
+pub fn write_atomic_if(
+    path: &Path,
+    bytes: &[u8],
+    permissions: Option<fs::Permissions>,
+    ready: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<bool> {
     let mut attempts = 0;
     let (temp, mut file) = loop {
         let temp = temp_path(path)?;
@@ -108,8 +119,14 @@ pub fn write_atomic_with(
         file.sync_all()
     })();
     drop(file);
-    let result = written.and_then(|()| fs::rename(&temp, path));
-    if result.is_err() {
+    let result = written.and_then(|()| ready()).and_then(|ready| {
+        if ready {
+            fs::rename(&temp, path).map(|()| true)
+        } else {
+            Ok(false)
+        }
+    });
+    if !matches!(result, Ok(true)) {
         let _ = fs::remove_file(&temp);
     }
     result

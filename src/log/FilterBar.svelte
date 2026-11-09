@@ -31,6 +31,7 @@
     userLabel,
     type FilterState,
   } from "./filters";
+  import StructureChooser from "./StructureChooser.svelte";
   import ValuesPopup from "./ValuesPopup.svelte";
 
   type ValueFilter = "branches" | "users" | "paths";
@@ -45,6 +46,14 @@
     onrefresh?: () => void;
     onviewoptions?: (anchor: HTMLElement) => void;
     ongoto?: () => void;
+    // The file history's `Branch` filter alone (`FileHistoryFilterUi`): no text, no other chips, no
+    // buttons, which its toolbar has.
+    branchOnly?: boolean;
+    // The logs of Compare Branches (`MyFilterUi.createBranchComponent` is `null`): no Branch chip,
+    // and no View Options, which those logs do not have here.
+    withoutBranch?: boolean;
+    // The repository's folder, the root of `Select in Tree…`.
+    root?: string;
   }
 
   let {
@@ -56,9 +65,14 @@
     onrefresh,
     onviewoptions,
     ongoto,
+    branchOnly = false,
+    withoutBranch = false,
+    root = "",
   }: Props = $props();
 
   const SELECT = "Select…";
+  // `vcs.log.filter.select.folders` (L:231).
+  const SELECT_IN_TREE = "Select in Tree…";
   const RECENT = "Recent";
   const TEXT_FILTER = "Filter by Commit Message or Hashes";
   const TEXT_HISTORY = "Text";
@@ -67,7 +81,7 @@
     `Select one or more values separated with ${separators}, use ⌘⏎ to finish`;
 
   let bar: HTMLDivElement;
-  let textField: HTMLInputElement;
+  let textField = $state<HTMLInputElement>();
   let draft = $derived(filters.text);
   let recents = $state.raw<RecentFilters>({});
   let menu = $state.raw<{
@@ -85,6 +99,7 @@
     value: string;
   } | null>(null);
   let period = $state<{ after: string; before: string } | null>(null);
+  let choosing = $state(false);
   let anchor: HTMLElement;
 
   // Recents are a help: without them, the filter works the same.
@@ -251,9 +266,13 @@
     };
   }
 
+  // `StructureFilterPopupComponent.createActionGroup`: `Select…`, `Select in Tree…`, `Recent`.
   function pathItems() {
     const recent = recents.Paths ?? [];
-    const items: MenuItem[] = [selectItem("Paths", "paths", () => filters.paths)];
+    const items: MenuItem[] = [
+      selectItem("Paths", "paths", () => filters.paths),
+      { label: SELECT_IN_TREE, run: () => (choosing = true) },
+    ];
     if (recent.length > 0) {
       items.push({ header: RECENT });
       items.push(...recent.map((values) => valueItem("Paths", "paths", values, pathsText(values))));
@@ -279,7 +298,7 @@
     return { items };
   }
 
-  const chips = $derived([
+  const allChips = $derived([
     {
       name: "Branch",
       text: displayText(branchValues(filters)),
@@ -305,6 +324,10 @@
       reset: { paths: [] },
     },
   ]);
+
+  const chips = $derived(
+    branchOnly ? allChips.slice(0, 1) : withoutBranch ? allChips.slice(1) : allChips,
+  );
 
   function open(element: EventTarget | null, label: string, items: () => { items: MenuItem[] }) {
     anchor = element as HTMLElement;
@@ -332,6 +355,12 @@
     else update(filter === "branches" ? splitBranchValues([]) : { [filter]: [] });
   }
 
+  // `SelectPathsInTreeAction`: OK replaces the Paths filter, which goes to `Recent`.
+  function finishChoosing(values: string[]) {
+    choosing = false;
+    chooseValues("Paths", "paths", values);
+  }
+
   // `getAllValues`. Paths are not completed: `EditPathsAction` uses a field without completion.
   const variantsOf = (filter: ValueFilter) => {
     if (filter === "users") return [userLabel(ME), ...collectUsers(users)];
@@ -350,55 +379,57 @@
   }
 
   export function focusText() {
-    textField.focus();
+    textField?.focus();
   }
 
   export const hasFocus = () => bar.contains(document.activeElement);
 </script>
 
-<div bind:this={bar} class="bar" role="toolbar" aria-label="Log filters">
-  <div class="search">
-    <button
-      type="button"
-      class="action"
-      aria-label="Search History"
-      onclick={(event) => open(event.currentTarget, "Search History", historyItems)}
-    >
-      <Icon name="history" size={14} />
-    </button>
-    <input
-      bind:this={textField}
-      type="search"
-      aria-label={TEXT_FILTER}
-      title={TEXT_FILTER}
-      placeholder="Text or hash"
-      spellcheck="false"
-      bind:value={draft}
-      onkeydown={textKeydown}
-      onblur={() => applyText()}
-    />
-    {#if draft}
+<div bind:this={bar} class="bar" class:inline={branchOnly} role="toolbar" aria-label="Log filters">
+  {#if !branchOnly}
+    <div class="search">
       <button
         type="button"
         class="action"
-        aria-label="Clear"
-        onclick={() => {
-          draft = "";
-          applyText();
-        }}
+        aria-label="Search History"
+        onclick={(event) => open(event.currentTarget, "Search History", historyItems)}
       >
-        <Icon name="close" size={14} />
+        <Icon name="history" size={14} />
       </button>
-    {/if}
-    <button
-      type="button"
-      class="action"
-      aria-label="Text filter settings"
-      onclick={(event) => open(event.currentTarget, "Text filter settings", gearItems)}
-    >
-      <Icon name="settings" size={14} />
-    </button>
-  </div>
+      <input
+        bind:this={textField}
+        type="search"
+        aria-label={TEXT_FILTER}
+        title={TEXT_FILTER}
+        placeholder="Text or hash"
+        spellcheck="false"
+        bind:value={draft}
+        onkeydown={textKeydown}
+        onblur={() => applyText()}
+      />
+      {#if draft}
+        <button
+          type="button"
+          class="action"
+          aria-label="Clear"
+          onclick={() => {
+            draft = "";
+            applyText();
+          }}
+        >
+          <Icon name="close" size={14} />
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="action"
+        aria-label="Text filter settings"
+        onclick={(event) => open(event.currentTarget, "Text filter settings", gearItems)}
+      >
+        <Icon name="settings" size={14} />
+      </button>
+    </div>
+  {/if}
 
   {#each chips as chip (chip.name)}
     {@const label = chip.text ? `${chip.name}: ${chip.text}` : chip.name}
@@ -426,30 +457,34 @@
     </span>
   {/each}
 
-  <span class="end">
-    {#if busy}
-      <span class="busy" role="status" aria-label="Loading commits…"></span>
-    {/if}
-    <button type="button" class="action" aria-label="Refresh" onclick={() => onrefresh?.()}>
-      <Icon name="refresh" />
-    </button>
-    <button
-      type="button"
-      class="action"
-      aria-label="View Options"
-      onclick={(event) => onviewoptions?.(event.currentTarget)}
-    >
-      <Icon name="show" />
-    </button>
-    <button
-      type="button"
-      class="action"
-      aria-label="Go to Hash/Branch/Tag"
-      onclick={() => ongoto?.()}
-    >
-      <Icon name="right" />
-    </button>
-  </span>
+  {#if !branchOnly}
+    <span class="end">
+      {#if busy}
+        <span class="busy" role="status" aria-label="Loading commits…"></span>
+      {/if}
+      <button type="button" class="action" aria-label="Refresh" onclick={() => onrefresh?.()}>
+        <Icon name="refresh" />
+      </button>
+      {#if !withoutBranch}
+        <button
+          type="button"
+          class="action"
+          aria-label="View Options"
+          onclick={(event) => onviewoptions?.(event.currentTarget)}
+        >
+          <Icon name="show" />
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="action"
+        aria-label="Go to Hash/Branch/Tag"
+        onclick={() => ongoto?.()}
+      >
+        <Icon name="right" />
+      </button>
+    </span>
+  {/if}
 </div>
 
 {#if menu}
@@ -467,6 +502,15 @@
     prefixAt={prefixOf(editing.filter)}
     onok={finishEditing}
     onclose={() => (editing = null)}
+  />
+{/if}
+
+{#if choosing}
+  <StructureChooser
+    {root}
+    paths={filters.paths}
+    onok={finishChoosing}
+    onclose={() => (choosing = false)}
   />
 {/if}
 
@@ -493,6 +537,12 @@
     overflow: hidden;
     background: var(--panel);
     border-bottom: 1px solid var(--divider);
+  }
+
+  .bar.inline {
+    flex: none;
+    padding: 0;
+    border-bottom: 0;
   }
 
   .search {

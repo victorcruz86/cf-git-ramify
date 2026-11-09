@@ -24,6 +24,9 @@ export interface ApiError {
     | "selection_lost"
     // A file changed on disk after reading it (`conflict_resolve`): nothing was written.
     | "outdated"
+    // `Get` (`get_version.rs`): the revision could not be read, or the file could not be written.
+    | "load_failed"
+    | "save_failed"
     | "cancelled";
   message: string;
   // With "selection_lost": the file and the chosen hunks that no longer exist.
@@ -531,6 +534,123 @@ export const fileWrite = (path: string, content: string, expectedHash: string) =
   invoke<string>("file_write", { path, content, expectedHash });
 export const diffWindowOpen = (path: string) => invoke<void>("diff_window_open", { path });
 export const diffWindowPath = () => invoke<string | null>("diff_window_path");
+// Two revisions of one or more files (H§4), besides the working-tree request of `diffWindowOpen`.
+// `revision` is a full hash, `"local"` for the file on disk, or `null` where the file is not.
+export interface SideRef {
+  revision: string | null;
+  path: string;
+  title: string;
+}
+
+export interface RevisionPair {
+  left: SideRef;
+  right: SideRef;
+  // A merge of the file history: three read-only sides, the merge in the center.
+  center?: SideRef;
+}
+
+export type DiffRequest =
+  | { kind: "worktree"; path: string }
+  // `selected`: the pair the window opens on, the first without it.
+  | { kind: "revisions"; files: RevisionPair[]; title: string; selected?: number };
+
+export const LOCAL_REVISION = "local";
+
+export interface RevisionSides extends WorktreeSides {
+  // The side is the first part of a file above the diff limit (`DB:273`).
+  oldPreview: boolean;
+  newPreview: boolean;
+  // With a binary side: whether both have the same bytes (`DB:46-47`).
+  identical: boolean | null;
+}
+
+export interface FileRevision {
+  hash: string;
+  // Seconds.
+  commitTime: number;
+  authorTime: number;
+  author: string;
+  message: string;
+  // In the `File Revisions` popup, the path the file had in that revision (missing for a folder).
+  path?: string;
+}
+
+export interface LocalState {
+  root: string;
+  modified: boolean;
+  current: FileRevision | null;
+  headLabel: string;
+}
+
+export type CompareRefKind = "branch" | "tag";
+
+export const diffWindowOpenRequest = (request: DiffRequest) =>
+  invoke<void>("diff_window_open_request", { request });
+export const diffWindowRequest = () => invoke<DiffRequest | null>("diff_window_request");
+export const compareSides = (left: SideRef, right: SideRef) =>
+  invoke<RevisionSides>("compare_sides", { left, right });
+export const comparePreview = (left: SideRef, right: SideRef, content: string) =>
+  invoke<Hunk[]>("compare_preview", { left, right, content });
+export const compareLocalState = (path: string) =>
+  invoke<LocalState>("compare_local_state", { path });
+// Without `revision`, the last commit of HEAD; without `path`, the commit itself.
+export const compareLastRevision = (revision: string | null, path: string | null) =>
+  invoke<FileRevision | null>("compare_last_revision", { revision, path });
+export const compareResolve = (kind: CompareRefKind, name: string) =>
+  invoke<FileRevision | null>("compare_resolve", { kind, name });
+export const compareFileRevisions = (path: string) =>
+  invoke<FileRevision[]>("compare_file_revisions", { path });
+export const compareChangesWith = (revision: string, paths: string[]) =>
+  invoke<ChangedFile[]>("compare_changes_with", { revision, paths });
+export const compareChangesBetween = (left: string, right: string, paths: string[]) =>
+  invoke<ChangedFile[]>("compare_changes_between", { left, right, paths });
+// `Show Diff with Working Tree`: the working tree on the left, the revision on the right.
+export const compareChangesFromWorkingTree = (revision: string) =>
+  invoke<ChangedFile[]>("compare_changes_from_working_tree", { revision });
+export const compareTags = () => invoke<string[]>("compare_tags");
+// `Show Current Revision`: the last commit of any branch that touched the file; `author` has the
+// committer after it when that is someone else.
+export interface CurrentRevision {
+  hash: string;
+  commitTime: number;
+  author: string;
+  message: string;
+}
+export const compareCurrentRevision = (path: string) =>
+  invoke<CurrentRevision | null>("compare_current_revision", { path });
+// `Get` (`src-tauri/src/get_version.rs`): `path` is where the file is now, `oldPath` the path it had
+// in `revision` when that is another one; the file is written at the path of the revision.
+export interface GetItem {
+  path: string;
+  revision: string;
+  oldPath?: string | null;
+}
+// The local files that exist and have changes (the `Get Revision` question), and the HEAD the
+// write must still find.
+export interface GetCheck {
+  root: string;
+  head: string;
+  modified: string[];
+  seen: GetSeen[];
+}
+// What the check read of each path the Get touches (`null`: nothing there). The write leaves a
+// file that no longer holds it.
+export interface GetSeen {
+  path: string;
+  hash: string | null;
+}
+// The recoverable copy taken before writing, the files written, and the files left because they
+// changed after the check. A write that fails after the copy carries the same in `details`.
+export interface GotRevision {
+  copy: string;
+  written: string[];
+  changed: string[];
+}
+// It saves the diff window first.
+export const revisionGetCheck = (items: GetItem[]) =>
+  invoke<GetCheck>("revision_get_check", { items });
+export const revisionGet = (items: GetItem[], expectedHead: string, seen: GetSeen[]) =>
+  invoke<GotRevision>("revision_get", { items, expectedHead, seen });
 export const diffFlushed = (saved: boolean) => invoke<void>("diff_flushed", { saved });
 // Decision 3: with the merge window open, it brings it to the front with the file it already had.
 export const mergeWindowOpen = (path: string) => invoke<void>("merge_window_open", { path });
@@ -638,12 +758,214 @@ export const perfEnabled = () => invoke<boolean>("perf_enabled");
 export const perfReport = (json: string) => invoke<void>("perf_report", { json });
 export const appVersion = () => invoke<string>("app_version");
 export const initialRepo = () => invoke<string | null>("initial_repo");
+// `rama <file>[:<line>]`: the file's repository, and the file relative to it. A folder comes as
+// `repo` alone, as `initialRepo` gives it.
+export interface InitialTarget {
+  repo: string;
+  file: string | null;
+  line: number | null;
+}
+export const initialTarget = () => invoke<InitialTarget | null>("initial_target");
+// A file of the viewer: on disk without `revision` (a full hash), and the line to show, from 1.
+export interface ViewerTarget {
+  path: string;
+  revision: string | null;
+  line: number | null;
+  // `Annotate` from a menu outside the viewer: the tab shows its annotations once open.
+  annotate?: boolean;
+}
+// Rust owns the limits: a preview says its whole size and how much it shows; a binary says whether
+// it is over the content limit.
+export type ViewerContent =
+  | { kind: "text"; text: string; previewOf: number | null; previewSize: number | null }
+  | { kind: "binary"; size: number; tooLarge: boolean }
+  | { kind: "absent" };
+// Local files that are not on disk are skipped; with nothing left, the window does not open.
+export const viewerOpen = (targets: ViewerTarget[]) => invoke<void>("viewer_open", { targets });
+// The targets `viewerOpen` would open: the others are local files not on disk.
+export const viewerOpenable = (targets: ViewerTarget[]) =>
+  invoke<ViewerTarget[]>("viewer_openable", { targets });
+// Size, inode and modification time of a local file, without reading it; null when it is not one.
+export const viewerStamp = (path: string) => invoke<string | null>("viewer_stamp", { path });
+// What `viewerOpen` left for the viewer page, taken once.
+export const viewerTargets = () => invoke<ViewerTarget[]>("viewer_targets");
+export const viewerContent = (path: string, revision: string | null) =>
+  invoke<ViewerContent>("viewer_content", { path, revision });
+// `viewer_open` sends it to the viewer only (`emit_to`).
+export const onViewerOpen = (handler: () => void) =>
+  listen("viewer-open", () => handler(), { target: ownWindow() });
+// A file in a commit (`GitFileRevision`): what `Annotate Revision` and `Annotate Previous
+// Revision` open.
+export interface AnnotationTarget {
+  hash: string;
+  path: string;
+}
+// A commit of an annotation (`GitFileAnnotation.CommitInfo`); times in seconds. `previous` is what
+// `Annotate Previous Revision` opens, `number` its place in the file history (the oldest is 1),
+// and the colours, the background in the `Order` and `Author` modes.
+export interface AnnotatedCommit {
+  hash: string;
+  path: string;
+  author: string;
+  email: string;
+  authorTime: number;
+  committerTime: number;
+  subject: string;
+  message: string;
+  previous: AnnotationTarget | null;
+  number: number | null;
+  orderColor: string | null;
+  authorColor: string | null;
+}
+// `revision` is the one blamed (the tab's, or the last commit of the local file), `path` the file
+// in it. `lines[i]` is the commit of line `i + 1` of the text shown, `null` for a line changed
+// locally, and `origins[i]` its line in the revision blamed (from 0; a changed line, where its
+// change starts). `owners` is the commit of each line blamed. `suspicious`: the line counts differ
+// as `V:687` warns. `historySize` is 0 without numbers; `line`, the line of `from` in this revision.
+export interface Annotation {
+  revision: string;
+  path: string;
+  commits: AnnotatedCommit[];
+  lines: (number | null)[];
+  origins: number[];
+  owners: number[];
+  suspicious: boolean;
+  historySize: number;
+  line: number | null;
+}
+export interface AnnotateRequest {
+  path: string;
+  revision: string | null;
+  // The local file's text as the viewer shows it.
+  localText: string | null;
+  // The line (from 1) of the text an annotation is opened from.
+  from: { text: string; line: number } | null;
+}
+// Launches `Loading Annotations`; the result, an `Annotation`, arrives with `taskResult`.
+export const annotateStart = (request: AnnotateRequest) =>
+  invoke<number>("annotate_start", { request });
+// A local file's annotation after a change on disk or in the repository: closed when its base
+// revision moved, else its lines mapped again from `owners`.
+export interface AnnotateRefreshRequest {
+  path: string;
+  revision: string;
+  blamedPath: string;
+  owners: number[];
+  localText: string;
+}
+export type AnnotationRefreshed =
+  | { kind: "closed" }
+  | { kind: "lines"; lines: (number | null)[]; origins: number[] };
+export const annotateRefresh = (request: AnnotateRefreshRequest) =>
+  invoke<AnnotationRefreshed>("annotate_refresh", { request });
+// A click on an annotated line: the main window selects the commit in its Log.
+export const annotationShowInLog = (hash: string) =>
+  invoke<void>("annotation_show_in_log", { hash });
+export const onAnnotationShowInLog = (handler: (hash: string) => void) =>
+  listen<string>("annotation-show-in-log", (event) => handler(event.payload), {
+    target: ownWindow(),
+  });
+// Show History for Selection: the local file, its selected lines (from 0, both included) and its
+// text as the viewer shows it. `stream` tells one run's updates from another's.
+export interface SelectionRequest {
+  path: string;
+  startLine: number;
+  endLine: number;
+  localText: string;
+  stream: number;
+}
+// A revision of the file's history (`GitFileRevision`); `path` is the file's in it, the time in
+// seconds.
+export interface SelectionRevision {
+  hash: string;
+  path: string;
+  commitTime: number;
+  author: string;
+  authorEmail: string;
+  committer: string;
+  committerEmail: string;
+  message: string;
+}
+// The lines of a block and the line (from 0) of its text where they start.
+export interface BlockLines {
+  start: number;
+  lines: string[];
+}
+// The block of the local text comes first (index 0), then the revisions, then one block per
+// revision (index `i` is revision `i - 1`); a `null` block is gone from that revision on.
+export type SelectionUpdate =
+  | { kind: "revisions"; stream: number; localTime: number | null; revisions: SelectionRevision[] }
+  | { kind: "block"; stream: number; index: number; block: BlockLines | null };
+// Opens (or reuses) the `History for Selection` window with this selection.
+export const selectionHistoryOpen = (request: SelectionRequest) =>
+  invoke<void>("selection_history_open", { request });
+// What `selectionHistoryOpen` left for the window's page, taken once.
+export const selectionHistoryTarget = () =>
+  invoke<SelectionRequest | null>("selection_history_target");
+// The stream's task: its updates arrive with `onSelectionHistoryUpdate`, its end with `taskResult`.
+export const selectionHistoryStart = (request: SelectionRequest) =>
+  invoke<number>("selection_history_start", { request });
+// Cancels the stream and closes the window.
+export const selectionHistoryClose = () => invoke<void>("selection_history_close");
+export const onSelectionHistoryOpen = (handler: () => void) =>
+  listen("selection-history-open", () => handler(), { target: ownWindow() });
+export const onSelectionHistoryUpdate = (handler: (update: SelectionUpdate) => void) =>
+  listen<SelectionUpdate>("selection-history-update", (event) => handler(event.payload), {
+    target: ownWindow(),
+  });
+// `Show All Affected Files` of a row, which the main window's `Changes` window shows.
+export interface AffectedFiles {
+  hash: string;
+  path: string;
+}
+export const selectionHistoryShowAffected = (affected: AffectedFiles) =>
+  invoke<void>("selection_history_show_affected", { affected });
+export const onSelectionHistoryShowAffected = (handler: (affected: AffectedFiles) => void) =>
+  listen<AffectedFiles>("selection-history-show-affected", (event) => handler(event.payload), {
+    target: ownWindow(),
+  });
+// An entry of the Project tree: `path` is relative to the repository, exactly as the disk spells it.
+export interface TreeEntry {
+  name: string;
+  path: string;
+  dir: boolean;
+  // A file of a type IntelliJ registers as binary: Rust says it, by the name (always sent; the
+  // repository root row the tree makes has none).
+  binary?: boolean;
+}
+// The entries of a folder of the repository ("" for its root) as the disk has them now: folders
+// first, by natural name, without IntelliJ's default ignore patterns.
+export const treeList = (dir: string) => invoke<TreeEntry[]>("tree_list", { dir });
+// The entries of a folder ("" for the root) at `revision`, a full hash, as `git ls-tree` gives them:
+// folders first, by natural name, without what IntelliJ ignores and without archives.
+export const treeListAt = (revision: string, dir: string) =>
+  invoke<TreeEntry[]>("tree_list_at", { revision, dir });
 export const showWindow = () => invoke<void>("show_window");
 export const hideWindow = () => invoke<void>("hide_window");
 export const repoOpen = (repo: string) => invoke<RepoInfo>("repo_open", { repo });
 export const repoState = () => invoke<RepoState>("repo_state");
 // Turns on in the Git menu the entries of the operation in progress that apply, and turns off the others.
 export const gitMenuEnable = (ids: string[]) => invoke<void>("git_menu_enable", { ids });
+// An entry of `Git > Current File` as the selection of the focused window has it.
+export interface CurrentFileItem {
+  id: string;
+  text: string;
+  enabled: boolean;
+}
+// `GitFileActionGroup`: the title and the entries of `Git > Current File`; an entry not given is off.
+export const gitMenuCurrentFile = (title: string, items: CurrentFileItem[]) =>
+  invoke<void>("git_menu_current_file", { title, items });
+// A file action of the viewer's editor that the main window carries out, with its files.
+export interface GitFileActionRequest {
+  id: string;
+  paths: string[];
+}
+export const gitFileAction = (action: GitFileActionRequest) =>
+  invoke<void>("git_file_action", { action });
+export const onGitFileAction = (handler: (action: GitFileActionRequest) => void) =>
+  listen<GitFileActionRequest>("git-file-action", (event) => handler(event.payload), {
+    target: ownWindow(),
+  });
 export const logOpen = () => invoke<LogSummary>("log_open");
 export const logRows = (viewId: number, start: number, count: number) =>
   invoke<LogRow[]>("log_rows", { viewId, start, count });
@@ -664,6 +986,37 @@ export const clipboardWrite = (text: string) => invoke<void>("clipboard_write", 
 // stays in place. Another call from the same tab cancels this one.
 export const logViewOpen = (tab: number, spec: ViewSpec) =>
   invoke<number>("log_view_open", { tab, spec });
+// A file history tab (`src-tauri/src/history.rs`): the task's result is a `ViewOpened` too.
+// `revision` is that of `History Up to Here`, which ignores `branches`; empty `branches` is every
+// reference.
+export interface HistoryRequest {
+  path: string;
+  revision: string | null;
+  branches: string[];
+}
+// The file in a commit of the history.
+export interface HistoryEntry {
+  path: string;
+  deleted: boolean;
+}
+export interface HistorySide {
+  hash: string;
+  path: string;
+}
+// A row against its parent rows: no `after` where the row deleted the file, `null` for a parent
+// without it, two `before` for a merge, none for the first commit.
+export interface HistoryChange {
+  hash: string;
+  path: string;
+  after: HistorySide | null;
+  before: (HistorySide | null)[];
+}
+export const logHistoryOpen = (tab: number, spec: ViewSpec, request: HistoryRequest) =>
+  invoke<number>("log_history_open", { tab, spec, request });
+export const logHistoryEntries = (viewId: number, hashes: string[]) =>
+  invoke<(HistoryEntry | null)[]>("log_history_entries", { viewId, hashes });
+export const logHistoryChange = (viewId: number, hashes: string[]) =>
+  invoke<HistoryChange | null>("log_history_change", { viewId, hashes });
 export const logUsers = () => invoke<Person[]>("log_users");
 export const logRefs = () => invoke<LogRef[]>("log_refs");
 export const branchList = () => invoke<BranchList>("branch_list");
@@ -705,6 +1058,18 @@ export const commitChangesStart = (hashes: string[], limit: number | null) =>
 export const logRecentFilters = () => invoke<RecentFilters>("log_recent_filters");
 export const logRememberFilter = (filter: string, values: string[]) =>
   invoke<RecentFilters>("log_remember_filter", { filter, values });
+// `Not Cherry-Picked Commits`: the branch a tab's filters compare with, if any.
+export const logComparedBranch = (filter: LogFilter) =>
+  invoke<string | null>("log_compared_branch", { filter });
+// The id of a task whose result is a `NotPicked`, or null when `branch` is not a branch of the log.
+export const logNotPicked = (branch: string) => invoke<number | null>("log_not_picked", { branch });
+
+export interface NotPicked {
+  // The current branch compared with, `HEAD` when detached.
+  current: string;
+  // The commits of the compared branch with no equivalent patch in the current one.
+  commits: string[];
+}
 export type CheckoutMode = "plain" | "smart" | "force";
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 export type Overwrite = "no" | "try" | "drop";
@@ -1068,6 +1433,21 @@ export interface ConflictSides {
   reversed: boolean;
   // With `default`. A missing version counts as empty text; with a binary, empty.
   blocks: MergeBlock[];
+  // What `Show Details` of the left and the right title shows: only in a merge, a rebase or a
+  // cherry-pick.
+  details: [SideDetails | null, SideDetails | null];
+}
+
+// One commit, or the commits of `from..to` (full hashes).
+export type SideDetails =
+  | { kind: "commit"; hash: string }
+  | { kind: "range"; from: string; to: string };
+
+// A commit of a range, and whether it touched the conflicted file.
+export interface RangeCommit {
+  hash: string;
+  subject: string;
+  conflicted: boolean;
 }
 
 export type ConflictSide = "yours" | "theirs";
@@ -1135,6 +1515,9 @@ export interface MergeBlock {
 // or nothing).
 export const conflictsSession = () => invoke<number>("conflicts_session");
 export const conflictSides = (path: string) => invoke<number>("conflict_sides", { path });
+// The id of a task whose result is the `RangeCommit[]` of `from..to`, newest first.
+export const mergeRangeCommits = (from: string, to: string, path: string) =>
+  invoke<number>("merge_range_commits", { from, to, path });
 // `side` is the user's: the backend inverts it only in a rebase.
 export const conflictsAccept = (paths: string[], side: ConflictSide) =>
   invoke<number>("conflicts_accept", { paths, side });
@@ -1856,9 +2239,16 @@ export const onSelectionLost = (handler: (lost: LostSelection) => void) =>
 export const onSettingsChanged = (handler: (settings: Settings) => void) =>
   listen<Settings>("settings-changed", (event) => handler(event.payload));
 export const onOpenSettings = (handler: () => void) => listen("open-settings", handler);
+// The label of this page's window: the `?window=` its URL was loaded with (`main.ts`), the main
+// window having none. An event sent to one window (`emit_to`) also reaches every listener
+// registered without a target (`{ kind: "Any" }`), so those events are listened to with it.
+function ownWindow(): string {
+  return new URLSearchParams(location.search).get("window") ?? "main";
+}
+
 // A Git action that the interface outside the window requests, like the Git menu: its id arrives.
 export const onGitAction = (handler: (action: string) => void) =>
-  listen<string>("git-action", (event) => handler(event.payload));
+  listen<string>("git-action", (event) => handler(event.payload), { target: ownWindow() });
 export const emitDiffReady = () => emit("diff-ready");
 export const emitDiffDrawn = (timing: DiffTiming) => emit("diff-drawn", timing);
 export const onDiffDrawn = (handler: (timing: DiffTiming) => void) =>
@@ -1873,6 +2263,11 @@ export const onLeaveRefused = (handler: (message: string) => void) =>
 export const onDiffReady = (handler: () => void) => listen("diff-ready", handler);
 export const onDiffOpen = (handler: (path: string) => void) =>
   listen<string>("diff-open", (event) => handler(event.payload));
+// Sent to the diff window only (`emit_to`).
+export const onDiffRequest = (handler: (request: DiffRequest) => void) =>
+  listen<DiffRequest>("diff-request", (event) => handler(event.payload), {
+    target: ownWindow(),
+  });
 // Close: the window hides itself, after saving what was written.
 export const onDiffClose = (handler: () => void) => listen("diff-close", handler);
 // Another repository is going to replace this one: save and reply with `diffFlushed`.

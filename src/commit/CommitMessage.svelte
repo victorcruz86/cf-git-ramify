@@ -54,7 +54,7 @@
 
   let field: HTMLTextAreaElement;
   let backdrop: HTMLDivElement;
-  let historyButton: HTMLButtonElement;
+  let historyButton = $state<HTMLButtonElement>();
 
   const issues = $derived(validateMessage(message).filter((issue) => issue.code !== "empty"));
   const segments = $derived(highlightMessage(message, issues));
@@ -73,7 +73,7 @@
   }
 
   export function showHistory() {
-    if (busy) return;
+    if (busy || !historyButton) return;
     const bounds = historyButton.getBoundingClientRect();
     onhistory(bounds.left, bounds.top);
   }

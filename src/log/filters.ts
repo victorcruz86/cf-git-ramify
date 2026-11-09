@@ -128,6 +128,20 @@ export function displayText(values: string[], maxLength = MAX_VALUE_LENGTH): str
 }
 
 // `StructureFilterPopupComponent.getText`: the first one in order and how many more there are.
+// A value of the Paths filter as a repository path ("" is the repository): `path2Text` ends a folder
+// with `/` and writes the repository as `./`; `Select…` takes them without.
+export function filterPath(value: string): string {
+  const path = value.replace(/\/+$/, "");
+  return path === "." || path === "" ? "" : path.replace(/^\.\//, "");
+}
+
+// `VcsLogFilterObject.fromVirtualFiles` as the filter's values (`path2Text`), in path order.
+export function pathFilterValues(paths: Iterable<string>, isDir: (path: string) => boolean): string[] {
+  return [...paths]
+    .sort()
+    .map((path) => (path === "" ? "./" : isDir(path) ? `${path}/` : path));
+}
+
 export function pathsText(paths: string[]): string {
   const [first] = [...paths].sort();
   return paths.length > 1 ? `${first} + ${paths.length - 1}` : (first ?? "");

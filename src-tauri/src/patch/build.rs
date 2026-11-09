@@ -558,7 +558,6 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::process::Command;
 
     use regex::Regex;
     use tempfile::TempDir;
@@ -665,7 +664,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let file = dir.path().join("p.patch");
         fs::write(&file, patch).unwrap();
-        let output = Command::new("git")
+        let output = crate::test_support::git_command()
             .current_dir(repo)
             .args(["apply", "--binary"])
             .arg(&file)

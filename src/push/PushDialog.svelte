@@ -383,6 +383,7 @@
             onoptions={(next) => (options = { ...options, ...next })}
             onselect={(next) => (change = next)}
             onopen={() => (diffOpen = true)}
+            modal
           />
         </div>
         {#if options.showDetails && details.length === 1}

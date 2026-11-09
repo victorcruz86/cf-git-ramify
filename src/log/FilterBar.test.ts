@@ -9,6 +9,16 @@ import { emptyFilters, lastDay, ME, type FilterState } from "./filters";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
+// jsdom has no ResizeObserver, which the tree of `Select in Tree…` needs.
+vi.stubGlobal(
+  "ResizeObserver",
+  class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+);
+
 const REFS: LogRef[] = [
   { name: "HEAD", kind: "head" },
   { name: "main", kind: "local" },
@@ -55,6 +65,17 @@ beforeEach(() => {
       const { filter, values } = args as { filter: string; values: string[] };
       recent = { ...recent, [filter]: [values, ...(recent[filter] ?? [])] };
       return recent;
+    }
+    if (command === "repo_status") return [];
+    if (command === "tree_list") {
+      const { dir } = args as { dir: string };
+      if (dir === "") {
+        return [
+          { name: "src", path: "src", dir: true },
+          { name: "a.txt", path: "a.txt", dir: false },
+        ];
+      }
+      return dir === "src" ? [{ name: "b.txt", path: "src/b.txt", dir: false }] : [];
     }
     throw new Error(`unexpected command: ${command}`);
   });
@@ -409,7 +430,7 @@ test("period_chosen_by_hand", async () => {
 test("paths_popup", async () => {
   const onchange = await bar();
   await openChip("Paths");
-  expect(items()).toEqual(["Select…"]);
+  expect(items()).toEqual(["Select…", "Select in Tree…"]);
 
   await choose("Select…");
   const field = await screen.findByRole("textbox", { name: "Paths" });
@@ -419,6 +440,46 @@ test("paths_popup", async () => {
 
   await waitFor(() => expect(onchange).toHaveBeenCalledOnce());
   expect(onchange.mock.calls[0][0].paths).toEqual(["src/a|b.txt", "c.txt"]);
+});
+
+test("ok_replaces_the_paths_filter_and_adds_to_recent", async () => {
+  recent = { Paths: [["old.txt"]] };
+  const onchange = await bar({ root: "/work/repo", filters: { ...emptyFilters(), paths: ["a.txt"] } });
+  await openChip("Paths: a.txt");
+  expect(items()).toEqual(["Select…", "Select in Tree…", "old.txt"]);
+  expect(screen.getByRole("separator", { name: "Recent" })).toBeTruthy();
+
+  await choose("Select in Tree…");
+  const dialog = await screen.findByRole("dialog", { name: "Select Paths to Filter by" });
+  // The path of the filter starts checked.
+  const checkbox = (name: string) => within(dialog).getByRole("checkbox", { name });
+  await waitFor(() => expect(checkbox("a.txt").getAttribute("aria-checked")).toBe("true"));
+  await fireEvent.click(checkbox("a.txt"));
+  await fireEvent.click(checkbox("src"));
+  await fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+
+  await waitFor(() => expect(onchange).toHaveBeenCalledOnce());
+  expect(onchange.mock.calls[0][0].paths).toEqual(["src/"]);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith("log_remember_filter", { filter: "Paths", values: ["src/"] }),
+  );
+  await openChip("Paths: src/");
+  expect(items()).toEqual(["Select…", "Select in Tree…", "src/", "old.txt"]);
+});
+
+test("cancel_in_select_in_tree_leaves_the_filter_as_it_was", async () => {
+  const onchange = await bar({ root: "/work/repo" });
+  await openChip("Paths");
+  await choose("Select in Tree…");
+  const dialog = await screen.findByRole("dialog", { name: "Select Paths to Filter by" });
+  const ok = within(dialog).getByRole("button", { name: "OK" }) as HTMLButtonElement;
+  expect(ok.disabled).toBe(true);
+
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(onchange).not.toHaveBeenCalled();
 });
 
 test("closing_a_filter_removes_it", async () => {

@@ -4,7 +4,10 @@
     changelistsCreate,
     changelistsMoveHunks,
     changelistsSetActive,
+    comparePreview,
+    compareSides,
     fileWrite,
+    LOCAL_REVISION,
     linesRollback,
     notifyRepoChanged,
     snapshotsRestore,
@@ -19,6 +22,8 @@
     type Comparison,
     type Hunk,
     type LineSelection,
+    type RevisionPair,
+    type RevisionSides,
     type SelectionChange,
     type WorktreeSides,
   } from "../lib/api";
@@ -43,7 +48,14 @@
   import checkPartial from "./icons/gutterCheckBoxIndeterminate.svg?raw";
   import checkOn from "./icons/gutterCheckBoxSelected.svg?raw";
   import { inGutter, softWrapItem, type DiffOptions } from "./options";
-  import { sameSides, sideMessage, sideText, unchangedText } from "./sides";
+  import {
+    PREVIEW_TEXT,
+    revisionsMessage,
+    sameSides,
+    sideMessage,
+    sideText,
+    unchangedText,
+  } from "./sides";
 
   const PREVIEW_DELAY_MS = 150;
 
@@ -59,6 +71,9 @@
     lists: Changelists | null;
     // With the staging area: what is compared, and the margin moves to the stage or takes out of it.
     comparison?: Comparison | null;
+    // Two revisions instead of HEAD and the disk: their titles, no line actions, and the local
+    // side, if it is on the right, saved like the disk always is.
+    pair?: RevisionPair | null;
     embedded?: boolean;
     // The `Preview Diff` of Local Changes: the text cannot be edited and there are no line checkboxes.
     readonly?: boolean;
@@ -81,6 +96,7 @@
     selection,
     lists,
     comparison = null,
+    pair = null,
     embedded = false,
     readonly = false,
     checkboxes = true,
@@ -91,7 +107,7 @@
     ondrawn,
   }: Props = $props();
 
-  let sides = $state.raw<WorktreeSides | null>(null);
+  let sides = $state.raw<WorktreeSides | RevisionSides | null>(null);
   let failure = $state<string | null>(null);
   let dirty = $state(false);
   // The file changed on disk with unsaved changes here: saving would fail.
@@ -102,6 +118,8 @@
   let showing = $state.raw<Hunk[] | null>(null);
   let editors: DiffEditors | null = null;
   let editorsUnified = false;
+  // The side the editors that exist type into: the mark and the undo check follow them.
+  let editorsSide = $state<"old" | "new">("new");
   let shown = $state.raw<DiffData | null>(null);
   let request = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -110,31 +128,47 @@
   let writing = false;
   let sidesMs: number | null = null;
 
-  const message = $derived(sides && (sideMessage(sides.old) ?? sideMessage(sides.new)));
+  const revisions = $derived(pair && sides ? (sides as RevisionSides) : null);
+  // G§0.9 puts the local side on the left; 241 still edits it there (`MASTER_SIDE`).
+  const localLeft = $derived(pair?.left.revision === LOCAL_REVISION);
+  const editSide = $derived<"old" | "new">(localLeft ? "old" : "new");
+  const message = $derived(sides && blockingMessage(sides));
   // With a conflict there is no stage to compare or to change.
   const shownComparison = $derived(sides?.conflicted ? null : comparison);
   const unchanged = $derived(
     sides && !message
-      ? unchangedText(sides, shownComparison === "local" ? "the stage" : "HEAD")
+      ? unchangedText(
+          sides,
+          pair ? null : shownComparison === "local" ? "the stage" : "HEAD",
+        )
       : null,
   );
   const oldTitle = $derived.by(() => {
+    if (pair) return pair.left.title;
     const absent = sides?.old.kind === "absent";
     if (shownComparison === "local") return absent ? "No version in the stage" : "Staged";
     return absent ? "No previous version" : "HEAD";
   });
   const newTitle = $derived.by(() => {
+    if (pair) return pair.right.title;
     if (sides?.new.kind === "absent") return "Deleted";
     if (shownComparison === "staged") return "Staged";
     return shownComparison === "local" ? "Local" : "Your version";
   });
+  // The right column, or in the unified view the side of its document: the left one when local.
+  const mainSide = $derived<"old" | "new">(
+    options.unified && editorsSide === "old" ? "old" : "new",
+  );
+  const mainTitle = $derived(mainSide === "old" ? oldTitle : newTitle);
   const checkLabel = $derived.by(() => {
     if (shownComparison === "staged") return "Unstage";
     return shownComparison === "local" ? "Stage" : "Include into commit";
   });
   const fileList = $derived(lists ? (lists.assignments[path] ?? lists.active) : null);
   const ownHunks = $derived(
-    sides?.conflicted || readonly || !checkboxes ? [] : (sides?.hunks ?? []).filter(isOwn),
+    sides?.conflicted || readonly || !checkboxes || pair
+      ? []
+      : (sides?.hunks ?? []).filter(isOwn),
   );
   // What was chosen from hunks that no longer exist is handled by the Commit view, which reports it.
   const ownIds = $derived(new Set(ownHunks.map((hunk) => hunk.id)));
@@ -144,6 +178,12 @@
   const hiddenCount = $derived(
     (sides?.hunks.length ?? 0) - (shown?.hunks.filter((hunk) => hunk.id !== "").length ?? 0),
   );
+
+  // What is shown instead of the editors.
+  function blockingMessage(current: WorktreeSides | RevisionSides): string | null {
+    if (pair) return revisionsMessage(current as RevisionSides);
+    return sideMessage(current.old) ?? sideMessage(current.new);
+  }
 
   function isOwn(hunk: Hunk): boolean {
     const assigned = lists?.hunkAssignments[path]?.[hunk.id];
@@ -182,13 +222,15 @@
   // Follows what has to be shown without rebuilding the editors: a change of selection or options
   // must not lose the cursor or the scroll position.
   function draw(current: WorktreeSides | null) {
-    if (!current || !host || sideMessage(current.old) || sideMessage(current.new)) {
+    if (!current || !host || blockingMessage(current)) {
       destroyEditors();
       return;
     }
     const data = dataFor(current);
+    // A local side on the left is typed into on the left, and is the document of the unified view.
+    const side = editSide;
     const editable = current.editable && !readonly;
-    const fits = editors?.fits(data, editable) ?? false;
+    const fits = (editors?.fits(data, editable) ?? false) && editorsSide === side;
     // `load` does not change `sides` with unsaved text: what was typed always fits in its editors.
     if (editors?.dirty && !fits) return;
     if (!editors || !fits || editorsUnified !== options.unified) {
@@ -196,11 +238,13 @@
       const buildStart = sidesMs === null ? 0 : performance.now();
       editors?.destroy();
       editorsUnified = options.unified;
+      editorsSide = side;
       editors = new DiffEditors(host, {
         path,
         data,
         draft,
         editable,
+        editSide: side,
         unified: options.unified,
         embedded,
         options,
@@ -236,7 +280,11 @@
     const measured = ondrawn !== undefined && sides === null;
     const start = measured ? performance.now() : 0;
     try {
-      const fresh = await (comparison ? stagingSides(path, comparison) : worktreeSides(path));
+      const fresh = await (pair
+        ? compareSides(pair.left, pair.right)
+        : comparison
+          ? stagingSides(path, comparison)
+          : worktreeSides(path));
       if (token !== request || writing) return;
       if (measured) sidesMs = performance.now() - start;
       failure = null;
@@ -261,14 +309,17 @@
     if (!editors) return;
     if (!editors.dirty) {
       // It was undone back to what is saved. If what is saved is new, it will arrive with its hunks.
-      if (shown && editors.content() === shown.newText) editors.setData(shown);
+      const saved = shown && (editorsSide === "old" ? shown.oldText : shown.newText);
+      if (shown && editors.content() === saved) editors.setData(shown);
       return;
     }
     const content = editors.content();
     try {
-      const hunks = await (comparison
-        ? stagingPreview(path, content)
-        : worktreePreview(path, content));
+      const hunks = await (pair
+        ? comparePreview(pair.left, pair.right, content)
+        : comparison
+          ? stagingPreview(path, content)
+          : worktreePreview(path, content));
       if (editors?.dirty && editors.content() === content) editors.setDraftHunks(hunks);
     } catch (error) {
       onnotice("error", errorText(error));
@@ -469,11 +520,11 @@
   // For ⌥⌘Z and ⌘⇧M: the lines of the cursor or of the selection.
   export function rollbackLines() {
     const lines = range();
-    if (lines && !dirty && !comparison) rollback(lines);
+    if (lines && !dirty && !comparison && !pair) rollback(lines);
   }
 
   export function moveLines() {
-    if (comparison) return;
+    if (comparison || pair) return;
     const lines = range();
     const hunks = lines ? linesOf(lines) : [];
     if (hunks.length > 0) moving = hunks;
@@ -491,7 +542,10 @@
     event.preventDefault();
     const hunks = linesOf(lines);
     const none = hunks.length === 0;
-    const changeItems: MenuItem[] = comparison
+    // The hunks of two revisions are not those of HEAD: nothing to roll back or move.
+    const changeItems: MenuItem[] = pair
+      ? []
+      : comparison
       ? [
           {
             label: comparison === "staged" ? "Unstage" : "Stage",
@@ -533,7 +587,7 @@
   }
 
   $effect(() => {
-    void [version, comparison];
+    void [version, comparison, pair];
     untrack(() => load());
   });
 
@@ -552,7 +606,12 @@
 <div class="pane" class:embedded>
   <div class="titles">
     {#if !options.unified}
-      <div class="title">{oldTitle}</div>
+      <div class="title">
+        <span>{oldTitle}{dirty && editorsSide === "old" ? " *" : ""}</span>
+        {#if revisions?.oldPreview}
+          <span class="note">{PREVIEW_TEXT}</span>
+        {/if}
+      </div>
     {/if}
     <div class="title">
       {#if ownHunks.length > 0 && !dirty}
@@ -571,9 +630,12 @@
           )}
         </button>
       {/if}
-      <span>{newTitle}{dirty ? " *" : ""}</span>
+      <span>{mainTitle}{dirty && editorsSide === mainSide ? " *" : ""}</span>
       {#if sides?.note}
         <span class="note">{sides.note}</span>
+      {/if}
+      {#if revisions?.newPreview || (options.unified && revisions?.oldPreview)}
+        <span class="note">{PREVIEW_TEXT}</span>
       {/if}
       {#if hiddenCount > 0}
         <span class="note">

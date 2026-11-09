@@ -9,6 +9,21 @@ import {
   type RefOperation,
   type RepoState,
 } from "./contextMenu";
+import { showRepositoryAtRevision } from "../repositories/tab";
+import {
+  compareBranches,
+  compareRevisions,
+  compareWithLocal,
+  showDiffWithWorkingTree,
+} from "../compare/actions";
+
+vi.mock("../repositories/tab", () => ({ showRepositoryAtRevision: vi.fn() }));
+vi.mock("../compare/actions", () => ({
+  compareBranches: vi.fn(async () => {}),
+  compareRevisions: vi.fn(async () => {}),
+  compareWithLocal: vi.fn(async () => {}),
+  showDiffWithWorkingTree: vi.fn(async () => {}),
+}));
 
 const HASH = "a1b2c3d4".repeat(5);
 const OTHER = "e5f6a7b8".repeat(5);
@@ -42,15 +57,21 @@ function find(items: MenuItem[], label: string): MenuAction {
   return found;
 }
 
-test("menu_in_intellij_order_without_phase_4_items", () => {
+// `Vcs.Log.ContextMenu` (`LX:188-197`) with `Git.Log.ContextMenu.CheckoutBrowse` before
+// `Compare Versions` (`X:301-306`): Compare Versions only with two commits, Compare with Local
+// only with one.
+test("menu_in_intellij_order", () => {
   const items = contextMenu(selection([local("other"), tag("v1")]), ON_MAIN, handlers());
 
   expect(labels(items)).toEqual([
     "Copy Revision Number",
     "Copy Commit Subject",
-    "—",
+    "Create Patch...",
     "Cherry-Pick",
+    "—",
     "Checkout",
+    "Show Repository at Revision",
+    "Compare with Local",
     "—",
     "Reset Current Branch to Here…",
     "Revert Commit",
@@ -71,6 +92,71 @@ test("menu_in_intellij_order_without_phase_4_items", () => {
     "Go to Child Commit",
     "Go to Parent Commit",
   ]);
+
+  const two = contextMenu(
+    selection([], {
+      commits: [
+        { hash: HASH, subject: "one", refs: [] },
+        { hash: OTHER, subject: "two", refs: [] },
+      ],
+    }),
+    ON_MAIN,
+    handlers(),
+  );
+  expect(labels(two).slice(0, 8)).toEqual([
+    "Copy Revision Number",
+    "Copy Commit Subject",
+    "Create Patch...",
+    "Cherry-Pick",
+    "—",
+    "Show Repository at Revision",
+    "Compare Versions",
+    "—",
+  ]);
+  expect(find(two, "Show Repository at Revision").disabled).toBe(true);
+});
+
+// `CompareRevisionsFromLogAction` and `ShowDiffAfterWithLocalFromLogActionProvider`: through
+// `showDiffForPaths`, the older selected commit on the left, the path filter's paths, and always the
+// `Changes` window.
+test("compare_versions_and_compare_with_local_use_the_path_filter", () => {
+  const paths = ["src", "README.md"];
+  const two = contextMenu(
+    selection([], {
+      commits: [
+        { hash: HASH, subject: "one", refs: [] },
+        { hash: OTHER, subject: "two", refs: [] },
+      ],
+    }),
+    ON_MAIN,
+    handlers({ paths }),
+  );
+  find(two, "Compare Versions").run?.();
+  const listed = paths.map((path) => ({ path, folder: true }));
+  expect(compareRevisions).toHaveBeenCalledWith(OTHER, HASH, listed);
+
+  const one = contextMenu(selection(), ON_MAIN, handlers({ paths }));
+  find(one, "Compare with Local").run?.();
+  expect(compareWithLocal).toHaveBeenCalledWith(HASH, listed);
+});
+
+test("create_patch_runs_its_handler_and_is_off_without_one", () => {
+  const createPatch = vi.fn();
+  expect(find(contextMenu(selection(), ON_MAIN, handlers()), "Create Patch...").disabled).toBe(true);
+
+  const items = contextMenu(selection(), ON_MAIN, handlers({ createPatch }));
+  find(items, "Create Patch...").run?.();
+
+  expect(createPatch).toHaveBeenCalled();
+});
+
+test("show_repository_at_revision_opens_the_commit_in_the_repositories_window", () => {
+  const items = contextMenu(selection(), ON_MAIN, handlers());
+
+  const browse = find(items, "Show Repository at Revision");
+  expect(browse.disabled).toBe(false);
+  browse.run?.();
+  expect(showRepositoryAtRevision).toHaveBeenCalledWith(HASH);
 });
 
 test("shortcuts_visible_in_the_menu", () => {
@@ -93,8 +179,9 @@ test("copy_hash_and_subject", () => {
   };
   const items = contextMenu(several, ON_MAIN, handlers({ copy }));
 
+  // `CopyRevisionNumberAction` reverses the rows: the oldest first.
   find(items, "Copy Revision Number").run?.();
-  expect(copy).toHaveBeenLastCalledWith(`${HASH} ${OTHER}`);
+  expect(copy).toHaveBeenLastCalledWith(`${OTHER} ${HASH}`);
 
   find(items, "Copy Commit Subject").run?.();
   expect(copy).toHaveBeenLastCalledWith("one\ntwo");
@@ -194,8 +281,11 @@ test("several_commits_hide_groups_and_disable_single_commit_items", () => {
   expect(labels(items)).toEqual([
     "Copy Revision Number",
     "Copy Commit Subject",
-    "—",
+    "Create Patch...",
     "Cherry-Pick",
+    "—",
+    "Show Repository at Revision",
+    "Compare Versions",
     "—",
     "Reset Current Branch to Here…",
     "Revert Commits",
@@ -214,6 +304,7 @@ test("several_commits_hide_groups_and_disable_single_commit_items", () => {
   expect(find(items, "Cherry-Pick").disabled).toBeFalsy();
   expect(find(items, "Revert Commits").disabled).toBeFalsy();
   for (const label of [
+    "Show Repository at Revision",
     "Reset Current Branch to Here…",
     "Push All up to Here…",
     "New Branch…",
@@ -323,7 +414,7 @@ test("one_tag_goes_as_a_single_row_and_two_in_a_submenu", () => {
 });
 
 // `GitLogBranchOperationsActionGroup` uses `LocalBranchActions` and `RemoteBranchActions`, those of the popup.
-test("local_and_remote_branch_submenu_like_the_popup_without_phase_4_items", () => {
+test("local_and_remote_branch_submenu_like_the_popup", () => {
   const vcs = vi.fn();
   const items = contextMenu(
     selection([local("other"), remote("origin/other")]),
@@ -336,6 +427,9 @@ test("local_and_remote_branch_submenu_like_the_popup_without_phase_4_items", () 
     "Checkout",
     "New Branch from 'other'…",
     "Checkout and Rebase onto 'main'",
+    "—",
+    "Compare with 'main'",
+    "Show Diff with Working Tree",
     "—",
     "Rebase 'main' onto 'other'",
     "Merge 'other' into 'main'",
@@ -365,6 +459,9 @@ test("local_and_remote_branch_submenu_like_the_popup_without_phase_4_items", () 
     "New Branch from 'origin/other'…",
     "Checkout and Rebase onto 'main'",
     "—",
+    "Compare with 'main'",
+    "Show Diff with Working Tree",
+    "—",
     "Rebase 'main' onto 'origin/other'",
     "Merge 'origin/other' into 'main'",
     "—",
@@ -381,6 +478,10 @@ test("local_and_remote_branch_submenu_like_the_popup_without_phase_4_items", () 
     find(theirs, label).run?.();
     expect(vcs).toHaveBeenLastCalledWith({ kind: "ref", operation, ref: remote("origin/other") });
   }
+  find(theirs, "Compare with 'main'").run?.();
+  expect(compareBranches).toHaveBeenLastCalledWith("origin/other", "main");
+  find(own, "Show Diff with Working Tree").run?.();
+  expect(showDiffWithWorkingTree).toHaveBeenLastCalledWith("other");
 });
 
 test("the_branch_submenu_says_and_disables_the_same_as_the_popup", () => {

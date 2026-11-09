@@ -1511,7 +1511,7 @@ mod tests {
         repo.commit("f.txt", b"other\n", "other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("f.txt", b"main\n", "main");
-        let _ = std::process::Command::new("git")
+        let _ = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "--no-edit", "other"])
             .output()
@@ -1554,7 +1554,7 @@ mod tests {
         repo.commit("f.txt", b"other\n", "on other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("f.txt", b"main\n", "on main");
-        let merge = std::process::Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "-q", "other"])
             .output()

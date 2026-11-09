@@ -1082,7 +1082,7 @@ mod tests {
 
         let saved = shelve_with(&repo, &runner(), data.path(), move || {
             fs::write(root.join("devin.txt"), "devin\n").unwrap();
-            let added = std::process::Command::new("git")
+            let added = crate::test_support::git_command()
                 .current_dir(&root)
                 .args(["add", "devin.txt"])
                 .status()

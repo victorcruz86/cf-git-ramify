@@ -441,6 +441,39 @@ test("a_binary_changed_in_head_offers_overwrite_in_the_unshelve_dialog", async (
   expect(onanswer).toHaveBeenCalledWith(expect.objectContaining({ selected: [0, 1], overwrite: ["x.bin"] }));
 });
 
+// Part 3's N1: a new plan (a strip or a base of another file) keeps the Overwrite of a binary, and
+// with it its row stays ticked.
+test("a_replanned_binary_with_overwrite_stays_ticked", async () => {
+  const why = '"x.bin" changed in HEAD since it was shelved: it was not unshelved';
+  const X = { before: "x.bin", after: "x.bin", binary: true };
+  const files = (aPath: string, strip: number) => [
+    planned(0, aPath, "modified", { original: "src/a.txt", strip, maxStrip: 1, shelf: { before: "src/a.txt", after: "src/a.txt", binary: false } }),
+    planned(1, "x.bin", "modified", { binary: true, status: "invalid", error: why, overwritable: true, shelf: X }),
+  ];
+  const { services: given, onanswer } = open({
+    mode: "unshelve",
+    source: { kind: "shelf", name: "Fix_it", files: null },
+    plan: plan(files("src/a.txt", 0)),
+    lists: null,
+  });
+  const dialog = screen.getByRole("dialog", { name: "Unshelve Changes" });
+  const changes = () => within(dialog).getByRole("tree", { name: "Changes" });
+  const row = (name: string) => within(changes()).getByRole("treeitem", { name: new RegExp(`^${name}`) });
+  await fireEvent.click(within(row("x.bin")).getByRole("button", { name: "Overwrite" }));
+  expect(within(dialog).getByRole("checkbox", { name: "x.bin" }).getAttribute("aria-checked")).toBe("true");
+  given.load.mockResolvedValue(plan(files("a.txt", 1)));
+
+  await fireEvent.click(row("a.txt"));
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Change Directory Paths" }));
+  await fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Remove Leading Directory" }));
+  await waitFor(() => expect(given.load).toHaveBeenCalled());
+  await waitFor(() => expect(row("a.txt").getAttribute("aria-label")).toMatch(/^a\.txt stripped 1/));
+
+  expect(within(dialog).getByRole("checkbox", { name: "x.bin" }).getAttribute("aria-checked")).toBe("true");
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Unshelve Changes" }));
+  expect(onanswer).toHaveBeenCalledWith(expect.objectContaining({ selected: [0, 1], overwrite: ["x.bin"] }));
+});
+
 test("import_to_shelf_is_a_button_of_the_apply_mode", async () => {
   const { onanswer } = open();
   const dialog = screen.getByRole("dialog", { name: "Apply Patch" });

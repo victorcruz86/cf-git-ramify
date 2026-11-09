@@ -14,7 +14,7 @@ import {
   type GraphMetrics,
 } from "./draw";
 import { graphColor } from "./graphColor";
-import { defaultOptions, toggleColumn } from "./options";
+import { defaultOptions, historyOptions, toggleColumn } from "./options";
 import { TOKENS } from "../lib/theme";
 
 interface Stroke {
@@ -298,6 +298,7 @@ function drawn(
   row: LogRow,
   change: Partial<ReturnType<typeof defaultOptions>> = {},
   selected: number[] = [],
+  notPicked: ReadonlySet<string> | null = null,
 ) {
   const fills: { color: string; x: number; y: number; width: number }[] = [];
   const texts: { text: string; x: number; color: string; font: string }[] = [];
@@ -317,6 +318,7 @@ function drawn(
     options: { ...defaultOptions(), ...change },
     widths: WIDTHS,
     now: NOW,
+    notPicked,
   });
   const at = (text: string) => texts.find((item) => item.text === text);
   return { fills, texts, at };
@@ -377,6 +379,37 @@ test("columns_subject_author_date_by_default", () => {
     ["author", SUBJECT_END],
     ["date", SUBJECT_END + 150],
   ]);
+});
+
+// `FileHistoryUiProperties`: `Author, Date, Commit`. The Commit column (graph, references and
+// subject) goes after the other two, and the graph is drawn there.
+test("history_columns_are_author_date_then_commit", () => {
+  const columns = historyOptions().columns;
+  expect(columns).toEqual(["author", "date", "subject"]);
+  const layout = tableLayout(800, columns, WIDTHS);
+  expect(layout.subjectX).toBe(250);
+  expect(layout.subjectWidth).toBe(SUBJECT_END);
+  expect(layout.cells.map((cell) => [cell.column, cell.x])).toEqual([
+    ["author", 0],
+    ["date", 150],
+  ]);
+
+  const shown = drawn(logRow({ subject: "fix it" }), { columns });
+  expect(shown.at("Ana")?.x).toBe(0);
+  expect(shown.at("fix it")!.x).toBeGreaterThanOrEqual(250);
+  const { context, painted } = recorder();
+  let offset = 0;
+  const translate = context.translate.bind(context);
+  context.translate = (x: number, y: number) => {
+    offset += x;
+    translate(x, y);
+  };
+  const arc = context.arc.bind(context);
+  context.arc = (x: number, y: number, radius: number, start: number, end: number) =>
+    arc(x + offset, y, radius, start, end);
+  paintGraphRow(context, print({ nodeX: 0 }), metrics22, 0, 100, undefined, 250);
+  const node = painted.find((item): item is Circle => "radius" in item)!;
+  expect(node.x).toBeGreaterThanOrEqual(250);
 });
 
 test("hash_is_enabled_from_columns", () => {
@@ -516,6 +549,19 @@ test("selected_merge_without_gray", () => {
   const { texts } = highlighted({ ...NONE, muted: true }, [0]);
 
   expect(texts[0].color).toBe(TOKENS.text);
+});
+
+test("not_cherry_picked_greys_every_other_row_even_selected", () => {
+  const row = logRow({ subject: "one" });
+  const colors = (notPicked: ReadonlySet<string> | null, selected: number[] = []) =>
+    drawn(row, {}, selected, notPicked).texts.map((text) => text.color);
+
+  const normal = [TOKENS.text, TOKENS["text-secondary"], TOKENS["text-secondary"]];
+  expect(colors(new Set([row.hash]))).toEqual(normal);
+  expect(colors(new Set(["other"]))).toEqual(Array(3).fill(TOKENS["log-merge"]));
+  expect(colors(new Set(["other"]), [0])).toEqual(Array(3).fill(TOKENS["log-merge"]));
+  // While it is computed nothing changes.
+  expect(colors(null)).toEqual(normal);
 });
 
 test("my_commits_in_bold_only_in_the_author", () => {

@@ -450,7 +450,7 @@ mod tests {
             }
             stream += "\n";
         }
-        let mut child = std::process::Command::new("git")
+        let mut child = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["fast-import", "--quiet"])
             .stdin(std::process::Stdio::piped())
@@ -479,7 +479,7 @@ mod tests {
         let repo = TempRepo::new();
         std::fs::write(repo.path().join("a.txt"), "1").unwrap();
         repo.git(&["add", "-A"]);
-        let output = std::process::Command::new("git")
+        let output = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["commit", "-q", "-m", "one"])
             .envs([

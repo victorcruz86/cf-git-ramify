@@ -200,6 +200,8 @@ describe("Commit File roots", () => {
       new Set(["src/a.txt", "src/deep/b.txt", "picked.txt", "top.txt"]),
     );
     expect(expandPaths(request("project", ["src"]), changed, unversioned).paths).toEqual(["src"]);
+    // The repository's own folder, the root of the Project tree.
+    expect(expandPaths(request("files", [""]), changed, unversioned).paths).toEqual(changed);
   });
 });
 

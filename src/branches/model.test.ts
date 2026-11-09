@@ -15,6 +15,12 @@ import {
   type TreeNode,
   type TreeOptions,
 } from "./model";
+import { compareBranches, showDiffWithWorkingTree } from "../compare/actions";
+
+vi.mock("../compare/actions", () => ({
+  compareBranches: vi.fn(async () => {}),
+  showDiffWithWorkingTree: vi.fn(async () => {}),
+}));
 
 const OPTIONS: TreeOptions = {
   favorites: { local: ["main", "master"], remote: ["origin/main", "origin/master"] },
@@ -306,11 +312,17 @@ const NODE = (name: string, section: "local" | "remote"): BranchNode => ({
 
 const STATE = { current: "main", remotes: true };
 
-test("submenu_in_order_without_phase_4_items", () => {
+// `Git.Branch` (`X:236-254`): `Compare with '<current>'` and `Show Diff with Working Tree` after
+// `Checkout and Rebase onto…`; `GitCompareWithBranchAction.disabledForCurrent` hides Compare on the
+// current branch, as `disabledForCurrent` hides the others.
+test("branch_submenu_in_241_order_and_compare_off_for_current", () => {
   expect(shown(branchActions(NODE("side", "local"), STATE))).toEqual([
     "Checkout",
     "New Branch from 'side'…",
     "Checkout and Rebase onto 'main'",
+    "—",
+    "Compare with 'main'",
+    "Show Diff with Working Tree",
     "—",
     "Rebase 'main' onto 'side'",
     "Merge 'side' into 'main'",
@@ -326,6 +338,9 @@ test("submenu_in_order_without_phase_4_items", () => {
     "New Branch from 'origin/x'…",
     "Checkout and Rebase onto 'main'",
     "—",
+    "Compare with 'main'",
+    "Show Diff with Working Tree",
+    "—",
     "Rebase 'main' onto 'origin/x'",
     "Merge 'origin/x' into 'main'",
     "—",
@@ -334,17 +349,41 @@ test("submenu_in_order_without_phase_4_items", () => {
     "—",
     "Delete",
   ]);
-});
-
-test("current_branch_only_has_new_branch_update_push_rename", () => {
   expect(shown(branchActions(NODE("main", "local"), STATE))).toEqual([
     "New Branch from 'main'…",
+    "—",
+    "Show Diff with Working Tree",
     "—",
     "Update",
     "Push…",
     "—",
     "Rename…",
   ]);
+
+  const side = branchActions(NODE("side", "local"), STATE);
+  // `branches.show.commits.in` (`B:956`) is its tooltip.
+  expect(row(side, "Compare with 'main'").title).toBe("Show commits in 'side' that are missing in 'main'");
+  row(side, "Compare with 'main'").run?.();
+  expect(compareBranches).toHaveBeenLastCalledWith("side", "main");
+  row(side, "Show Diff with Working Tree").run?.();
+  expect(showDiffWithWorkingTree).toHaveBeenLastCalledWith("side");
+
+  // A detached HEAD: the range starts at `HEAD`, the text names the short hash.
+  const detached = branchActions(NODE("side", "local"), {
+    ...STATE,
+    current: null,
+    head: "abcdef0123456789".repeat(2) + "abcdef01",
+  });
+  row(detached, "Compare with 'abcdef01'").run?.();
+  expect(compareBranches).toHaveBeenLastCalledWith("side", "HEAD");
+
+  // Before the first commit (`disableActionIfAnyRepositoryIsFresh`) both are off.
+  const fresh = branchActions(NODE("origin/x", "remote"), { ...STATE, current: "main", head: "" });
+  for (const label of ["Compare with 'main'", "Show Diff with Working Tree"]) {
+    expect(row(fresh, label).disabled, label).toBe(true);
+    expect(row(fresh, label).title).toBe("Action is not possible before the first commit.");
+  }
+  expect(row(side, "Show Diff with Working Tree").disabled).toBeFalsy();
 });
 
 test("update_is_hidden_without_remotes_and_disabled_without_tracking", () => {

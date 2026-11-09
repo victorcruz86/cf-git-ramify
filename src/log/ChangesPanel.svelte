@@ -4,11 +4,14 @@
     commitChangesOf,
     commitChangesStart,
     taskCancel,
+    viewerOpenable,
     type ApiError,
     type SelectedChanges,
   } from "../lib/api";
   import { errorText } from "../lib/errors";
   import Icon from "../lib/Icon.svelte";
+  import { matchChangesBrowserShortcut } from "../lib/keymap";
+  import { notify } from "../lib/notifications";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { taskResult } from "../lib/tasks";
   import {
@@ -23,8 +26,13 @@
   } from "./changes";
   import type { VcsAction } from "./contextMenu";
   import type { DiffPreviewAt, LogOptions } from "./options";
+  import { openInViewer } from "../viewer/window";
+  import { compareChangesWithLocal, showHistory } from "../compare/actions";
+  import { getRevision } from "../changes/get";
 
   const SHORT_HASH = 8;
+  // The same empty list each time: the receiver sees no change while nothing is loaded.
+  const NOTHING_LOADED: LogChange[] = [];
   const SUBJECT_LENGTH = 50;
   const SELECT_COMMITS = "Select commit to view changes";
   const NO_MERGED = "No merged conflicts";
@@ -51,13 +59,33 @@
     // The selection has already been read and has no file to show.
     onempty?: () => void;
     // Cherry-Pick Selected Changes and Revert Selected Changes. Without it they come out disabled.
-    onvcs?: (action: VcsAction) => void;
+    onvcs?: (action: VcsAction) => void | Promise<void>;
     // `Create Patch...` (`VcsLogCreatePatchActionProvider`). Without it, it comes out disabled.
     oncreatepatch?: (changes: LogChange[]) => void;
+    // Inside a modal dialog (`IS_MODAL_CONTEXT`): Edit Source and Open Repository Version are off.
+    modal?: boolean;
+    // The commits' own changes once loaded, all of them, empty until then (`getDirectChanges`),
+    // for the log's menu.
+    onchanges?: (changes: LogChange[]) => void;
+    // The file chosen first when it is among the changes, instead of the first one
+    // (`ChangelistData.toSelect`).
+    preselect?: string;
   }
 
-  let { hashes, paths, options, onoptions, onselect, onopen, onempty, onvcs, oncreatepatch }: Props =
-    $props();
+  let {
+    hashes,
+    paths,
+    options,
+    onoptions,
+    onselect,
+    onopen,
+    onempty,
+    onvcs,
+    oncreatepatch,
+    modal = false,
+    onchanges,
+    preselect,
+  }: Props = $props();
 
   let own = $state.raw<LogChange[]>([]);
   let parents = $state.raw<ChangeSection[]>([]);
@@ -68,7 +96,15 @@
   let menu = $state.raw<{ x: number; y: number } | null>(null);
   // The chosen files (`current` is one of them) and the files' context menu.
   let picked = $state.raw<Set<string>>(new Set());
-  let fileMenu = $state.raw<{ x: number; y: number; changes: LogChange[] } | null>(null);
+  let fileMenu = $state.raw<{
+    x: number;
+    y: number;
+    changes: LogChange[];
+    // The paths of the chosen changes that are on disk: Edit Source has something to open, and
+    // Compare with Local a local side.
+    onDisk: Set<string>;
+  } | null>(null);
+  let menuRequest = 0;
   let tooMany = $state.raw<{ commits: number; size: number } | null>(null);
   // The selection for which `Show anyway` was pressed.
   let anyway = $state.raw<string[] | null>(null);
@@ -113,8 +149,9 @@
   $effect(() => {
     const first = visible[0] ?? null;
     if (!visible.some((change) => same(current, change))) {
-      choose(first);
-      chosen(first ? [first] : []);
+      const initial = visible.find((change) => change.file.path === preselect) ?? first;
+      choose(initial);
+      chosen(initial ? [initial] : []);
     } else if ([...picked].some((key) => !visible.some((change) => keyOf(change) === key))) {
       // What is no longer visible (another selection, a filter) stops being chosen.
       chosen(visible.filter((change) => picked.has(keyOf(change))));
@@ -154,16 +191,115 @@
       chosen(changes);
       if (!changes.some((change) => same(current, change))) choose(changes[0]);
     }
-    fileMenu = {
-      x: event.clientX,
-      y: event.clientY,
-      changes: visible.filter((change) => picked.has(keyOf(change))),
-    };
+    const menuChanges = visible.filter((change) => picked.has(keyOf(change)));
+    const [x, y] = [event.clientX, event.clientY];
+    const request = ++menuRequest;
+    // If the check fails, every path counts as on disk: `viewer_open` skips what is not there
+    // anyway, and the diff window shows a missing local file as absent.
+    const targets = sourceTargets(menuChanges);
+    const everything = new Set(targets.map(({ path }) => path));
+    const onDisk = viewerOpenable(targets).then(
+      (openable) => new Set(openable.map(({ path }) => path)),
+      () => everything,
+    );
+    void onDisk.then((paths) => {
+      if (request === menuRequest) fileMenu = { x, y, changes: menuChanges, onDisk: paths };
+    });
   }
 
-  // `RevertSelectedChangesAction.Revert` and `.Apply`, then `ChangesView.CreatePatchFromChanges`, in
-  // the order of `Vcs.RepositoryChangesBrowserMenu` (which has no Copy as Patch).
-  const fileItems = (changes: LogChange[]): MenuItem[] => [
+  const opened = (failure: unknown) => notify({ kind: "error", title: errorText(failure) });
+
+  // `ChangesUtil.iterateFiles`: the local files of the changes, the before path and then the after
+  // path of each, once.
+  function sourceTargets(changes: LogChange[]) {
+    const paths = changes.flatMap(({ file }) =>
+      file.oldPath ? [file.oldPath, file.path] : [file.path],
+    );
+    return [...new Set(paths)].map((path) => ({ path, revision: null, line: null }));
+  }
+
+  // `EditSourceFromChangesBrowserAction`: the local files of the changes (G§0.7); one that is not on
+  // disk is skipped.
+  function editSource(changes: LogChange[]) {
+    if (modal || changes.length === 0) return;
+    openInViewer(sourceTargets(changes)).catch(opened);
+  }
+
+  // `OpenRepositoryVersionAction`: each change's after-revision, read-only; a deletion has none.
+  const withAfter = (changes: LogChange[]) => changes.filter(({ file }) => file.status[0] !== "D");
+
+  function openRepositoryVersion(changes: LogChange[]) {
+    const targets = withAfter(changes).map(({ file, hash }) => ({
+      path: file.path,
+      revision: hash,
+      line: null,
+    }));
+    if (modal || targets.length === 0) return;
+    openInViewer(targets).catch(opened);
+  }
+
+  // `ShowDiffWithLocalAction.canShowDiff`: some change has the revision or a local file.
+  function withLocal(changes: LogChange[], before: boolean, onDisk: Set<string>): boolean {
+    return changes.some(({ file, base }) => {
+      const kind = file.status[0];
+      const revision = before ? kind !== "A" && base !== null : kind !== "D";
+      return revision || onDisk.has(file.path) || (file.oldPath !== null && onDisk.has(file.oldPath));
+    });
+  }
+
+  const compareWithLocal = (changes: LogChange[], before: boolean, onDisk: Set<string>) =>
+    compareChangesWithLocal(
+      changes,
+      before,
+      onDisk,
+      changes.find((change) => same(current, change)) ?? null,
+    ).catch(opened);
+
+  // `GetVersionFromRepositoryActionProvider` (`V:169`): each change's after revision over the local
+  // file at its path; a deletion deletes it.
+  function getFromRevision(changes: LogChange[]) {
+    if (changes.length === 0) return;
+    void getRevision(changes.map(({ file, hash }) => ({ path: file.path, revision: hash })));
+  }
+
+  const revertSelected = (changes: LogChange[]) =>
+    onvcs?.({ kind: "applyPaths", reverse: true, selection: pathsSelection(changes), hashes });
+
+  // `TabbedShowHistoryForRevisionAction`: one change, the file's history up to that commit.
+  function historyUpToHere(changes: LogChange[]) {
+    if (changes.length !== 1) return;
+    const [{ file, hash }] = changes;
+    showHistory(file.path, hash).catch(opened);
+  }
+
+  const chosenChanges = () => visible.filter((change) => picked.has(keyOf(change)));
+
+  // `Vcs.RepositoryChangesBrowserMenu` (`VA:330-340`), which has no Copy as Patch: Compare with
+  // Local and Compare Before with Local, `Vcs.EditSource` and `Vcs.OpenRepositoryVersion`, then
+  // `RevertSelectedChangesAction.Revert` and `.Apply`, `ChangesView.CreatePatchFromChanges`, `Get`
+  // and History Up to Here.
+  const fileItems = (changes: LogChange[], onDisk: Set<string>): MenuItem[] => [
+    {
+      label: "Compare with Local",
+      disabled: !withLocal(changes, false, onDisk),
+      run: () => void compareWithLocal(changes, false, onDisk),
+    },
+    {
+      label: "Compare Before with Local",
+      disabled: !withLocal(changes, true, onDisk),
+      run: () => void compareWithLocal(changes, true, onDisk),
+    },
+    {
+      label: "Edit Source",
+      shortcut: "⌘↓",
+      disabled: modal || !sourceTargets(changes).some(({ path }) => onDisk.has(path)),
+      run: () => editSource(changes),
+    },
+    {
+      label: "Open Repository Version",
+      disabled: modal || withAfter(changes).length === 0,
+      run: () => openRepositoryVersion(changes),
+    },
     ...[
       ["Revert Selected Changes", true],
       ["Cherry-Pick Selected Changes", false],
@@ -182,6 +318,16 @@
       label: "Create Patch...",
       disabled: !oncreatepatch || changes.length === 0,
       run: () => oncreatepatch?.(changes),
+    },
+    {
+      label: "Get from Revision",
+      disabled: changes.length === 0,
+      run: () => getFromRevision(changes),
+    },
+    {
+      label: "History Up to Here",
+      disabled: changes.length !== 1,
+      run: () => historyUpToHere(changes),
     },
   ];
 
@@ -257,9 +403,21 @@
     load(hashes, showParents, unlimited);
   });
 
+  $effect(() => {
+    // `directChanges` is the commit model's changes (`VcsLogChangesBrowser.kt:263-264`): all of
+    // them, whatever Show Only Affected Changes leaves in the tree.
+    onchanges?.(loaded ? own : NOTHING_LOADED);
+  });
+
   onDestroy(() => cancelRunning());
 
   function keydown(event: KeyboardEvent) {
+    if (matchChangesBrowserShortcut(event) === "EditSource") {
+      event.preventDefault();
+      event.stopPropagation();
+      editSource(chosenChanges());
+      return;
+    }
     if (event.key !== "Enter" || !current) return;
     event.preventDefault();
     onopen(current);
@@ -305,7 +463,28 @@
 </script>
 
 <section class="changes" aria-label="Changes">
-  <div class="toolbar">
+  <!-- `Vcs.Log.ChangesBrowser.Toolbar`: `Vcs.RepositoryChangesBrowserToolbar`, then the rest. -->
+  <div class="toolbar" role="toolbar" aria-label="Changes">
+    <button
+      type="button"
+      class="action"
+      aria-label="Revert Selected Changes"
+      title="Revert Selected Changes"
+      disabled={!onvcs || picked.size === 0}
+      onclick={() => revertSelected(chosenChanges())}
+    >
+      <Icon name="revert" />
+    </button>
+    <button
+      type="button"
+      class="action"
+      aria-label="History Up to Here"
+      title="History Up to Here"
+      disabled={picked.size !== 1}
+      onclick={() => historyUpToHere(chosenChanges())}
+    >
+      <Icon name="history" />
+    </button>
     {#if paths.length > 0}
       <button
         type="button"
@@ -415,7 +594,7 @@
     x={fileMenu.x}
     y={fileMenu.y}
     label="Changes"
-    items={fileItems(fileMenu.changes)}
+    items={fileItems(fileMenu.changes, fileMenu.onDisk)}
     onclose={() => (fileMenu = null)}
   />
 {/if}

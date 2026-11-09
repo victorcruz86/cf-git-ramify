@@ -31,8 +31,9 @@ pub struct WorktreeSides {
     pub conflicted: bool,
 }
 
-const NOTE_NOT_UTF8: &str = "Read-only: not UTF-8, and saving it from here would change its bytes";
-const NOTE_CONVERTED: &str =
+pub(crate) const NOTE_NOT_UTF8: &str =
+    "Read-only: not UTF-8, and saving it from here would change its bytes";
+pub(crate) const NOTE_CONVERTED: &str =
     "Read-only: shown as git stores it, different from the disk (line endings or filters)";
 const NOTE_SYMLINK: &str = "Read-only: it is a symbolic link";
 const NOTE_NOT_SPLIT: &str = "Read-only: cannot be compared by lines";
@@ -92,7 +93,10 @@ fn is_editable(parts: &hunks::Sides) -> bool {
 }
 
 // What is on disk when it cannot be split into hunks: the side is treated as a whole.
-fn unsplit_side(repo: &Path, path: &str) -> Result<(Side, Option<&'static str>), HunkError> {
+pub(crate) fn unsplit_side(
+    repo: &Path,
+    path: &str,
+) -> Result<(Side, Option<&'static str>), HunkError> {
     let full = repo.join(path);
     let meta = match fs::symlink_metadata(&full) {
         Ok(meta) => meta,
@@ -908,7 +912,7 @@ mod tests {
         repo.commit("a.txt", b"other\n", "on other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"main\n", "on main");
-        let merge = std::process::Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "-q", "other"])
             .output()

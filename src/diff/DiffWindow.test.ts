@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/sv
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import type { Hunk, WorktreeSides } from "../lib/api";
+import type { DiffRequest, Hunk, RevisionPair, RevisionSides, WorktreeSides } from "../lib/api";
 import DiffWindow from "./DiffWindow.svelte";
 
 // What `EditorView.lineWrapping` puts on the content; `view.lineWrapping` only follows it after a
@@ -59,7 +59,7 @@ function deliver(event: string, payload?: unknown) {
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
   const all: Record<string, (args: never) => unknown> = {
-    diff_window_path: () => "a.txt",
+    diff_window_request: () => ({ kind: "worktree", path: "a.txt" }),
     repo_status: () => STATUS,
     worktree_sides: () => SIDES,
     show_window: () => undefined,
@@ -431,6 +431,12 @@ test("escape_hides_the_window", async () => {
 
   await waitFor(() => expect(calls("hide_window")).toHaveLength(1));
 });
+
+// One of the two editors of the file that is shown: 0 is the left one.
+function sideView(index: number): EditorView {
+  const contents = document.querySelectorAll<HTMLElement>(".rm-editors .cm-content");
+  return EditorView.findFromDOM(contents[index]) as EditorView;
+}
 
 // The local side of the file that is shown, or the one of `index` in the combined view.
 function localView(index = 0): EditorView {
@@ -1241,5 +1247,361 @@ describe("with_staging_area", () => {
     await waitFor(() => expect(calls("worktree_sides").length).toBeGreaterThan(0));
     await waitFor(() => expect(screen.getByText("Your version")).toBeTruthy());
     expect(screen.queryByRole("button", { name: /Staged and Local/ })).toBeNull();
+  });
+});
+
+describe("with_a_request_of_two_revisions", () => {
+  const LEFT = "a".repeat(40);
+  const RIGHT = "b".repeat(40);
+  const pair = (path: string, right: string | null = "local"): RevisionPair => ({
+    left: { revision: LEFT, path, title: LEFT },
+    right: { revision: right, path, title: right === "local" ? "Local" : RIGHT },
+  });
+  const REQUEST: DiffRequest = {
+    kind: "revisions",
+    files: [pair("x.txt"), pair("y.txt", RIGHT)],
+    title: "x.txt (/repo)",
+  };
+  const REVISION_SIDES: RevisionSides = {
+    ...SIDES,
+    oldPreview: false,
+    newPreview: false,
+    identical: null,
+  };
+
+  function mockRevisions(commands: Record<string, (args: never) => unknown> = {}) {
+    mockCommands({
+      diff_window_request: () => REQUEST,
+      repo_status: () => {
+        throw new Error("a request of two revisions never reads the status");
+      },
+      worktree_sides: () => {
+        throw new Error("a request of two revisions never reads HEAD and the disk");
+      },
+      compare_sides: () => REVISION_SIDES,
+      compare_preview: () => [HUNK],
+      diff_window_open_request: () => undefined,
+      ...commands,
+    });
+  }
+
+  const titles = () =>
+    [...document.querySelectorAll(".titles .title > span:first-of-type")].map((title) =>
+      title.textContent?.trim(),
+    );
+
+  // `ListSelection`'s index: the window opens on the pair asked for, and the same files asked for
+  // again from another one of them only move to it.
+  test("a_revisions_request_opens_on_its_selected_pair", async () => {
+    mockRevisions({ diff_window_request: () => ({ ...REQUEST, selected: 1 }) });
+    await open();
+
+    expect(calls("compare_sides")[0][1]).toEqual(pair("y.txt", RIGHT));
+    expect(document.querySelector(".count")?.textContent).toBe("2/2");
+
+    deliver("diff-request", { ...REQUEST, selected: 0 });
+    await waitFor(() => expect(document.querySelector(".count")?.textContent).toBe("1/2"));
+  });
+
+  test("a_revisions_request_lists_only_its_files_and_never_reads_status", async () => {
+    mockRevisions();
+    await open();
+
+    expect(calls("compare_sides")[0][1]).toEqual(pair("x.txt"));
+    expect(calls("repo_status")).toHaveLength(0);
+    expect(document.querySelector(".path")?.textContent).toBe("x.txt");
+    expect(document.querySelector(".count")?.textContent).toBe("1/2");
+    expect(titles()).toEqual([LEFT, "Local"]);
+    // No line checkboxes, no stage and no combined view.
+    expect(checks()).toHaveLength(0);
+    expect(document.querySelector(".all")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show Combined Diff" }).hasAttribute("disabled")).toBe(
+      true,
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: "Compare Next File" }));
+
+    await waitFor(() => expect(calls("compare_sides").at(-1)?.[1]).toEqual(pair("y.txt", RIGHT)));
+    await waitFor(() => expect(titles()).toEqual([LEFT, RIGHT]));
+    expect(document.querySelector(".count")?.textContent).toBe("2/2");
+    expect(calls("diff_window_open")).toHaveLength(0);
+    expect(calls("repo_status")).toHaveLength(0);
+  });
+
+  test("repository changes reread the sides without reading the status", async () => {
+    mockRevisions();
+    await open();
+
+    deliver("repo-changed");
+
+    await waitFor(() => expect(calls("compare_sides").length).toBeGreaterThan(1));
+    expect(calls("repo_status")).toHaveLength(0);
+  });
+
+  test("lines of two revisions cannot be rolled back or moved", async () => {
+    mockRevisions();
+    await open();
+    localView().dispatch({ selection: { anchor: 2 } });
+    const line = [...document.querySelectorAll<HTMLElement>(".rm-editor:last-child .cm-line")][1];
+
+    await fireEvent.contextMenu(line);
+
+    const items = menuLabels(await screen.findByRole("menu"));
+    expect(items).toEqual(["Show Diff for Lines"]);
+  });
+
+  test("the_local_side_saves_with_the_hash_check_and_refuses_a_changed_disk", async () => {
+    let current = REVISION_SIDES;
+    let refuse = false;
+    mockRevisions({
+      compare_sides: () => current,
+      file_write: (args: { content: string }) => {
+        if (refuse) throw CHANGED;
+        current = { ...current, hash: "saved", new: { kind: "text", content: args.content } };
+        return "saved";
+      },
+    });
+    await open();
+    type("X");
+    await waitFor(() => expect(calls("compare_preview")).toHaveLength(1));
+    expect(calls("compare_preview")[0][1]).toEqual({
+      ...pair("x.txt"),
+      content: "Xa\nB\nc\nD\n",
+    });
+
+    await save();
+
+    await waitFor(() => expect(writes()).toEqual([written("x.txt", "Xa\nB\nc\nD\n", "hash")]));
+
+    // Devin writes the file: the next save is refused and the text stays.
+    refuse = true;
+    type("Y");
+    current = { ...current, hash: "devin" };
+    deliver("repo-changed");
+    expect(await screen.findByText(/has changed on disk and there are unsaved changes/)).toBeTruthy();
+    await save();
+
+    expect(await screen.findByText(CHANGED.message)).toBeTruthy();
+    expect(writes().at(-1)).toEqual(written("x.txt", "YXa\nB\nc\nD\n", "saved"));
+    expect(shownText()).toBe("YXa\nB\nc\nD\n");
+  });
+
+  test("a local side on the left is edited and saved with the hash check", async () => {
+    const swapped = {
+      left: { revision: "local", path: "x.txt", title: `Local (${LEFT})` },
+      right: { revision: RIGHT, path: "x.txt", title: RIGHT },
+    };
+    mockRevisions({
+      diff_window_request: () => ({ kind: "revisions", title: "x.txt", files: [swapped] }),
+      compare_sides: () => ({ ...REVISION_SIDES, editable: true, hash: "hash" }),
+      file_write: () => "saved",
+    });
+    await open();
+    const left = sideView(0);
+    await waitFor(() => expect(left.state.readOnly).toBe(false));
+    expect(localView().state.readOnly).toBe(true);
+
+    left.dispatch({ changes: { from: 0, insert: "X" }, userEvent: "input.type" });
+
+    await waitFor(() => expect(titles()[0]).toBe(`Local (${LEFT}) *`));
+    await waitFor(() => expect(calls("compare_preview")).toHaveLength(1));
+    expect(calls("compare_preview")[0][1]).toEqual({ ...swapped, content: "Xa\nb\nc\nd\n" });
+    await save();
+    await waitFor(() => expect(writes()).toEqual([written("x.txt", "Xa\nb\nc\nd\n", "hash")]));
+  });
+
+  describe("a_large_or_binary_revision_shows_the_241_texts", () => {
+    async function shown(sides: Partial<RevisionSides>) {
+      mockRevisions({ compare_sides: () => ({ ...REVISION_SIDES, ...sides }) });
+      render(DiffWindow);
+      await waitFor(() => expect(calls("compare_sides").length).toBeGreaterThan(0));
+    }
+
+    test("identical binaries", async () => {
+      await shown({ old: { kind: "binary" }, new: { kind: "binary" }, identical: true });
+
+      expect(await screen.findByText("Files contents are identical")).toBeTruthy();
+      expect(document.querySelector(".rm-editor")).toBeNull();
+    });
+
+    test("different binaries", async () => {
+      await shown({ old: { kind: "binary" }, new: { kind: "absent" }, identical: false });
+
+      expect(await screen.findByText("Files contents are different")).toBeTruthy();
+    });
+
+    test("two previews", async () => {
+      await shown({ oldPreview: true, newPreview: true, editable: false });
+
+      expect(await screen.findByText("Files are too large to compare")).toBeTruthy();
+      expect(document.querySelector(".rm-editor")).toBeNull();
+    });
+
+    test("one preview", async () => {
+      await shown({ oldPreview: true, editable: false });
+
+      expect(await screen.findByText("File is too large. Only preview is loaded.")).toBeTruthy();
+      await waitFor(() => expect(document.querySelector(".rm-editor .cm-line")).not.toBeNull());
+    });
+
+    test("identical texts", async () => {
+      await shown({ new: SIDES.old, hunks: [] });
+
+      expect(await screen.findByText("Contents are identical")).toBeTruthy();
+    });
+  });
+
+  test("a new request replaces the one shown, and a working-tree file goes back to the status", async () => {
+    mockRevisions({ repo_status: () => STATUS, worktree_sides: () => SIDES });
+    await open();
+
+    deliver("diff-request", {
+      kind: "revisions",
+      title: "z.txt",
+      files: [pair("z.txt")],
+    });
+
+    await waitFor(() => expect(document.querySelector(".path")?.textContent).toBe("z.txt"));
+    expect(document.querySelector(".count")?.textContent).toBe("1/1");
+    expect(calls("compare_sides").at(-1)?.[1]).toEqual(pair("z.txt"));
+
+    deliver("diff-open", "b.txt");
+
+    await waitFor(() => expect(calls("worktree_sides").at(-1)?.[1]).toEqual({ path: "b.txt" }));
+    await waitFor(() => expect(document.querySelector(".count")?.textContent).toBe("2/2"));
+  });
+
+  describe("a local side on the left in the unified view", () => {
+    const swapped = {
+      left: { revision: "local", path: "x.txt", title: `Local (${LEFT})` },
+      right: { revision: RIGHT, path: "x.txt", title: RIGHT },
+    };
+
+    function mockSwapped() {
+      mockRevisions({
+        diff_window_request: () => ({ kind: "revisions", title: "x.txt", files: [swapped] }),
+        compare_sides: () => ({ ...REVISION_SIDES, editable: true, hash: "hash" }),
+        file_write: () => "saved",
+      });
+    }
+
+    const viewer = (name: string) =>
+      fireEvent.click(screen.getByRole("button", { name: /viewer/ })).then(() =>
+        fireEvent.click(screen.getByRole("menuitem", { name })),
+      );
+
+    test("is edited and saved with the hash check", async () => {
+      localStorage.setItem("diff.options", JSON.stringify({ unified: true }));
+      mockSwapped();
+      await open();
+      expect(document.querySelectorAll(".rm-editors .cm-content")).toHaveLength(1);
+      const only = sideView(0);
+      await waitFor(() => expect(only.state.readOnly).toBe(false));
+      expect(only.state.sliceDoc()).toBe("a\nb\nc\nd\n");
+
+      only.dispatch({ changes: { from: 0, insert: "X" }, userEvent: "input.type" });
+
+      await waitFor(() => expect(titles()).toEqual([`Local (${LEFT}) *`]));
+      await waitFor(() => expect(calls("compare_preview")).toHaveLength(1));
+      await save();
+      await waitFor(() =>
+        expect(writes()).toEqual([written("x.txt", "Xa\nb\nc\nd\n", "hash")]),
+      );
+    });
+
+    test("switching to it with unsaved text keeps the text on the local side", async () => {
+      mockSwapped();
+      await open();
+      sideView(0).dispatch({ changes: { from: 0, insert: "X" }, userEvent: "input.type" });
+      await waitFor(() => expect(titles()[0]).toBe(`Local (${LEFT}) *`));
+
+      await viewer("Unified viewer");
+
+      await waitFor(() =>
+        expect(document.querySelectorAll(".rm-editors .cm-content")).toHaveLength(1),
+      );
+      expect(sideView(0).state.sliceDoc()).toBe("Xa\nb\nc\nd\n");
+      expect(sideView(0).state.readOnly).toBe(false);
+      expect(titles()).toEqual([`Local (${LEFT}) *`]);
+      await save();
+      await waitFor(() =>
+        expect(writes()).toEqual([written("x.txt", "Xa\nb\nc\nd\n", "hash")]),
+      );
+    });
+  });
+
+  // The backend answers an open request by sending it back to the window, as commands.rs does.
+  function echoing() {
+    return {
+      diff_window_open_request: (args: { request: DiffRequest }) => {
+        const { request } = args;
+        queueMicrotask(() =>
+          request.kind === "worktree"
+            ? deliver("diff-open", request.path)
+            : deliver("diff-request", request),
+        );
+      },
+      diff_window_open: (args: { path: string }) => {
+        queueMicrotask(() => deliver("diff-open", args.path));
+      },
+    };
+  }
+
+  test("a refused request restores the one shown once, without resending it again", async () => {
+    mockRevisions({
+      ...echoing(),
+      file_write: () => {
+        throw CHANGED;
+      },
+    });
+    await open();
+    type("X");
+
+    deliver("diff-request", { kind: "revisions", title: "z.txt", files: [pair("z.txt")] });
+    await screen.findByText(CHANGED.message);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(writes()).toHaveLength(1);
+    expect(calls("diff_window_open_request")).toEqual([
+      ["diff_window_open_request", { request: REQUEST }],
+    ]);
+    expect(document.querySelector(".path")?.textContent).toBe("x.txt");
+  });
+
+  test("a refused working-tree file restores the request shown once", async () => {
+    mockRevisions({
+      ...echoing(),
+      file_write: () => {
+        throw CHANGED;
+      },
+    });
+    await open();
+    type("X");
+
+    deliver("diff-open", "b.txt");
+    await screen.findByText(CHANGED.message);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(writes()).toHaveLength(1);
+    expect(calls("diff_window_open_request")).toHaveLength(1);
+    expect(document.querySelector(".path")?.textContent).toBe("x.txt");
+  });
+
+  test("if what was typed cannot be saved the request that was shown stays", async () => {
+    mockRevisions({
+      file_write: () => {
+        throw CHANGED;
+      },
+    });
+    await open();
+    type("X");
+
+    deliver("diff-request", { kind: "revisions", title: "z.txt", files: [pair("z.txt")] });
+
+    expect(await screen.findByText(CHANGED.message)).toBeTruthy();
+    expect(document.querySelector(".path")?.textContent).toBe("x.txt");
+    await waitFor(() =>
+      expect(calls("diff_window_open_request").at(-1)?.[1]).toEqual({ request: REQUEST }),
+    );
   });
 });

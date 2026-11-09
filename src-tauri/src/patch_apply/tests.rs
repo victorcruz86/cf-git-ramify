@@ -561,7 +561,7 @@ fn binary_patch(harness: &RepoHarness, before: &[u8], after: &[u8]) -> Vec<u8> {
         hash
     };
     let (old, new) = (blob(before), blob(after));
-    let output = std::process::Command::new("git")
+    let output = crate::test_support::git_command()
         .current_dir(harness.path())
         .args(["diff", "--binary", "--full-index", &old, &new])
         .output()

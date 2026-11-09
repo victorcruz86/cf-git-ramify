@@ -759,6 +759,242 @@ Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
                                           (texts)
   src/lib/icons/unshelve.svg              platform/icons/src/expui/vcs/unshelve_dark.svg
 
+Ported code: tool windows and Log tab kinds
+-------------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src/shell/toolWindows.ts                platform/platform-impl: ActivateToolWindowAction;
+                                          platform/vcs-impl: ChangesBrowserToolWindow,
+                                          RepositoryBrowser (registered on first use)
+  src/log/tabKinds.ts                     platform/vcs-log: VcsLogTabsManager,
+                                          FileHistoryTabsManager, VcsLogFileHistoryProviderImpl;
+                                          git4idea: GitUpdateInfoAsLog (findOrCreateLogUi),
+                                          GitCompareBranchesFilesManager (openFile)
+  src/lib/icons/project.svg               platform/icons/src/expui/toolwindow/project@20x20_dark.svg
+  src/lib/icons/changes.svg               platform/icons/src/expui/toolwindow/changes@20x20_dark.svg
+  src/lib/icons/repositories.svg          platform/icons/src/expui/toolwindow/
+                                          repositories@20x20_dark.svg
+
+Ported code: read-only viewer
+-----------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/viewer.rs                 platform/diff-impl: DiffContentFactoryImpl
+                                          (isBinaryContent, guessCharsetFromContent);
+                                          platform/util: CharsetToolkit (guessFromBOM,
+                                          guessFromContent); platform/util-rt: FileUtilRt
+                                          (LARGE_FOR_CONTENT_LOADING, LARGE_FILE_PREVIEW_SIZE);
+                                          platform/vcs-impl: AbstractVcsVirtualFile
+                                          (showLoadingContentFailedMessage), ChangesUtil
+                                          (iterateFiles); VcsBundle (texts)
+  src/viewer/model.ts                     platform/vcs-impl: AbstractVcsVirtualFile
+                                          (getPresentableName); platform/util-rt: StringUtilRt
+                                          (formatFileSize); platform/platform-impl:
+                                          LargeFileNotificationProvider; IdeBundle (texts)
+  src/viewer/ViewerWindow.svelte, src/viewer/editor.ts
+                                          platform/vcs-impl: AbstractVcsVirtualFile (isWritable);
+                                          IdeBundle (icon.nodes.locked.tooltip); VcsBundle (texts)
+  src/log/ChangesPanel.svelte (Edit Source, Open Repository Version)
+                                          platform/vcs-impl: EditSourceFromChangesBrowserAction,
+                                          OpenRepositoryVersionAction; VcsActions.xml
+                                          (Vcs.RepositoryChangesBrowserMenu); VcsBundle (texts)
+  src/lib/icons/locked.svg                platform/icons/src/expui/nodes/locked_dark.svg
+
+Ported code: Changes tool window and Get
+----------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src/changes/tab.ts                      platform/vcs-impl: ChangesBrowserToolWindow (showTab),
+                                          CompareWithLocalDialog (MyRefreshAction)
+  src/changes/ChangesToolWindow.svelte    platform/vcs-impl: CompareWithLocalDialog
+                                          (MyChangesBrowser, GetVersionActionProvider),
+                                          ChangesBrowserBase, LoadingChangesPanel,
+                                          ChangeDiffRequestProducer (getRevisionTitle);
+                                          VcsBundle, DiffBundle and ActionsBundle (texts)
+  src/changes/get.ts, src/changes/GetDialog.svelte
+                                          platform/vcs-impl: GetVersionAction (doGet);
+                                          platform/vcs-api: ReplaceFileConfirmationDialog;
+                                          platform/util/ui: SplitByLetterPolicy; VcsBundle (texts)
+  src/changes/get.test.ts                 the expected texts of
+                                          platform/platform-tests: FileNameSplittingTest
+                                          (testSplitByLetter)
+  src-tauri/src/get_version.rs            platform/vcs-impl: GetVersionAction
+                                          (MyWriteVersionTask); git4idea: GitFileUtils
+                                          (getFileContent, addTextConvParameters)
+  src/lib/icons/download.svg              platform/icons/src/expui/general/download_dark.svg
+
+Ported code: Project tree and Repositories
+------------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/tree.rs                   platform/platform-impl: FileTypeManagerImpl
+                                          (DEFAULT_IGNORED), FileTreeModel; platform/util/base:
+                                          NaturalComparator (naturalCompare); platform/ide-core:
+                                          FileChooserDescriptor (isFileVisible); git4idea:
+                                          GitDirectoryVirtualFile (cachedChildren), GitIndexUtil
+                                          (listTreeForRawPaths)
+  src/tree/model.ts, src/tree/ProjectTree.svelte, src/tree/TreeView.svelte
+                                          platform/vcs-impl: SelectionManager (getState,
+                                          toggleSelection), ChangeListManagerImpl (getStatus)
+  src/tree/navigation.svelte.ts           platform/platform-impl: SpeedSearchBase; the JTree
+                                          selection rules of the JDK
+  src/repositories/tab.ts, src/repositories/RepositoryBrowser.svelte
+                                          platform/vcs-impl: RepositoryBrowser
+                                          (DiffRepoWithLocalAction); platform/platform-impl:
+                                          FileSystemTreeImpl (performEnterAction,
+                                          getSelectedFiles); git4idea: GitBrowseRepoAtRevisionAction
+
+Ported code: comparisons, the Git file menu and Compare Branches
+----------------------------------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/compare.rs                git4idea: GitHistoryUtils (getCurrentRevision,
+                                          getCurrentRevisionDescription), GitChangeUtils
+                                          (getDiff)
+  src/compare/actions.ts                  platform/vcs-impl: DiffActionExecutor,
+                                          ShowDiffWithLocalAction; platform/diff-impl:
+                                          DiffRequestFactoryImpl (getTitle); platform/dvcs-impl:
+                                          DvcsCompareWithAction; git4idea: GitRevisionNumber
+                                          (compareTo), GitLogDiffHandler, GitShowDiffWithBranchPanel,
+                                          GitCompareBranchesUi
+  src/compare/popups.ts, src/compare/FileRevisionsPopup.svelte
+                                          platform/dvcs-impl: DvcsCompareWithBranchAction;
+                                          platform/vcs-impl: CompareWithSelectedRevisionAction;
+                                          git4idea: GitCompareWithBranchAction
+  src/files/gitFileMenu.ts                git4idea: plugin.xml (Git.ContextMenu,
+                                          Git.MainMenu.FileActions), GitFileActionGroup;
+                                          platform/vcs-impl: AbstractShowDiffAction,
+                                          ScheduleForAdditionWithIgnoredFilesConfirmationAction
+  src/files/currentRevision.ts, src/lib/revisions.ts
+                                          platform/vcs-impl: ShowBaseRevisionAction,
+                                          CopyRevisionNumberAction; VcsBundle (texts)
+  src/log/CompareBranchesTab.svelte       git4idea: GitCompareBranchesUi; GitBundle (texts)
+  src/changes/ChangesToolWindow.svelte (Show Diff with Working Tree)
+                                          platform/dvcs-impl: CompareBranchesDiffPanel; DvcsBundle
+                                          (texts)
+  src/branches/BranchesPanel.svelte (Compare with Current, Compare Branches)
+                                          git4idea: BranchesDashboardActions
+
+Ported code: file history
+-------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/history.rs                git4idea: GitFileHistory (load, runGitLog,
+                                          getParentsAndPathsIfRename, createLogHandler),
+                                          GitLogHistoryHandler (collectHistory, getRename,
+                                          RenamesCollector), GitCommitRequirements,
+                                          GitHistoryProvider (getHistoryLimitArgs), GitLogProvider
+                                          (getBranchLikeFilterParameters), GitLogUtil (LOG_ALL);
+                                          platform/vcs-log: VcsFileStatusInfo (isRenamed)
+  src-tauri/src/log/history_view.rs       platform/vcs-log: FileHistoryFilterer (filterWithVcs),
+                                          FileHistoryModel (getSelectedChange), FileHistoryUtil
+                                          (createChangeToParents), FileHistoryPaths
+  src/log/HistoryTab.svelte, src/log/history.ts
+                                          platform/vcs-log: FileHistoryPanel, FileHistoryUi,
+                                          FileHistoryUiProperties, FileHistoryTabsManager,
+                                          VcsLogFileHistoryProviderImpl, vcs-log.xml
+                                          (Vcs.FileHistory.Toolbar,
+                                          Vcs.FileHistory.PresentationSettings); VcsLogBundle and
+                                          GitBundle (texts)
+  src/log/historyMenu.ts                  platform/vcs-log: vcs-log.xml (Vcs.FileHistory.ContextMenu),
+                                          FileHistorySingleCommitAction, FileHistoryModel
+                                          (createRevision); git4idea: plugin.xml
+                                          (Git.FileHistory.ContextMenu)
+  src/diff/RevisionsPreview.svelte        platform/vcs-log: MergedChangeDiffRequestProvider
+  src/compare/actions.ts (Show History)   platform/vcs-impl: TabbedShowHistoryAction,
+                                          TabbedShowHistoryForRevisionAction; platform/vcs-log:
+                                          VcsLogDirectoryHistoryProvider,
+                                          ShowAllAffectedFromHistoryAction
+
+Ported code: annotations
+------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1), and, for the
+colours, the installed IntelliJ IDEA CE 2024.1.
+
+  src-tauri/src/annotate.rs               git4idea: GitAnnotationProvider (the blame command,
+                                          parseAnnotations), GitFileAnnotation (the revision
+                                          order and the authors map, isBaseRevisionChanged);
+                                          platform/vcs-impl: AnnotateToggleAction
+                                          (computeBgColors, the line count check),
+                                          UpToDateLineNumberProviderImpl,
+                                          VcsAnnotationLocalChangesListenerImpl
+  src/viewer/annotation.ts, src/viewer/AnnotationGutter.svelte, src/viewer/annotations.svelte.ts
+                                          platform/vcs-impl: ShortNameType (shorten),
+                                          AnnotateToggleAction, AnnotationPresentation,
+                                          AnnotateRevisionActionBase, AnnotateLocalFileAction;
+                                          platform/platform-impl: EditorGutterComponentImpl
+                                          (getTextAnnotationPopupActions); VcsBundle and
+                                          GitBundle (texts)
+  the annotation colours                  the 21 dark background colours of ORDER_COLORS and
+                                          AUTHOR_COLORS in src-tauri/src/annotate.rs, and the
+                                          text colours of AnnotationGutter.svelte: the five
+                                          VCS_ANNOTATIONS_COLOR_1..5 anchors and the text keys of
+                                          themes/expUI/expUI_darkScheme.xml of the installed
+                                          IntelliJ, spread as platform/vcs-impl:
+                                          AnnotationsSettings and platform/analysis-impl:
+                                          ColorGenerator do
+
+Ported code: selection history
+------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/block_history.rs          platform/vcs-impl: Block (tokenize,
+                                          createPreviousBlock, getBlockContent),
+                                          VcsSelectionHistoryDialog (BlockLoader, createBlock);
+                                          platform/diff-impl: DiffUtil
+                                          (updateRangeOnModification); platform/util: LineTokenizer
+                                          (tokenize); git4idea: GitHistoryProvider
+                                          (reportAppendableHistory), GitFileHistory
+                                          (createLogParser); tests from platform/platform-tests:
+                                          SelectedBlockHistoryTest (lines 17-384: every doTest
+                                          case and testContent as table tests, and the doTest
+                                          and composeVersion helpers)
+  src/history/selection.ts, src/history/SelectionHistoryWindow.svelte
+                                          platform/vcs-impl: VcsSelectionHistoryDialog
+                                          (updateRevisionsList, filteredRevisions,
+                                          getNearestVisibleRevision, updateDiff,
+                                          updateStatusPanel, MyDiffAction,
+                                          MyDiffAfterWithLocalAction), FileHistoryPanelImpl
+                                          (RevisionColumnInfo, DateColumnInfo, AuthorColumnInfo,
+                                          MessageColumnInfo), CurrentRevision, VcsActions.xml
+                                          (VcsSelectionHistoryDialog.Popup); VcsBundle (texts)
+  src/history/actions.ts                  platform/vcs-impl: VcsHistoryUtil (showDiff,
+                                          showDifferencesInBackground), BaseDiffFromHistoryHandler
+                                          (doShowDiff), ShowAllAffectedGenericAction,
+                                          CopyRevisionNumberAction
+  src/files/gitFileMenu.ts (Show History for Selection…)
+                                          platform/vcs-impl: SelectedBlockHistoryAction,
+                                          VcsSelectionUtil, VcsSelection
+
+The line diff of block_history.rs uses the Myers algorithm of the similar library, not
+IntelliJ's diff, as merge3.rs does; every case of SelectedBlockHistoryTest gives IntelliJ's
+result with it.
+
+Ported code: Not Cherry-Picked Commits, Select in Tree and Show Details
+-----------------------------------------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/log/cherry.rs             git4idea: DeepComparator (getComparedBranchFromFilters,
+                                          the git cherry path), DeepCompareAction
+  src/log/LogPanel.svelte, src/log/ViewOptions.svelte and src/log/draw.ts (Not Cherry-Picked)
+                                          git4idea: DeepComparator (update, getStyle),
+                                          DeepCompareAction; GitBundle (texts)
+  src/log/StructureChooser.svelte, src/log/filters.ts (Select in Tree…)
+                                          platform/vcs-log: VcsStructureChooser;
+                                          platform/vcs-impl: SelectionManager; VcsLogBundle (texts)
+  src-tauri/src/conflicts.rs, src/merge/DetailsDialog.svelte (Show Details)
+                                          git4idea: GitDefaultMergeDialogCustomizer; GitBundle
+                                          (texts)
+
 Test data: src-tauri/src/log/testdata/
 --------------------------------------
 

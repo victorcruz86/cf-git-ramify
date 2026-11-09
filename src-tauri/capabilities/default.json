@@ -1,1 +1,1 @@
-{ "identifier": "default", "windows": ["main", "diff", "merge"], "permissions": ["core:default"] }
+{ "identifier": "default", "windows": ["main", "diff", "merge", "viewer"], "permissions": ["core:default"] }

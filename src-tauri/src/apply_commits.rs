@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::branches::{self, Repo};
 use crate::git::{self, GitError};
+use crate::history;
 use crate::operation::{self, Operation};
 use crate::preserve;
 use crate::rebase;
@@ -253,7 +254,8 @@ fn message_of(
     match kind {
         // `GitRevertOperation`: `Revert "subject"` and the short hash, without a final period.
         Kind::Revert => {
-            let subject = git::run(path, &["log", "-1", "--format=%s", hash])?;
+            let [no, signatures] = history::NO_SIGNATURES;
+            let subject = git::run(path, &[no, signatures, "log", "-1", "--format=%s", hash])?;
             let subject = String::from_utf8_lossy(&subject);
             let short: String = hash.chars().take(SHORT_HASH).collect();
             Ok(format!(
@@ -263,7 +265,8 @@ fn message_of(
         }
         // `GitCherryPicker.createCommitMessage`.
         Kind::CherryPick => {
-            let full = git::run(path, &["log", "-1", "--format=%B", hash])?;
+            let [no, signatures] = history::NO_SIGNATURES;
+            let full = git::run(path, &[no, signatures, "log", "-1", "--format=%B", hash])?;
             let mut message = String::from_utf8_lossy(&full)
                 .trim_end_matches('\n')
                 .to_string();
@@ -835,6 +838,41 @@ mod tests {
         );
         // A cherry-pick proposes nothing if what is half-done is a revert.
         assert_eq!(proposal(&harness, Kind::Revert, true), None);
+    }
+
+    // `message_of` runs git without a task: with signed commits and `log.showSignature` on, the
+    // signature check must not get into the proposed messages.
+    #[test]
+    fn signatures_stay_out_of_the_proposed_messages() {
+        let harness = RepoHarness::new();
+        harness.repo.sign_commits();
+        harness.repo.commit("a.txt", b"base\n", "base");
+        harness.git(&["checkout", "-q", "-b", "side"]);
+        let picked = harness
+            .repo
+            .commit("a.txt", b"side\n", "clashes\n\nwith body");
+        harness.git(&["checkout", "-q", "main"]);
+        let reverted = harness.repo.commit("a.txt", b"main\n", "on main");
+        harness.repo.commit("a.txt", b"again\n", "again");
+        assert!(harness
+            .git(&["log", "-1", "--format=%s"])
+            .contains("No signature"));
+
+        harness.git_fails(&["cherry-pick", &picked]);
+        assert_eq!(
+            proposal(&harness, Kind::CherryPick, false).unwrap(),
+            "clashes\n\nwith body"
+        );
+        harness.git(&["cherry-pick", "--abort"]);
+
+        harness.git_fails(&["revert", "--no-edit", &reverted]);
+        assert_eq!(
+            proposal(&harness, Kind::Revert, false).unwrap(),
+            format!(
+                "Revert \"on main\"\n\nThis reverts commit {}",
+                &reverted[..8]
+            )
+        );
     }
 
     #[test]

@@ -276,7 +276,6 @@ mod tests {
     use crate::test_support::{RepoHarness, TempRepo};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::process::Command;
     use tempfile::TempDir;
 
     const NINE: &[u8] = b"1\n2\n3\n4\n5\n6\n7\n8\n9\n";
@@ -598,7 +597,7 @@ mod tests {
         repo.commit("a.txt", b"other\n", "on other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"main\n", "on main");
-        let merge = Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "-q", "other"])
             .output()
@@ -812,7 +811,7 @@ mod tests {
     }
 
     fn in_sub(sub: &std::path::Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = crate::test_support::git_command()
             .current_dir(sub)
             .args(["-c", "user.name=P", "-c", "user.email=p@example.com"])
             .args(["-c", "commit.gpgsign=false"])

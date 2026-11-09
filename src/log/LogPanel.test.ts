@@ -14,7 +14,9 @@ import { trackTasks } from "../lib/tasks";
 import { get } from "svelte/store";
 import { dismiss, notifications } from "../lib/notifications";
 import { zipChanges } from "./changes";
+import { emptyFilters } from "./filters";
 import LogPanel from "./LogPanel.svelte";
+import { openLogTab } from "./tabKinds";
 import { ROW_HEIGHT } from "./draw";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -184,6 +186,8 @@ beforeEach(async () => {
     return () => {};
   });
   commands = {
+    // Every chosen file is on disk.
+    viewer_openable: ({ targets }) => targets,
     log_options_get: () => ({}),
     log_options_set: () => undefined,
     log_open: () => ({ viewId: 1, count: 3, collapsible: true }),
@@ -1014,6 +1018,36 @@ test("the_update_info_tab_is_not_remembered_for_next_time", async () => {
   expect(Object.keys(saved.options).sort()).toEqual(["0", "2"]);
 });
 
+// `GitUpdateInfoAsLog.findOrCreateLogUi` through the tab kinds: an `update` request with the key of an
+// open tab returns to it, another key opens a new one, a `log` request always opens one, and only
+// `log` tabs are remembered.
+test("update_info_tabs_keep_their_find_or_create_rule", async () => {
+  updateTabs();
+  await panel();
+  const init = vi.fn(() => ({ name: "today", filters: { ...emptyFilters(), ranges: [[START, END]] as [string, string][] } }));
+
+  await openLogTab("update", `${START}..${END}`, init);
+  await waitFor(() => expect(calls("log_view_open")).toHaveLength(1));
+  expect(screen.getByRole("tab", { selected: true }).textContent?.trim()).toBe("Update Info: today");
+  await fireEvent.click(screen.getByRole("tab", { name: "Log", selected: false }));
+
+  await openLogTab("update", `${START}..${END}`, init);
+
+  expect(screen.getAllByRole("tab")).toHaveLength(2);
+  expect(calls("log_view_open")).toHaveLength(1);
+  expect(init).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("tab", { selected: true }).textContent?.trim()).toBe("Update Info: today");
+
+  await openLogTab("update", `${END}..${START}`, init);
+  await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(3));
+  const plain = () => ({ name: "", filters: emptyFilters() });
+  await openLogTab("log", "any", plain);
+  await openLogTab("log", "any", plain);
+  await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(5));
+  const saved = calls("log_options_set").at(-1)?.[1] as { options: Record<string, unknown> };
+  expect(Object.keys(saved.options).sort()).toEqual(["0", "3", "4"]);
+});
+
 test("view_commits_before_the_log_loads_waits_for_it_to_load", async () => {
   updateTabs();
   const opening = deferred<unknown>();
@@ -1065,6 +1099,7 @@ test("view_options_in_order", async () => {
     "My Commits",
     "Merge Commits",
     "Current Branch",
+    "Not Cherry-Picked Commits",
     "IntelliSort",
     "Collapse Linear Branches",
     "Expand Linear Branches",
@@ -1538,8 +1573,9 @@ test("copy_hash_with_the_shortcut", async () => {
 
   await shortcut(scroller(), { key: "Ç", code: "KeyC", metaKey: true, altKey: true, shiftKey: true });
 
+  // `CopyRevisionNumberAction`: the rows come newest first and are copied oldest first.
   await waitFor(() =>
-    expect(calls("clipboard_write")[0][1]).toEqual({ text: `${HASH_A} ${HASH_B}` }),
+    expect(calls("clipboard_write")[0][1]).toEqual({ text: `${HASH_B} ${HASH_A}` }),
   );
 });
 
@@ -1886,9 +1922,15 @@ test("a_file_menu_offers_revert_and_cherry_pick_selected_changes", async () => {
 
   const labels = within(menu).getAllByRole("menuitem").map((item) => item.textContent?.trim());
   expect(labels).toEqual([
+    "Compare with Local",
+    "Compare Before with Local",
+    "Edit Source ⌘↓",
+    "Open Repository Version",
     "Revert Selected Changes",
     "Cherry-Pick Selected Changes",
     "Create Patch...",
+    "Get from Revision",
+    "History Up to Here",
   ]);
   await fireEvent.click(within(menu).getByRole("menuitem", { name: "Revert Selected Changes" }));
   expect(onvcs).toHaveBeenCalledWith({
@@ -1921,6 +1963,67 @@ test("create_patch_of_the_changes_tree_takes_the_chosen_files", async () => {
     ["src/a.txt", null, HASH_A, "f".repeat(40)],
     ["src/b.txt", "src/old.txt", HASH_A, "f".repeat(40)],
   ]);
+});
+
+// `VcsDataKeys.CHANGES` of the log is `myChangesBrowser.getDirectChanges()` (`MainFrame.java:267`):
+// the menu's Create Patch... takes what the changes panel has loaded and never waits for git; while
+// nothing is loaded it is off.
+test("the_log_menu_takes_the_loaded_changes_and_never_waits", async () => {
+  let answer: (groups: unknown) => void = () => {};
+  mock({
+    commit_changes_of: () => new Promise((resolve) => (answer = resolve)),
+    log_adjacent_rows: () => [],
+  });
+  const oncreatepatch = vi.fn();
+  await panel({ oncreatepatch });
+  await selectRow(0);
+  await waitFor(() => expect(calls("commit_changes_of")).toHaveLength(1));
+
+  // The changes are still loading: the menu opens at once, with Create Patch... off.
+  await fireEvent.contextMenu(scroller(), { clientX: X, clientY: 2 });
+  let menu = await screen.findByRole("menu", { name: "Commit" });
+  expect((within(menu).getByRole("menuitem", { name: "Create Patch..." }) as HTMLButtonElement).disabled).toBe(true);
+  await fireEvent.keyDown(menu, { key: "Escape" });
+
+  answer([group([file("src/a.txt")])]);
+  await within(changes()).findByRole("treeitem", { name: "a.txt" });
+  await fireEvent.contextMenu(scroller(), { clientX: X, clientY: 2 });
+  menu = await screen.findByRole("menu", { name: "Commit" });
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Create Patch..." }));
+
+  expect(calls("commit_changes_of")).toHaveLength(1);
+  expect(calls("commit_changes_start")).toHaveLength(0);
+  const chosen = oncreatepatch.mock.calls[0][0] as { file: { path: string }; hash: string }[];
+  expect(chosen.map(({ file, hash }) => [file.path, hash])).toEqual([["src/a.txt", HASH_A]]);
+});
+
+// `directChanges = commitModel.changes` (`VcsLogChangesBrowser.kt:263-264`): with a Paths filter
+// and Show Only Affected Changes on, the tree shows only the affected files, but the menu's patch
+// takes all of the commit's changes.
+test("the_log_menu_patch_takes_all_the_changes_whatever_the_tree_shows", async () => {
+  mock({
+    commit_changes_of: () => [group([file("src/a.txt"), file("other.txt")])],
+    log_adjacent_rows: () => [],
+    log_view_open: () => deliverTask({ viewId: 2, summary: { viewId: 2, count: 3, collapsible: true } }),
+  });
+  const oncreatepatch = vi.fn();
+  await panel({ oncreatepatch });
+  await openLogTab("log", "paths", () => ({
+    name: "",
+    filters: { ...emptyFilters(), paths: ["src"] },
+    options: { showOnlyAffected: true },
+  }));
+  await waitFor(() => expect(calls("log_view_open")).toHaveLength(1));
+  await selectRow(0);
+  await within(changes()).findByRole("treeitem", { name: "a.txt" });
+  expect(within(changes()).queryByRole("treeitem", { name: "other.txt" })).toBeNull();
+
+  await fireEvent.contextMenu(scroller(), { clientX: X, clientY: 2 });
+  const menu = await screen.findByRole("menu", { name: "Commit" });
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Create Patch..." }));
+
+  const chosen = oncreatepatch.mock.calls[0][0] as { file: { path: string } }[];
+  expect(chosen.map(({ file }) => file.path)).toEqual(["src/a.txt", "other.txt"]);
 });
 
 test("cherry_pick_selected_changes_does_not_revert", async () => {

@@ -753,7 +753,6 @@ fn rollback_lines_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     #[test]
     fn rolling_back_lines_in_a_conflicted_file_is_rejected() {
@@ -763,7 +762,7 @@ mod tests {
         repo.commit("a.txt", b"other\n", "on other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"main\n", "on main");
-        let merge = Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "-q", "other"])
             .output()
@@ -788,7 +787,7 @@ mod tests {
         repo.commit("a.txt", b"other\n", "on other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"main\n", "on main");
-        let _ = Command::new("git")
+        let _ = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "-q", "other"])
             .output()
@@ -1312,7 +1311,7 @@ mod tests {
     }
 
     fn read_blob(repo: &TempRepo, object: &str) -> Vec<u8> {
-        std::process::Command::new("git")
+        crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["cat-file", "blob", object])
             .output()

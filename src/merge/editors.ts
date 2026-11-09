@@ -75,10 +75,17 @@ export interface MergeData {
   blocks: MergeBlock[];
   // Left, center and right.
   titles: [string, string, string];
+  // A link at the right of a title (`Show Details` of a side), in the same order.
+  links?: (TitleLink | null)[];
   // Only for syntax highlighting.
   path?: string;
   // `Soft-Wrap` of the `Merge` place.
   wrap?: boolean;
+}
+
+export interface TitleLink {
+  label: string;
+  run: () => void;
 }
 
 export interface MergeHandlers {
@@ -272,6 +279,8 @@ function hunksOf(states: readonly BlockState[], side: MergeSide): Hunk[] {
 export interface ThreePanesConfig {
   className: string;
   titles: [string, string, string];
+  // `getTitleWithShowDetailsAction`: the title, and a link at its right.
+  links?: (TitleLink | null)[];
   docs: [string, string, string];
   // What is specific to each pane, in the order left, center and right.
   extensions: [Extension, Extension, Extension];
@@ -290,7 +299,7 @@ const PANES: MergePane[] = ["left", "base", "right"];
 export class ThreePanes {
   readonly dom: HTMLDivElement;
   readonly views: EditorView[] = [];
-  private readonly titles: HTMLDivElement[] = [];
+  private readonly titles: HTMLElement[] = [];
   private readonly dividers: SVGSVGElement[] = [];
   private readonly cleanups: (() => void)[] = [];
   // getCurrentEditor: the last pane with focus, even if the button bar has it now.
@@ -308,8 +317,21 @@ export class ThreePanes {
       if (index > 0) titles.appendChild(document.createElement("div")).className = "rm-merge-title-gap";
       const element = titles.appendChild(document.createElement("div"));
       element.className = "rm-merge-title";
-      element.textContent = title;
-      this.titles.push(element);
+      const link = config.links?.[index];
+      if (!link) {
+        element.textContent = title;
+        this.titles.push(element);
+        return;
+      }
+      const text = element.appendChild(document.createElement("span"));
+      text.className = "rm-merge-title-text";
+      text.textContent = title;
+      const button = element.appendChild(document.createElement("button"));
+      button.type = "button";
+      button.className = "rm-merge-title-link";
+      button.textContent = link.label;
+      button.addEventListener("click", link.run);
+      this.titles.push(text);
     });
     const row = this.dom.appendChild(document.createElement("div"));
     row.className = "rm-editors";
@@ -412,6 +434,7 @@ export class MergeEditors {
     this.panes = new ThreePanes(parent, {
       className: "rm-merge",
       titles: data.titles,
+      links: data.links,
       docs: [data.left, data.base, data.right],
       extensions: [
         pane(readOnly),

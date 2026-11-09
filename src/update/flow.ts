@@ -563,21 +563,31 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
     });
   }
 
-  // `updateBranches`: the current branch goes through Update Project, without a dialog.
-  function updateBranch(name: string) {
+  // `GitBranchActionsUtil.updateBranches`: each branch that is not the current one is fetched into
+  // itself (`Update Failed` for one that fails), then the current branch goes through Update
+  // Project without a dialog, and one notification names those updated (`B:921`).
+  function updateBranches(names: string[]) {
     return exclusive(async () => {
-      if ((await api.currentBranch()) === name) {
+      const current = await api.currentBranch();
+      const updated: string[] = [];
+      for (const name of names.filter((name) => name !== current)) {
+        const done = await attempt("Update Failed", async () => {
+          await whileFetching(() => api.updateBranch(name));
+          return true;
+        });
+        if (done) updated.push(name);
+      }
+      if (current !== null && names.includes(current)) {
         const { updateMethod } = await api.settings();
         await execute(updateMethod, {});
-        return;
       }
-      const done = await attempt("Update Failed", async () => {
-        await whileFetching(() => api.updateBranch(name));
-        return true;
-      });
-      if (done) notify({ kind: "info", title: "Updated branch:", body: name });
+      if (updated.length === 0) return;
+      const title = updated.length === 1 ? "Updated branch:" : "Updated branches:";
+      notify({ kind: "info", title, body: updated.join("\n") });
     });
   }
+
+  const updateBranch = (name: string) => updateBranches([name]);
 
   // The branches of a remote, after a fetch of only that remote: what `GitPullDialog` does with ⌘R.
   async function reloadBranches(remote: string): Promise<PullInfo | null> {
@@ -676,6 +686,7 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
     run,
     updateProject,
     updateBranch,
+    updateBranches,
     fetch,
     pull,
     pullInto,

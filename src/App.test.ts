@@ -1,3 +1,4 @@
+import { tick } from "svelte";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -8,6 +9,8 @@ import App from "./App.svelte";
 import { closeCommitDialog, openCommitDialog, requestCommit } from "./commit/dialogStore";
 import { dismiss, notifications } from "./lib/notifications";
 import { requestTab } from "./lib/tabs";
+import { activateWindow, registerToolWindow } from "./shell/toolWindows";
+import { showRepositoryAtRevision } from "./repositories/tab";
 import { answerPatchDialog, applyInProgress } from "./patch/flow";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -50,6 +53,9 @@ afterEach(() => {
   // A patch dialog left open by a failed test would be the next one's.
   answerPatchDialog(null);
 });
+
+// `rama <folder>`: the repository alone, as before files could be opened.
+const folder = (repo: string) => ({ repo, file: null, line: null });
 
 const INFO = {
   path: "/repo/a",
@@ -97,7 +103,7 @@ const NON_MODAL = { ...SETTINGS, nonModalCommit: true };
 function mockApp(commands: Record<string, () => unknown> = {}) {
   mockCommands({
     app_version: () => "0.0.1",
-    initial_repo: () => null,
+    initial_target: () => null,
     perf_enabled: () => false,
     show_window: () => undefined,
     repo_status: () => [],
@@ -149,7 +155,7 @@ test("second_open_while_loading_is_ignored", async () => {
 
 test("shows_repository_error", async () => {
   mockApp({
-    initial_repo: () => "/no/repo",
+    initial_target: () => folder("/no/repo"),
     repo_open: () => {
       throw { kind: "not_a_repository", message: "/no/repo is not a Git repository" };
     },
@@ -160,7 +166,7 @@ test("shows_repository_error", async () => {
 
 test("a_log_error_comes_out_as_a_notification_and_does_not_stay_in_commit", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => {
       throw { kind: "failed", message: "git log failed: corrupted" };
@@ -180,7 +186,7 @@ test("a_log_error_comes_out_as_a_notification_and_does_not_stay_in_commit", asyn
 
 test("console_tab_with_show_console_tab", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     console_lines: () => [
       { time: "10:42:07.123", command: true, text: "[a] git fetch origin" },
@@ -206,7 +212,7 @@ const tabState = (name: string) =>
 
 test("in non-modal mode cmd 9 and cmd 0 switch between the Git and Commit windows", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -234,7 +240,7 @@ test("in non-modal mode cmd 9 and cmd 0 switch between the Git and Commit window
 });
 
 test("in modal mode the app opens on Local Changes without loading the log", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO });
   render(App);
 
   const tab = await screen.findByRole("tab", { name: "Local Changes" });
@@ -246,19 +252,109 @@ test("in modal mode the app opens on Local Changes without loading the log", asy
   expect(calls("log_open")).toHaveLength(0);
 });
 
-test("the stripe has a single Git button in modal mode", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+const stripeLabels = () =>
+  within(screen.getByRole("tablist", { name: "Tool windows" }))
+    .getAllByRole("tab")
+    .map((button) => button.getAttribute("aria-label"));
+
+test("the stripe has Project and Git in modal mode", async () => {
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO });
   render(App);
   await screen.findByRole("tab", { name: "Local Changes" });
 
-  const stripe = screen.getByRole("tablist", { name: "Tool windows" });
+  expect(stripeLabels()).toEqual(["Project", "Git"]);
+});
 
-  expect(within(stripe).getAllByRole("tab").map((button) => button.getAttribute("aria-label"))).toEqual(["Git"]);
+// The user's `window.layouts.xml`: Project (⌘1) before Commit on the left, Git at the bottom.
+// Changes and Repositories exist once something registers them, and another repository forgets them.
+test("the_stripe_shows_registered_windows_in_registry_order", async () => {
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO, settings_get: () => NON_MODAL });
+  render(App);
+  await screen.findByRole("textbox", { name: "Commit Message" });
+  expect(stripeLabels()).toEqual(["Project", "Commit", "Git"]);
+  expect(screen.getByRole("tab", { name: "Project" }).getAttribute("title")).toBe("Project (⌘1)");
+
+  registerToolWindow("repositories");
+  registerToolWindow("changes");
+  await waitFor(() => expect(stripeLabels()).toEqual(["Project", "Commit", "Changes", "Repositories", "Git"]));
+  // A request brings a window to the front and never hides it.
+  activateWindow("changes");
+  await waitFor(() => expect(tabState("Changes")).toBe("true"));
+  activateWindow("changes");
+  await tick();
+  expect(tabState("Changes")).toBe("true");
+
+  const input = screen.getByLabelText("Repository path");
+  await fireEvent.submit(input.closest("form")!);
+  await waitFor(() => expect(stripeLabels()).toEqual(["Project", "Commit", "Git"]));
+  expect(tabState("Commit")).toBe("true");
+});
+
+// `Show Repository at Revision`: the Repositories window appears on the left and comes to the front
+// with the revision's tree.
+test("show_repository_at_revision_brings_the_repositories_window", async () => {
+  const hash = "a1b2c3d4".repeat(5);
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    tree_list_at: () => [{ name: "README.md", path: "README.md", dir: false }],
+  });
+  render(App);
+  await screen.findByRole("textbox", { name: "Commit Message" });
+
+  showRepositoryAtRevision(hash);
+
+  await waitFor(() => expect(tabState("Repositories")).toBe("true"));
+  expect(stripeLabels()).toEqual(["Project", "Commit", "Repositories", "Git"]);
+  const pane = screen.getByRole("region", { name: "Repositories" });
+  expect(await within(pane).findByRole("treeitem", { name: "README.md" })).toBeTruthy();
+  expect(within(pane).getByRole("tab").textContent).toBe("a at a1b2c3d4");
+});
+
+// `ActivateToolWindowAction`: ⌘1 brings the Project window to the front, and hides it when it is the
+// active one; what was in front before comes back. Its stripe button does the same.
+test("meta_1_activates_the_project_window_and_hides_it_when_active", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    log_open: () => ({ viewId: 1, count: 0 }),
+    tree_list: () => [{ name: "src", path: "src", dir: true }],
+  });
+  render(App);
+  await screen.findByRole("textbox", { name: "Commit Message" });
+  const project = () => screen.getByRole("region", { name: "Project" });
+  expect(project().closest(".hidden")).not.toBeNull();
+  // The tree is built when its window first comes to the front.
+  expect(calls("tree_list")).toEqual([]);
+
+  await fireEvent.keyDown(window, { key: "1", code: "Digit1", metaKey: true });
+  expect(tabState("Project")).toBe("true");
+  expect(tabState("Commit")).toBe("false");
+  expect(project().closest(".hidden")).toBeNull();
+  expect(await within(project()).findByRole("treeitem", { name: "src" })).toBeTruthy();
+  expect(within(project()).getByRole("treeitem", { name: "a" }).getAttribute("aria-expanded")).toBe("true");
+  expect(calls("tree_list")).toEqual([["tree_list", { dir: "" }]]);
+  expect(screen.getByRole("textbox", { name: "Commit Message" }).closest(".hidden")).not.toBeNull();
+
+  await fireEvent.keyDown(window, { key: "1", code: "Digit1", metaKey: true });
+  expect(tabState("Commit")).toBe("true");
+  expect(tabState("Project")).toBe("false");
+  expect(project().closest(".hidden")).not.toBeNull();
+
+  // From the Git window, and with the stripe button.
+  await fireEvent.keyDown(window, { key: "9", code: "Digit9", metaKey: true });
+  await fireEvent.click(screen.getByRole("tab", { name: "Project" }));
+  expect(tabState("Project")).toBe("true");
+  await fireEvent.click(screen.getByRole("tab", { name: "Project" }));
+  expect(tabState("Git")).toBe("true");
+  expect(tabState("Log")).toBe("true");
 });
 
 test("cmd 0 does nothing in modal mode", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
@@ -274,7 +370,7 @@ test("cmd 0 does nothing in modal mode", async () => {
 
 test("cmd 9 shows the Git window with Local Changes, Log and Console in that order", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
@@ -317,7 +413,7 @@ test("switching the setting moves Local Changes between the Commit and Git windo
 
 test("a draft and a line selection of the Commit view survive switching to modal and back", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
@@ -362,7 +458,7 @@ test("a draft and a line selection of the Commit view survive switching to modal
 
 test("arrow keys in the tab strip of the Git window keep the focus on the strip", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
@@ -379,7 +475,7 @@ test("arrow keys in the tab strip of the Git window keep the focus on the strip"
 });
 
 test("in modal mode Local Changes has no checkboxes and no commit message", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO, repo_status: () => [CHANGE] });
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO, repo_status: () => [CHANGE] });
   render(App);
 
   await screen.findByRole("treeitem", { name: /a\.txt/ });
@@ -391,7 +487,7 @@ test("in modal mode Local Changes has no checkboxes and no commit message", asyn
 
 test("in modal mode Commit… and cmd K open the Commit Changes dialog, which keeps the keys while open", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     merge_message: () => null,
@@ -430,7 +526,7 @@ test("in modal mode Commit… and cmd K open the Commit Changes dialog, which ke
 
 test("log_tab_loads_once", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
@@ -446,7 +542,7 @@ test("log_tab_loads_once", async () => {
 
 test("changing_repository_reloads_the_log", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
@@ -465,7 +561,7 @@ test("changing_repository_reloads_the_log", async () => {
 
 test("in non-modal mode cmd_k_from_the_log_goes_back_to_commit_and_to_the_message", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -485,7 +581,7 @@ test("in non-modal mode cmd_k_from_the_log_goes_back_to_commit_and_to_the_messag
 
 test("the commit view stays alive when switching tabs", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -505,7 +601,7 @@ test("the commit view stays alive when switching tabs", async () => {
 
 test("after_a_commit_the_log_is_reloaded", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -533,7 +629,7 @@ test("after_a_commit_the_log_is_reloaded", async () => {
 
 test("cmd_r_rereads_the_log", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0, collapsible: true }),
   });
@@ -548,7 +644,7 @@ test("cmd_r_rereads_the_log", async () => {
 
 test("cmd_r_outside_the_log_does_not_read_it", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0, collapsible: true }),
   });
@@ -561,7 +657,7 @@ test("cmd_r_outside_the_log_does_not_read_it", async () => {
 });
 
 test("shows_the_window_when_mounting_finishes", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO });
   render(App);
 
   await vi.waitFor(() => expect(calls("show_window")).toHaveLength(1));
@@ -570,9 +666,67 @@ test("shows_the_window_when_mounting_finishes", async () => {
   expect(order.indexOf("repo_open")).toBeLessThan(order.indexOf("show_window"));
 });
 
+// Decision 1 of part 4: `rama <file>:<line>` opens the file's repository, then the viewer there.
+test("a_file_argument_opens_its_repository_and_the_viewer_at_the_line", async () => {
+  mockApp({
+    initial_target: () => ({ repo: "/repo/a", file: "src/main file.rs", line: 12 }),
+    repo_open: () => INFO,
+    viewer_open: () => undefined,
+  });
+  render(App);
+
+  await vi.waitFor(() => expect(calls("viewer_open")).toHaveLength(1));
+  expect(calls("repo_open")[0][1]).toEqual({ repo: "/repo/a" });
+  expect(calls("viewer_open")[0][1]).toEqual({
+    targets: [{ path: "src/main file.rs", revision: null, line: 12 }],
+  });
+  const order = vi.mocked(invoke).mock.calls.map(([name]) => name);
+  expect(order.indexOf("repo_open")).toBeLessThan(order.indexOf("viewer_open"));
+  await vi.waitFor(() => expect(calls("show_window")).toHaveLength(1));
+});
+
+test("a_folder_argument_still_opens_the_repository", async () => {
+  mockApp({ initial_target: () => folder("/repo/a/src"), repo_open: () => INFO });
+  render(App);
+
+  await vi.waitFor(() => expect(calls("show_window")).toHaveLength(1));
+  expect(calls("repo_open")[0][1]).toEqual({ repo: "/repo/a/src" });
+  expect(calls("viewer_open")).toEqual([]);
+});
+
+test("a_file_outside_a_repository_says_so", async () => {
+  mockApp({
+    initial_target: () => {
+      throw {
+        kind: "not_a_repository",
+        message: "/tmp/notes.txt is not inside a Git repository",
+      };
+    },
+  });
+  render(App);
+
+  expect(await screen.findByText("/tmp/notes.txt is not inside a Git repository")).toBeTruthy();
+  await vi.waitFor(() => expect(calls("show_window")).toHaveLength(1));
+  expect(calls("repo_open")).toEqual([]);
+});
+
+// The repository did not open: there is nothing to show the file from.
+test("a_file_whose_repository_does_not_open_opens_no_viewer", async () => {
+  mockApp({
+    initial_target: () => ({ repo: "/repo/a", file: "a.txt", line: null }),
+    repo_open: () => {
+      throw { kind: "failed", message: "git rev-parse failed" };
+    },
+  });
+  render(App);
+
+  expect(await screen.findByText("git rev-parse failed")).toBeTruthy();
+  expect(calls("viewer_open")).toEqual([]);
+});
+
 test("shows_the_window_even_if_startup_fails", async () => {
   mockApp({
-    initial_repo: () => {
+    initial_target: () => {
       throw new Error("no arguments");
     },
   });
@@ -583,7 +737,7 @@ test("shows_the_window_even_if_startup_fails", async () => {
 
 test("measure_mode_opens_the_log", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     perf_enabled: () => true,
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -598,7 +752,7 @@ test("measure_mode_without_frames_reports_anyway", async () => {
   const frames = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
   try {
     mockApp({
-      initial_repo: () => "/repo/a",
+      initial_target: () => folder("/repo/a"),
       repo_open: () => INFO,
       perf_enabled: () => true,
       log_open: () => ({ viewId: 1, count: 1 }),
@@ -624,7 +778,7 @@ test("measure_mode_carries_a_failure_to_open_the_diff_to_the_report", async () =
   const frames = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
   try {
     mockApp({
-      initial_repo: () => "/repo/a",
+      initial_target: () => folder("/repo/a"),
       repo_open: () => INFO,
       perf_enabled: () => true,
       log_open: () => ({ viewId: 1, count: 1 }),
@@ -658,7 +812,7 @@ test("measure_mode_with_a_late_first_frame_does_not_switch_to_measuring_without_
   const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   try {
     mockApp({
-      initial_repo: () => "/repo/a",
+      initial_target: () => folder("/repo/a"),
       repo_open: () => INFO,
       perf_enabled: () => true,
       log_open: () => ({ viewId: 1, count: 1 }),
@@ -683,7 +837,7 @@ type Settle = { resolve: (value: unknown) => void; reject: (failure: unknown) =>
 
 test("show_diff_opens_the_diff_window_and_tells_it_what_is_chosen", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
@@ -705,9 +859,50 @@ test("show_diff_opens_the_diff_window_and_tells_it_what_is_chosen", async () => 
   );
 });
 
-test("in modal mode a double click in Local Changes opens the diff window without line checkboxes", async () => {
+// `Show on Double-Click` is in the gear of the Git window while Local Changes is shown
+// (`LocalChangesView.GearActions`): `Source` by default, so a double click opens the viewer.
+test("in modal mode a double click in Local Changes opens the source, or the diff with Show on Double-Click set to Diff", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    viewer_open: () => undefined,
+    diff_window_open: () => undefined,
+  });
+  render(App);
+  await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
+  await vi.waitFor(() => expect(calls("viewer_open")).toHaveLength(1));
+  expect(calls("viewer_open")[0][1]).toEqual({
+    targets: [{ path: "a.txt", revision: null, line: null }],
+  });
+
+  const strip = screen.getByRole("tablist", { name: "Git" });
+  await fireEvent.click(within(strip).getByRole("button", { name: "Options" }));
+  const gear = await screen.findByRole("menu", { name: "Options" });
+  const item = within(gear).getByRole("menuitem", { name: "Show on Double-Click" });
+  expect(within(gear).getAllByRole("menuitem").map((row) => row.getAttribute("aria-label"))).toEqual([
+    "Show on Double-Click",
+  ]);
+  await fireEvent.pointerEnter(item);
+  const options = await screen.findByRole("menu", { name: "Show on Double-Click" });
+  const choices = within(options).getAllByRole("menuitem");
+  expect(choices.map((row) => row.textContent?.replace(/\s+/g, " ").trim())).toEqual([
+    "Diff",
+    "✓ Source",
+  ]);
+  await fireEvent.click(choices[0]);
+  expect(localStorage.getItem("VcsApplicationSettings.SHOW_DIFF_ON_DOUBLE_CLICK")).toBe("true");
+
+  await fireEvent.dblClick(screen.getByRole("treeitem", { name: /a\.txt/ }));
+  await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
+  expect(calls("viewer_open")).toHaveLength(1);
+  localStorage.clear();
+});
+
+test("in modal mode a double click in Local Changes opens the diff window without line checkboxes", async () => {
+  localStorage.setItem("VcsApplicationSettings.SHOW_DIFF_ON_DOUBLE_CLICK", "true");
+  mockApp({
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     diff_window_open: () => undefined,
@@ -716,6 +911,7 @@ test("in modal mode a double click in Local Changes opens the diff window withou
   render(App);
 
   await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
+  localStorage.clear();
 
   await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
   expect(calls("diff_window_open")[0][1]).toEqual({ path: "a.txt" });
@@ -732,7 +928,7 @@ test("in modal mode a double click in Local Changes opens the diff window withou
 
 test("switching to modal mode takes the line checkboxes away from an open diff window", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
@@ -788,7 +984,7 @@ test("switching to modal mode takes the line checkboxes away from an open diff w
 
 test("a diff window opened from the Commit Changes dialog follows the dialog and is cleared when it closes", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     merge_message: () => null,
@@ -885,7 +1081,7 @@ const LINE_CHANGE = {
 
 test("a line chosen in the diff window comes back to the Commit view when the dialog opened over it closes", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
@@ -929,7 +1125,7 @@ test("a line chosen in the diff window comes back to the Commit view when the di
 
 test("the commit of the dialog runs after the dialog has closed", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     changelists_set_comment: () => LISTS,
@@ -955,7 +1151,7 @@ test("the commit of the dialog runs after the dialog has closed", async () => {
 
 test("a line lost by a commit that failed after the dialog closed reaches the diff window", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     ...DIALOG_COMMANDS,
@@ -1015,7 +1211,7 @@ async function commitAndRebase() {
 
 test("Commit and Rebase… of the dialog rebases from the base once the commit after closing is made", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     changelists_set_comment: () => LISTS,
@@ -1043,7 +1239,7 @@ test.each([
     let finish: Settle = { resolve: () => {}, reject: () => {} };
     let opened = 0;
     mockApp({
-      initial_repo: () => "/repo/a",
+      initial_target: () => folder("/repo/a"),
       repo_open: () => (++opened === 1 ? INFO : { ...INFO, path: "/repo/b" }),
       repo_status: () => [CHANGE],
       changelists_set_comment: () => LISTS,
@@ -1102,7 +1298,7 @@ test("a commit of the dialog that fails after closing does not push", async () =
 
 test("cmd K opens the dialog from Local Changes and from the Log in modal mode", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -1127,7 +1323,7 @@ test("cmd K opens the dialog from Local Changes and from the Log in modal mode",
 
 test("in non-modal mode cmd K still focuses the Commit tool window message", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -1148,7 +1344,7 @@ test("in non-modal mode cmd K still focuses the Commit tool window message", asy
 
 test("cmd alt K in modal mode opens the dialog", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -1165,7 +1361,7 @@ test("cmd alt K in modal mode opens the dialog", async () => {
 
 test("a fixup request in modal mode opens the dialog with the message and Commit and Rebase…", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     ...DIALOG_COMMANDS,
@@ -1193,7 +1389,7 @@ test("a fixup request in modal mode opens the dialog with the message and Commit
 
 test("a fixup request in non-modal mode goes to the Commit view", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
@@ -1217,7 +1413,7 @@ test("a fixup request in non-modal mode goes to the Commit view", async () => {
 
 test("in non-modal mode the Commit view still owns the line checkboxes of the diff window", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
@@ -1239,7 +1435,7 @@ test("in non-modal mode the Commit view still owns the line checkboxes of the di
 });
 
 test("without_a_diff_window_nothing_is_emitted", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO, repo_status: () => [CHANGE] });
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO, repo_status: () => [CHANGE] });
   vi.mocked(emit).mockClear();
   render(App);
 
@@ -1255,7 +1451,7 @@ test("the_selection_of_the_diff_window_reaches_the_commit_view", async () => {
     return () => {};
   });
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     repo_status: () => [CHANGE],
@@ -1286,7 +1482,7 @@ test("the_selection_of_the_diff_window_reaches_the_commit_view", async () => {
 test("if_another_repository_cannot_be_opened_the_current_one_stays", async () => {
   let opened = 0;
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => {
       if (opened++ === 0) return INFO;
       throw { kind: "failed", message: "There are unsaved changes" };
@@ -1329,7 +1525,7 @@ function deliver(event: string, payload?: unknown) {
 }
 
 async function openRepo() {
-  mockApp({ repo_open: () => INFO, initial_repo: () => "/repo/a" });
+  mockApp({ repo_open: () => INFO, initial_target: () => folder("/repo/a") });
   render(App);
   await screen.findByRole("treeitem", { name: /^Changes/ });
 }
@@ -1375,7 +1571,7 @@ test("staging area saved while the commit interface is modal is not in effect", 
 test("with staging area saved it starts without changelists", async () => {
   mockApp({
     repo_open: () => INFO,
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     settings_get: () => ({ ...SETTINGS, nonModalCommit: true, stagingArea: true }),
   });
   render(App);
@@ -1395,7 +1591,7 @@ test("changing the git path refreshes what is shown", async () => {
 
 test("the_toolbar_branch_follows_the_repository_without_remounting_the_views", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_state: () => ({ ...INFO.state, branch: "another", label: "another" }),
   });
@@ -1418,7 +1614,7 @@ const REBASING = {
 
 test("widget_shows_rebasing_main", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => ({ ...INFO, state: REBASING }),
   });
   render(App);
@@ -1429,7 +1625,7 @@ test("widget_shows_rebasing_main", async () => {
 test("the_widget_goes_from_one_operation_to_another_with_repo_changed", async () => {
   let state: unknown = REBASING;
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => ({ ...INFO, state: REBASING }),
     repo_state: () => state,
   });
@@ -1450,7 +1646,7 @@ test("the_widget_goes_from_one_operation_to_another_with_repo_changed", async ()
 
 test("opening_a_half_done_repository_shows_the_state", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => ({ ...INFO, state: { ...REBASING, label: "Rebasing another", branch: "another" } }),
   });
   render(App);
@@ -1467,7 +1663,7 @@ test("opening_a_half_done_repository_shows_the_state", async () => {
 test("the_git_menu_abort_merge_asks_for_confirmation_and_aborts", async () => {
   const merging = { ...INFO.state, operation: "merging", label: "Merging main" };
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => ({ ...INFO, state: merging }),
     repo_state: () => merging,
     flush: () => undefined,
@@ -1485,7 +1681,7 @@ test("the_git_menu_abort_merge_asks_for_confirmation_and_aborts", async () => {
 
 test("new_branch_during_a_rebase_does_not_suggest_the_rebased_branch", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => ({ ...INFO, state: REBASING }),
     branch_list: () => ({ local: [], remote: [], recent: [], current: null, previous: null }),
   });
@@ -1500,7 +1696,7 @@ test("new_branch_during_a_rebase_does_not_suggest_the_rebased_branch", async () 
 
 test("new_branch_without_an_operation_still_suggests_the_current_branch", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     branch_list: () => ({ local: [], remote: [], recent: [], current: null, previous: null }),
   });
@@ -1515,7 +1711,7 @@ test("new_branch_without_an_operation_still_suggests_the_current_branch", async 
 
 const openWithBranches = (commands: Record<string, () => unknown> = {}) =>
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     branch_list: () => ({
       local: [{ name: "main", tracked: null }],
@@ -1679,7 +1875,7 @@ const PULL_INFO = {
 
 test("git_pull_is_reached_with_the_git_action_event", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     pull_info: () => PULL_INFO,
     pull_options_get: () => [],
@@ -1717,7 +1913,7 @@ test("view_commits_of_a_pull_opens_the_update_info_tab_with_the_path_filter", as
     value,
   });
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => ({ ...SETTINGS, updatePaths: ["src"] }),
     pull_info: () => PULL_INFO,
@@ -2052,7 +2248,7 @@ function conflictsApp(commands: Record<string, () => unknown> = {}) {
     description: "Merging branch another into branch main",
   };
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [
       { path: "c.txt", oldPath: null, state: "unmerged", staged: false, unstaged: true },
@@ -2103,7 +2299,7 @@ test("the_resolve_link_of_the_node_opens_the_same_dialog", async () => {
 });
 
 test("without_conflicts_resolve_conflicts_does_not_turn_on", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO });
   render(App);
   await screen.findByRole("treeitem", { name: /^Changes/ });
 
@@ -2141,7 +2337,7 @@ test("when_everything_is_resolved_resolve_conflicts_turns_off", async () => {
 // Decision 5: `Git.Fetch` is off while a fetch runs, and comes back when it ends.
 test("the_git_menu_fetch_is_disabled_while_a_fetch_runs", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     fetch_all: () => 9,
   });
@@ -2161,7 +2357,7 @@ test("the_git_menu_fetch_is_disabled_while_a_fetch_runs", async () => {
 // Merge… and Rebase… of the Git menu: they open their dialog, launch the command with the HEAD it saw and notify.
 function mergeApp(commands: Record<string, () => unknown> = {}) {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     branch_list: () => ({
       local: [
@@ -2256,7 +2452,7 @@ test("with_a_half_done_merge_merge_and_rebase_from_the_menu_open_nothing", async
 
 test("the_merge_and_rebase_widget_sits_after_the_branch_widget", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => ({ ...INFO, state: REBASING }),
   });
   render(App);
@@ -2270,7 +2466,7 @@ test("the_merge_and_rebase_widget_sits_after_the_branch_widget", async () => {
 test("the_widget_buttons_run_the_git_menu_actions", async () => {
   const merging = { ...INFO.state, operation: "merging", label: "Merging main" };
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => ({ ...INFO, state: merging }),
     repo_state: () => merging,
     flush: () => undefined,
@@ -2284,7 +2480,7 @@ test("the_widget_buttons_run_the_git_menu_actions", async () => {
 });
 
 test("without_an_operation_the_widget_is_not_in_the_toolbar", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO });
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO });
   render(App);
   await screen.findByRole("button", { name: "Git Branch: main" });
 
@@ -2320,7 +2516,7 @@ const stashCommands = (list: () => unknown[]) => ({
 
 test("the_stash_tab_appears_with_the_first_stash_and_leaves_with_the_last", async () => {
   let stashes: unknown[] = [];
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO, ...stashCommands(() => stashes) });
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO, ...stashCommands(() => stashes) });
   render(App);
   const strip = await screen.findByRole("tablist", { name: "Git" });
   await waitFor(() => expect(calls("stash_list").length).toBeGreaterThan(0));
@@ -2358,7 +2554,7 @@ test("the_stash_tab_appears_with_the_first_stash_and_leaves_with_the_last", asyn
 test("the_window_label_follows_the_window", async () => {
   let stashes: unknown[] = [];
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => NON_MODAL,
     log_open: () => ({ viewId: 1, count: 0 }),
@@ -2391,7 +2587,7 @@ test("the_window_label_follows_the_window", async () => {
 test("unstash_changes_shows_the_stash_tab_and_opens_the_dialog_only_without_stashes", async () => {
   let stashes: unknown[] = [STASH];
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     branch_list: () => ({ local: [], remote: [], recent: [], current: "main", previous: null }),
     ...stashCommands(() => stashes),
@@ -2415,7 +2611,7 @@ test("unstash_changes_shows_the_stash_tab_and_opens_the_dialog_only_without_stas
 
 // `GitStashTracker`: the list is read again only when the stash ref changed, not on every save.
 test("a_worktree_save_does_not_read_the_stash_list_and_a_stash_push_does", async () => {
-  mockApp({ initial_repo: () => "/repo/a", repo_open: () => INFO, ...stashCommands(() => [STASH]) });
+  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO, ...stashCommands(() => [STASH]) });
   render(App);
   const strip = await screen.findByRole("tablist", { name: "Git" });
   await within(strip).findByRole("tab", { name: "Stash" });
@@ -2435,7 +2631,7 @@ test("a_worktree_save_does_not_read_the_stash_list_and_a_stash_push_does", async
 // of a file in the repository.
 test("a_worktree_save_does_not_read_the_shelf_and_a_change_to_the_store_does", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
     shelf_lists: () => {
@@ -2459,10 +2655,42 @@ test("a_worktree_save_does_not_read_the_shelf_and_a_change_to_the_store_does", a
   await waitFor(() => expect(calls("shelf_lists")).toHaveLength(2));
 });
 
+// A read of the lists that failed is tried again on the next `repo-changed`, whatever it says;
+// once read, only a change to the store reads them again.
+test("a_failed_shelf_read_is_retried_on_the_next_change", async () => {
+  let fails = true;
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
+    shelf_lists: () => {
+      if (fails) throw { kind: "io", message: "the store cannot be read" };
+      deliver("task-changed", taskDone(4321, [SHELF_LIST]));
+      return 4321;
+    },
+  });
+  render(App);
+  await screen.findByRole("tab", { name: "Local Changes" });
+  await waitFor(() => expect(calls("shelf_lists")).toHaveLength(1));
+  expect(screen.queryByRole("tab", { name: "Shelf" })).toBeNull();
+  fails = false;
+
+  deliver("repo-changed", { stash: false, shelf: false });
+
+  const strip = screen.getByRole("tablist", { name: "Git" });
+  expect(await within(strip).findByRole("tab", { name: "Shelf" })).toBeTruthy();
+  expect(calls("shelf_lists")).toHaveLength(2);
+  const states = calls("repo_state").length;
+  deliver("repo-changed", { stash: false, shelf: false });
+  await waitFor(() => expect(calls("repo_state").length).toBeGreaterThan(states));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(calls("shelf_lists")).toHaveLength(2);
+});
+
 // `GitStashTracker.Stashes.Error` keeps the tab, with the error as its only node.
 test("a_stash_list_that_fails_shows_an_error_node", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     stash_list: () => {
       throw { kind: "git", message: "fatal: bad stash" };
@@ -2482,7 +2710,7 @@ test("a_stash_list_that_fails_shows_an_error_node", async () => {
 // has no hidden tool window), active elsewhere selects, inactive activates the tab.
 test("show_git_stash_selects_activates_or_leaves_the_tab", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     log_open: () => ({ viewId: 1, count: 0 }),
     ...stashCommands(() => [STASH]),
@@ -2515,7 +2743,7 @@ test("show_git_stash_selects_activates_or_leaves_the_tab", async () => {
 // `Create Patch…` opens Patch File Settings on top of it. With the staging area it does nothing.
 test("the_git_menu_create_patch_opens_create_patch_then_patch_file_settings", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     ...DIALOG_COMMANDS,
@@ -2548,7 +2776,7 @@ test("the_git_menu_create_patch_opens_create_patch_then_patch_file_settings", as
 
 test("the_git_menu_create_patch_does_nothing_with_the_staging_area", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => ({ ...SETTINGS, nonModalCommit: true, stagingArea: true }),
     branch_list: () => ({ local: [], remote: [], recent: [], current: null, previous: null }),
@@ -2570,7 +2798,7 @@ test("the_git_menu_create_patch_does_nothing_with_the_staging_area", async () =>
 // with rollback, from the repository it was opened in. Not with the staging area.
 test("the_git_menu_shelve_changes_opens_shelve_changes_and_shelves_the_included_part", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     ...DIALOG_COMMANDS,
@@ -2605,7 +2833,7 @@ test("the_git_menu_shelve_changes_opens_shelve_changes_and_shelves_the_included_
 test("the_git_menu_import_shelf_from_idea_imports_while_the_shelf_is_empty", async () => {
   let lists: unknown[] = [];
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
     shelf_lists: () => {
@@ -2634,7 +2862,7 @@ test("the_git_menu_import_shelf_from_idea_imports_while_the_shelf_is_empty", asy
 // Finding 8: `ChangesView.Revert` of Git › Uncommitted Changes is Local Changes' Rollback.
 test("the_git_menu_rollback_opens_the_rollback_of_local_changes", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
   });
@@ -2649,7 +2877,7 @@ test("the_git_menu_rollback_opens_the_rollback_of_local_changes", async () => {
 
 test("the_git_menu_shelve_changes_does_nothing_with_the_staging_area", async () => {
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     settings_get: () => ({ ...SETTINGS, nonModalCommit: true, stagingArea: true }),
     branch_list: () => ({ local: [], remote: [], recent: [], current: null, previous: null }),
@@ -2687,7 +2915,7 @@ test("show_shelf_toggles", async () => {
   takeShelfTabRequest();
   let lists: unknown[] = [];
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
@@ -2741,7 +2969,7 @@ test("a_new_list_asked_for_while_the_shelf_tab_exists_is_selected_when_it_arrive
   const NEW = { ...SHELF_LIST, list: { ...SHELF_LIST.list, name: "New_one", description: "New one", dateMs: 1_800_000_000_000 } };
   let lists: unknown[] = [SHELF_LIST];
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     repo_status: () => [CHANGE],
     repo_settings_get: () => ({ shelf: { removeStrategy: false, showRecycled: false, groupByDirectory: false } }),
@@ -2797,7 +3025,7 @@ const APPLY_PLAN = {
 test("the_git_menu_apply_patch_opens_select_patch_file_then_the_dialog", async () => {
   vi.mocked(chooseNative).mockResolvedValue("/patches/fix.patch");
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     patch_app_settings_get: () => ({ folder: "/patches", detectPatchOnTheFly: false }),
     patch_storage_set: () => undefined,
@@ -2827,7 +3055,7 @@ test("the_git_menu_apply_patch_opens_select_patch_file_then_the_dialog", async (
 test("the_main_window_is_inert_while_an_apply_runs", async () => {
   vi.mocked(chooseNative).mockResolvedValue("/patches/fix.patch");
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     patch_app_settings_get: () => ({ folder: "/patches", detectPatchOnTheFly: false }),
     patch_storage_set: () => undefined,
@@ -2862,7 +3090,7 @@ test("the_main_window_is_inert_while_an_apply_runs", async () => {
 test("on_the_fly_offers_the_dialog_once_per_clipboard_text", async () => {
   const text = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n";
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     patch_app_settings_get: () => ({ folder: null, detectPatchOnTheFly: true }),
     patch_clipboard: () => ({ length: text.length, hash: "t1", patch: text }),
@@ -2894,7 +3122,7 @@ test("the_git_menu_waits_while_a_patch_conflict_is_in_the_merge_window", async (
   const conflict = { path: "a.txt", base: "b\n", local: "l\n", patched: "p\n", localHash: "h", movedTo: null, newMode: null };
   vi.mocked(chooseNative).mockResolvedValue("/patches/fix.patch");
   mockApp({
-    initial_repo: () => "/repo/a",
+    initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
     patch_app_settings_get: () => ({ folder: null, detectPatchOnTheFly: false }),
     patch_storage_set: () => undefined,
@@ -2924,4 +3152,142 @@ test("the_git_menu_waits_while_a_patch_conflict_is_in_the_merge_window", async (
   const { id } = (calls("merge_window_open_contents")[0][1] as { input: { id: string } }).input;
   deliver("merge-done", { id, result: "skip" });
   await waitFor(() => expect(applyInProgress()).toBe(false));
+});
+
+// `Git > Current File` of the main window: the Project tree's selection while it is the active
+// tool window (`GitFileActionGroup`); its entries run on that selection.
+test("current_file_follows_the_project_tree_and_runs_on_its_selection", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    tree_list: () => [{ name: "a.txt", path: "a.txt", dir: false }],
+    git_menu_current_file: () => undefined,
+    branch_list: () => ({
+      local: [{ name: "main", tracked: null }, { name: "other", tracked: null }],
+      remote: [],
+      recent: [],
+      current: "main",
+      previous: null,
+    }),
+    compare_local_state: () => {
+      throw new Error("stop here");
+    },
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  // Only the focused window says what Current File is.
+  await fireEvent.focus(window);
+  const lastMenu = () =>
+    calls("git_menu_current_file").at(-1)?.[1] as { title: string; items: { id: string; enabled: boolean }[] };
+  await waitFor(() => expect(lastMenu()?.title).toBe("Current File"));
+  expect(lastMenu().items.every((item) => !item.enabled)).toBe(true);
+
+  await fireEvent.keyDown(window, { key: "1", code: "Digit1", metaKey: true });
+  const project = screen.getByRole("region", { name: "Project" });
+  await fireEvent.click(await within(project).findByRole("treeitem", { name: "a.txt" }));
+  await waitFor(() => expect(lastMenu().title).toBe("Selected File"));
+  const enabled = lastMenu().items.filter((item) => item.enabled).map((item) => item.id);
+  expect(enabled).toEqual([
+    "CheckinFiles",
+    "Git.Add",
+    "Annotate",
+    "Compare.SameVersion",
+    "Compare.Selected",
+    "Git.CompareWithBranch",
+    "Vcs.ShowTabbedFileHistory",
+  ]);
+
+  // Without the focus (another of rama's windows has it) Current File is not this window's.
+  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  deliver("git-action", "Compare.SameVersion");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  focus.mockRestore();
+  expect(calls("compare_local_state")).toEqual([]);
+
+  // The text of a comparison that cannot be made is shown.
+  deliver("git-action", "Compare.SameVersion");
+  await waitFor(() => expect(calls("compare_local_state")).toEqual([["compare_local_state", { path: "a.txt" }]]));
+  expect(await screen.findByText("stop here")).toBeTruthy();
+
+  deliver("git-action", "CheckinFiles");
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  expect(await within(dialog).findByRole("treeitem", { name: "a.txt" })).toBeTruthy();
+});
+
+test("show_git_log_and_the_viewers_file_actions_come_to_the_main_window", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    log_open: () => ({ viewId: 1, count: 0 }),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  deliver("git-action", "Vcs.Show.Log");
+  await waitFor(() => expect(tabState("Log")).toBe("true"));
+
+  deliver("git-file-action", { id: "CheckinFiles", paths: ["a.txt"] });
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  expect(await within(dialog).findByRole("treeitem", { name: "a.txt" })).toBeTruthy();
+});
+
+// `GitAnnotationAspect.showAffectedPaths`: a click on an annotated line in the viewer selects its
+// commit in the main window's Log.
+test("an_annotated_line_selects_its_commit_in_the_main_log", async () => {
+  const hash = "2222222222222222222222222222222222222222";
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    log_open: () => ({ viewId: 1, count: 3 }),
+    log_rows: () => [],
+    log_find_rows: () => [null],
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  deliver("annotation-show-in-log", hash);
+
+  await waitFor(() => expect(tabState("Log")).toBe("true"));
+  await waitFor(() => expect(calls("log_find_rows").at(-1)?.[1]).toEqual({ viewId: 1, hashes: [hash] }));
+});
+
+// `branch_list` is read again on each `repo-changed`: an older answer that arrives late is dropped.
+test("compare_with_branch_follows_the_last_branch_list_read", async () => {
+  const answers: ((list: unknown) => void)[] = [];
+  const list = (...names: string[]) => ({
+    local: names.map((name) => ({ name, tracked: null })),
+    remote: [],
+    recent: [],
+    current: "main",
+    previous: null,
+  });
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    tree_list: () => [{ name: "a.txt", path: "a.txt", dir: false }],
+    git_menu_current_file: () => undefined,
+    branch_list: () => new Promise((resolve) => answers.push(resolve)),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  await fireEvent.focus(window);
+  await fireEvent.keyDown(window, { key: "1", code: "Digit1", metaKey: true });
+  const project = screen.getByRole("region", { name: "Project" });
+  await fireEvent.click(await within(project).findByRole("treeitem", { name: "a.txt" }));
+  await waitFor(() => expect(answers).toHaveLength(1));
+  deliver("repo-changed", { stash: false, shelf: false });
+  await waitFor(() => expect(answers).toHaveLength(2));
+
+  answers[1](list("main"));
+  answers[0](list("main", "other"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const last = calls("git_menu_current_file").at(-1)?.[1] as {
+    items: { id: string; enabled: boolean }[];
+  };
+  expect(last.items.find((item) => item.id === "Git.CompareWithBranch")?.enabled).toBe(false);
 });

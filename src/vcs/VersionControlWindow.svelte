@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Icon from "../lib/Icon.svelte";
+  import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { contentTitle, type ContentId, type ToolWindowId } from "../lib/tabs";
 
   // The strip of the `Git` window, or of the `Commit` one in non-modal mode: `label` is the window's name.
@@ -10,9 +12,20 @@
     // `focus`: the content takes the focus, as on a click. Moving along the strip with the arrows
     // keeps it on the strip.
     onselect: (id: ContentId, focus: boolean) => void;
+    // The gear of the title bar (`Options`): the selected content's gear actions, such as
+    // `LocalChangesView.GearActions`. Without them there is no gear.
+    options?: () => MenuItem[];
   }
 
-  let { toolWindow, label, contents, selected, onselect }: Props = $props();
+  let { toolWindow, label, contents, selected, onselect, options }: Props = $props();
+
+  let menu = $state.raw<{ x: number; y: number; items: MenuItem[] } | null>(null);
+
+  function openOptions(event: MouseEvent) {
+    if (!options) return;
+    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    menu = { x: bounds.left, y: bounds.bottom + 2, items: options() };
+  }
 
   // The tabs of the `Version Control` window are not closable: the closable ones are those the user adds
   // (extra log tabs, file history), which are inside their own content.
@@ -43,7 +56,22 @@
       </button>
     </span>
   {/each}
+  {#if options}
+    <button
+      type="button"
+      class="action options"
+      title="Options"
+      aria-label="Options"
+      onclick={openOptions}
+    >
+      <Icon name="settings" />
+    </button>
+  {/if}
 </div>
+
+{#if menu}
+  <Menu x={menu.x} y={menu.y} label="Options" items={menu.items} onclose={() => (menu = null)} />
+{/if}
 
 <style>
   .tabs {
@@ -67,6 +95,10 @@
 
   .tab.selected {
     border-bottom-color: var(--focus);
+  }
+
+  .options {
+    margin-left: auto;
   }
 
   .tab button {

@@ -14,6 +14,12 @@ if (kind === "diff") {
   import("./diff/window").then(({ mountDiffWindow }) => mountDiffWindow(target));
 } else if (kind === "merge") {
   import("./merge/window").then(({ mountMergeWindow }) => mountMergeWindow(target));
+} else if (kind === "viewer") {
+  import("./viewer/window").then(({ mountViewerWindow }) => mountViewerWindow(target));
+} else if (kind === "selection-history") {
+  import("./history/window").then(({ mountSelectionHistoryWindow }) =>
+    mountSelectionHistoryWindow(target),
+  );
 } else if (import.meta.env.VITE_RAMA_SMOKE) {
   import("./perf/smoke").then(({ runSmoke }) => runSmoke());
 } else {

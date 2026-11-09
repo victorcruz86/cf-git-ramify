@@ -1727,7 +1727,7 @@ mod tests {
     // `origin` is a bare remote with `main` and `feature`, which branches off `base` with `f.txt`.
     fn with_origin(harness: &RepoHarness) -> tempfile::TempDir {
         let origin = tempfile::TempDir::new().unwrap();
-        let init = std::process::Command::new("git")
+        let init = crate::test_support::git_command()
             .args(["init", "-q", "--bare"])
             .arg(origin.path())
             .status()

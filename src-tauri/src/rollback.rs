@@ -992,7 +992,7 @@ mod tests {
                 }
             }
         }
-        let merge = std::process::Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "--no-edit", "other"])
             .output()

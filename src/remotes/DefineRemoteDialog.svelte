@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import Dialog from "../lib/Dialog.svelte";
   import { errorText } from "../lib/errors";
   import { remoteProblem, type RemoteProblems } from "./model";
@@ -15,10 +16,11 @@
 
   let { initialName, initialUrl, taken, test, onanswer }: Props = $props();
 
-  // Whoever edits starts with a name, which does not count as a duplicate.
-  const original = initialName;
-  let name = $state(initialName);
-  let url = $state(initialUrl);
+  // Whoever edits starts with a name, which does not count as a duplicate. The fields start from the
+  // props once: what is typed afterwards is the user's.
+  const original = untrack(() => initialName);
+  let name = $state(original);
+  let url = $state(untrack(() => initialUrl));
   let problems = $state<RemoteProblems>({});
   let loading = $state(false);
 

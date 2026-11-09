@@ -10,9 +10,12 @@ use tauri::{AppHandle, State};
 
 use crate::commands::{blocking_api, current_repo, failed, repo_data_dir, ApiError, AppState};
 use crate::git::{self, GitError};
+use crate::history;
+use crate::log::cherry::{self, NotPicked};
 use crate::log::collapse::{self, GraphTarget};
 use crate::log::details::{self, ChangeGroup, ChangeMode, CommitDetails};
-use crate::log::filter::{self, same_person, Highlight, Highlighter};
+use crate::log::filter::{self, same_person, Highlight, Highlighter, LogFilter};
+use crate::log::history_view::{self, HistoryChange, HistoryEntry, HistoryPaths};
 use crate::log::options;
 use crate::log::print::{self, PrintRow};
 use crate::log::recent::{self, RecentFilters};
@@ -26,6 +29,9 @@ const FIRST_VIEW: u32 = 1;
 const FIRST_TAB: u32 = 0;
 const FILTERING: &str = "Applying Filters…";
 const LOADING_CHANGES: &str = "Loading Commit Changes";
+// `git.log.cherry.picked.highlighter.process` (B:1051).
+const COMPARING: &str = "Comparing Branches…";
+const HEAD: &str = "HEAD";
 const CLIPBOARD: &str = "/usr/bin/pbcopy";
 const CLIPBOARD_READER: &str = "/usr/bin/pbpaste";
 
@@ -41,6 +47,8 @@ struct LogData {
 pub struct OpenRepo {
     data: Arc<LogData>,
     views: HashMap<u32, Arc<View>>,
+    // Per view of a file history, the file's path in each of its commits.
+    histories: HashMap<u32, Arc<HistoryPaths>>,
     // Per tab, its view and the last task that opened one.
     tabs: HashMap<u32, u32>,
     pending: HashMap<u32, TaskId>,
@@ -172,6 +180,7 @@ pub fn open_repo(path: &Path) -> Result<OpenRepo, ApiError> {
             me,
         }),
         views: HashMap::from([(FIRST_VIEW, Arc::new(view))]),
+        histories: HashMap::new(),
         tabs: HashMap::from([(FIRST_TAB, FIRST_VIEW)]),
         pending: HashMap::new(),
         next_view: FIRST_VIEW + 1,
@@ -298,6 +307,7 @@ impl OpenRepo {
         self.views.insert(view_id, Arc::new(view));
         if let Some(old) = self.tabs.insert(tab, view_id) {
             self.views.remove(&old);
+            self.histories.remove(&old);
         }
         ViewOpened { view_id, summary }
     }
@@ -359,10 +369,137 @@ pub fn start_view(
     Ok(id)
 }
 
-pub fn close_view(repo: &mut OpenRepo, tab: u32) {
+// What the tab was still computing is cancelled with it: a history walk does not go on for nothing.
+pub fn close_view(repo: &mut OpenRepo, runner: &Runner, tab: u32) {
+    if let Some(pending) = repo.pending.remove(&tab) {
+        runner.cancel(pending);
+    }
     if let Some(view) = repo.tabs.remove(&tab) {
         repo.views.remove(&view);
+        repo.histories.remove(&view);
     }
+}
+
+// What a history tab asks for (`FileHistoryUiFactory`): the file, the revision of `History Up to
+// Here`, and the Branch filter, which only applies without a revision. Empty: every reference.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HistoryRequest {
+    pub path: String,
+    pub revision: Option<String>,
+    pub branches: Vec<String>,
+}
+
+fn open_history(
+    context: &TaskContext,
+    log: &SharedLog,
+    data: Arc<LogData>,
+    tab: u32,
+    spec: &ViewSpec,
+    request: &HistoryRequest,
+) -> Result<ViewOpened, GitError> {
+    let mut git = |args: &[&str]| context.git(args).map(|output| output.stdout);
+    let revision = request.revision.as_deref();
+    // `getCorrectedPath`: only the history of the file as it is now follows an uncommitted rename.
+    let path = match revision {
+        Some(_) => request.path.clone(),
+        None => history::last_commit_path(&mut git, &request.path),
+    };
+    // A hash in the Branch filter is a starting point as it is (`REVISION_FILTER`).
+    let mut matching = filter::matching_branches(&data.store, &request.branches);
+    matching.extend(
+        request
+            .branches
+            .iter()
+            .filter(|value| value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit()))
+            .cloned(),
+    );
+    let mut starts = history::starting_revisions(revision, &request.branches, matching);
+    let has_head = data
+        .store
+        .refs()
+        .all
+        .iter()
+        .any(|git_ref| git_ref.kind == RefKind::Head);
+    if let history::Starts::AllRefs { head } = &mut starts {
+        // Without commits there is no HEAD to start from.
+        *head = has_head;
+    }
+    let rows = history::file_history(&mut git, &path, &starts, history::Walk::Full)?;
+    context.check_cancelled()?;
+    let (view, paths) =
+        history_view::history_view(&data.store, data.permanent.clone(), spec, &rows);
+    let mut log = log.lock().unwrap();
+    let repo = log
+        .as_mut()
+        .filter(|repo| Arc::ptr_eq(&repo.data, &data))
+        .ok_or(GitError::Cancelled)?;
+    context.check_cancelled()?;
+    let opened = repo.install(tab, view);
+    repo.histories.insert(opened.view_id, Arc::new(paths));
+    Ok(opened)
+}
+
+// `start_view` for a history tab: the walk is a cancellable read, and a new one of the tab cancels
+// the one before.
+pub fn start_history(
+    log: &SharedLog,
+    runner: &Runner,
+    repo: &Path,
+    tab: u32,
+    spec: ViewSpec,
+    request: HistoryRequest,
+) -> Result<TaskId, ApiError> {
+    let mut guard = log.lock().unwrap();
+    let open = guard
+        .as_mut()
+        .ok_or_else(|| failed("The log is not open".to_string()))?;
+    if let Some(previous) = open.pending.get(&tab) {
+        runner.cancel(*previous);
+    }
+    let data = open.data.clone();
+    let shared = log.clone();
+    let id = runner.start(
+        repo,
+        TaskKind::Read,
+        FILTERING.to_string(),
+        move |context| open_history(context, &shared, data, tab, &spec, &request),
+    );
+    open.pending.insert(tab, id);
+    Ok(id)
+}
+
+fn history_of(repo: &OpenRepo, view_id: u32) -> Result<(Arc<View>, Arc<HistoryPaths>), ApiError> {
+    let view = view_of(repo, view_id)?;
+    let paths = repo
+        .histories
+        .get(&view_id)
+        .cloned()
+        .ok_or_else(|| failed(format!("View {view_id} is not a file history")))?;
+    Ok((view, paths))
+}
+
+// The file in each of those commits, `None` for one that is not in the history.
+fn history_entries(
+    data: &LogData,
+    paths: &HistoryPaths,
+    hashes: &[String],
+) -> Vec<Option<HistoryEntry>> {
+    let commits = data.store.find(hashes.iter().map(String::as_str));
+    hashes
+        .iter()
+        .map(|hash| paths.of_commit(*commits.get(hash.as_str())?).cloned())
+        .collect()
+}
+
+// The rows of those commits from the top, for `history_change`.
+fn history_rows(data: &LogData, view: &View, hashes: &[String]) -> Vec<u32> {
+    let mut rows: Vec<u32> = find_rows(data, view, hashes)
+        .into_iter()
+        .flatten()
+        .collect();
+    rows.sort_unstable();
+    rows
 }
 
 // By hash, its row in the view. Rows are rarely requested: an index would always cost memory.
@@ -450,6 +587,39 @@ pub fn start_selected_changes(
             })
         },
     )
+}
+
+// `DeepComparator.startTask`: only a branch of the repository is compared (`getRepositories`), with
+// the current branch, or `HEAD` without one; with neither there is nothing to compare. Both sides
+// are the commits the log read: a refresh compares again.
+pub fn start_not_picked(
+    repo: &OpenRepo,
+    runner: &Runner,
+    path: &Path,
+    branch: &str,
+) -> Option<TaskId> {
+    let store = &repo.data.store;
+    let refs = store.refs();
+    let compared = refs.all.iter().find(|git_ref| {
+        matches!(git_ref.kind, RefKind::Local | RefKind::Remote) && &*git_ref.name == branch
+    })?;
+    let head = refs
+        .all
+        .iter()
+        .find(|git_ref| git_ref.kind == RefKind::Head)?;
+    let current = refs.current_name().unwrap_or(HEAD).to_string();
+    let current_hash = store.get(head.commit).hash.to_string();
+    let compared_hash = store.get(compared.commit).hash.to_string();
+    Some(runner.start(
+        path,
+        TaskKind::Read,
+        COMPARING.to_string(),
+        move |context| {
+            let mut git = |args: &[&str]| Ok(context.git(args)?.stdout);
+            let commits = cherry::not_picked(&mut git, &current_hash, &compared_hash)?;
+            Ok(NotPicked { current, commits })
+        },
+    ))
 }
 
 pub fn refs_changed(repo: &Path, known: u64) -> Result<bool, GitError> {
@@ -604,9 +774,53 @@ pub async fn log_current_branch(state: State<'_, AppState>) -> Result<Option<Str
 #[tauri::command]
 pub async fn log_view_close(tab: u32, state: State<'_, AppState>) -> Result<(), ApiError> {
     with_log(&state.log, |repo| {
-        close_view(repo, tab);
+        close_view(repo, &state.tasks, tab);
         Ok(())
     })
+}
+
+#[tauri::command]
+pub async fn log_history_open(
+    tab: u32,
+    spec: ViewSpec,
+    request: HistoryRequest,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    let path = current_repo(&state)?;
+    start_history(&state.log, &state.tasks, &path, tab, spec, request)
+}
+
+#[tauri::command]
+pub async fn log_history_entries(
+    view_id: u32,
+    hashes: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<Option<HistoryEntry>>, ApiError> {
+    let (data, paths) = with_log(&state.log, |repo| {
+        Ok((repo.data.clone(), history_of(repo, view_id)?.1))
+    })?;
+    blocking_api(move || Ok(history_entries(&data, &paths, &hashes))).await
+}
+
+#[tauri::command]
+pub async fn log_history_change(
+    view_id: u32,
+    hashes: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Option<HistoryChange>, ApiError> {
+    let (data, (view, paths)) = with_log(&state.log, |repo| {
+        Ok((repo.data.clone(), history_of(repo, view_id)?))
+    })?;
+    blocking_api(move || {
+        let rows = history_rows(&data, &view, &hashes);
+        Ok(history_view::history_change(
+            &data.store,
+            &view,
+            &paths,
+            &rows,
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -765,6 +979,29 @@ pub async fn commit_changes_start(
 ) -> Result<TaskId, ApiError> {
     let path = current_repo(&state)?;
     Ok(start_selected_changes(&state.tasks, &path, hashes, limit))
+}
+
+// `DeepComparator.getComparedBranchFromFilters`, for the filters a tab has now.
+#[tauri::command]
+pub async fn log_compared_branch(
+    filter: LogFilter,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    with_log(&state.log, |repo| {
+        Ok(cherry::compared_branch(&repo.data.store, &filter))
+    })
+}
+
+// `Not Cherry-Picked Commits`: a task, or nothing when `branch` is not a branch of the log.
+#[tauri::command]
+pub async fn log_not_picked(
+    branch: String,
+    state: State<'_, AppState>,
+) -> Result<Option<TaskId>, ApiError> {
+    let path = current_repo(&state)?;
+    with_log(&state.log, |repo| {
+        Ok(start_not_picked(repo, &state.tasks, &path, &branch))
+    })
 }
 
 #[tauri::command]
@@ -1239,7 +1476,7 @@ mod tests {
 
         let mut log = harness.log.lock().unwrap();
         let open = log.as_mut().unwrap();
-        close_view(open, 7);
+        close_view(open, &harness.runner, 7);
 
         assert!(rows_in(open, view, 0, 10).is_empty());
         assert_eq!(rows_in(open, FIRST_VIEW, 0, 10).len(), 4);
@@ -1352,6 +1589,46 @@ mod tests {
             assert!(Instant::now() < deadline, "the fake did not start");
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn not_picked_compares_the_hashes_of_a_branch_with_the_current_one() {
+        let repo = repo_with_merge();
+        repo.git(&["branch", "side", "main~1"]);
+        repo.git(&["tag", "a-tag", "main~1"]);
+        let files = TempDir::new().unwrap();
+        let calls = files.path().join("calls");
+        let harness = Harness::new(
+            &repo,
+            &format!(
+                "echo \"$@\" >> '{}'\necho '+ {}'",
+                calls.display(),
+                "a".repeat(40)
+            ),
+        );
+        let start = |branch: &str| {
+            let log = harness.log.lock().unwrap();
+            start_not_picked(log.as_ref().unwrap(), &harness.runner, repo.path(), branch)
+        };
+
+        // `getRepositories`: a tag, a hash or a name the log does not know is no branch.
+        assert!(start("a-tag").is_none());
+        assert!(start(&hash_of(&repo, "side")).is_none());
+        assert!(start("--all").is_none());
+        let id = start("side").unwrap();
+
+        let event = harness.finished(id);
+        assert_eq!(event.state, TaskState::Done, "{}", event.text);
+        let called = fs::read_to_string(calls).unwrap();
+        let expected = format!(
+            "cherry {} {}",
+            hash_of(&repo, "main"),
+            hash_of(&repo, "side")
+        );
+        assert!(called.trim().ends_with(&expected), "{called}");
+        let value = event.value.unwrap();
+        assert_eq!(value["current"], "main");
+        assert_eq!(value["commits"], serde_json::json!(["a".repeat(40)]));
     }
 
     #[test]
@@ -1485,6 +1762,135 @@ mod tests {
         }
         fs::write(&release, "").unwrap();
         assert_eq!(harness.finished(id).state, TaskState::Done);
+    }
+
+    fn history_of_file(path: &str) -> HistoryRequest {
+        HistoryRequest {
+            path: path.to_string(),
+            revision: None,
+            branches: vec!["HEAD".to_string()],
+        }
+    }
+
+    // Review Focus 2: the walk is a task; closing its tab cancels it and leaves no view behind.
+    #[test]
+    fn closing_the_tab_cancels_the_walk() {
+        let repo = repo_with_merge();
+        let files = TempDir::new().unwrap();
+        let started = files.path().join("started");
+        let harness = Harness::new(
+            &repo,
+            &format!("touch '{}'\nexec sleep 30", started.display()),
+        );
+        let id = start_history(
+            &harness.log,
+            &harness.runner,
+            repo.path(),
+            5,
+            ViewSpec::default(),
+            history_of_file("a.txt"),
+        )
+        .unwrap();
+        wait_for(&started);
+
+        close_view(
+            harness.log.lock().unwrap().as_mut().unwrap(),
+            &harness.runner,
+            5,
+        );
+
+        assert_eq!(harness.finished(id).state, TaskState::Cancelled);
+        let log = harness.log.lock().unwrap();
+        assert!(!log.as_ref().unwrap().tabs.contains_key(&5));
+    }
+
+    // `getBranchLikeFilterParameters`: the Branch filter's values are the walk's starting points,
+    // matched against the log's branches; git's own fallback to HEAD is never what answers.
+    #[test]
+    fn branch_filter_values_become_the_starting_revisions() {
+        let repo = TempRepo::new();
+        repo.commit_dated("a.txt", "base", "2026-01-01T12:00:00");
+        repo.git(&["checkout", "-q", "-b", "other"]);
+        repo.commit_dated("a.txt", "on other", "2026-01-02T12:00:00");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.commit_dated("a.txt", "on main", "2026-01-03T12:00:00");
+        let real = git::git_binary();
+        let harness = Harness::new(&repo, &format!("exec '{}' \"$@\"", real.display()));
+        let open = |tab: u32, branches: &[&str]| {
+            let request = HistoryRequest {
+                path: "a.txt".to_string(),
+                revision: None,
+                branches: branches.iter().map(|name| name.to_string()).collect(),
+            };
+            let id = start_history(
+                &harness.log,
+                &harness.runner,
+                repo.path(),
+                tab,
+                ViewSpec::default(),
+                request,
+            )
+            .unwrap();
+            let event = harness.finished(id);
+            assert_eq!(event.state, TaskState::Done, "{}", event.text);
+            let subjects: Vec<String> = harness
+                .view_rows(&event)
+                .into_iter()
+                .map(|row| row.subject)
+                .collect();
+            subjects
+        };
+
+        assert_eq!(open(5, &["other"]), vec!["on other", "base"]);
+        assert_eq!(open(6, &["HEAD"]), vec!["on main", "base"]);
+        assert_eq!(open(7, &[]), vec!["on main", "on other", "base"]);
+    }
+
+    #[test]
+    fn a_history_view_has_the_rows_and_paths_of_the_walk() {
+        let repo = repo_with_merge();
+        fs::write(repo.path().join("a.txt"), "changed").unwrap();
+        repo.git(&["commit", "-q", "-am", "edit a"]);
+        let real = git::git_binary();
+        let harness = Harness::new(&repo, &format!("exec '{}' \"$@\"", real.display()));
+
+        let id = start_history(
+            &harness.log,
+            &harness.runner,
+            repo.path(),
+            5,
+            ViewSpec::default(),
+            history_of_file("a.txt"),
+        )
+        .unwrap();
+
+        let event = harness.finished(id);
+        assert_eq!(event.state, TaskState::Done, "{}", event.text);
+        let subjects: Vec<String> = harness
+            .view_rows(&event)
+            .into_iter()
+            .map(|row| row.subject)
+            .collect();
+        assert_eq!(subjects, vec!["edit a", "base"]);
+        let view_id = event.value.as_ref().unwrap()["viewId"].as_u64().unwrap() as u32;
+        let log = harness.log.lock().unwrap();
+        let open = log.as_ref().unwrap();
+        let (view, paths) = history_of(open, view_id).unwrap();
+        let rows = rows_in(open, view_id, 0, 10);
+        let hashes: Vec<String> = rows.iter().map(|row| row.hash.clone()).collect();
+        let entries = history_entries(&open.data, &paths, &hashes);
+        assert!(entries
+            .iter()
+            .all(|entry| entry.as_ref().unwrap().path == "a.txt"));
+        let change = history_view::history_change(
+            &open.data.store,
+            &view,
+            &paths,
+            &history_rows(&open.data, &view, &hashes[..1]),
+        )
+        .unwrap();
+        assert_eq!(change.before[0].as_ref().unwrap().hash, hashes[1]);
+        assert!(history_of(open, FIRST_VIEW).is_err());
     }
 
     #[test]

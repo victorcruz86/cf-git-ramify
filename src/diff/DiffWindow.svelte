@@ -3,16 +3,19 @@
   import {
     diffFlushed,
     diffWindowOpen,
-    diffWindowPath,
+    diffWindowOpenRequest,
+    diffWindowRequest,
     effectiveStaging,
     emitDiffDrawn,
     emitDiffReady,
     emitSelectionChanged,
     hideWindow,
+    LOCAL_REVISION,
     onDiffClose,
     onDiffFlush,
     onComparison,
     onDiffOpen,
+    onDiffRequest,
     onRepoChanged,
     onSelectionLost,
     onSelectionState,
@@ -23,10 +26,13 @@
     showWindow,
     type Changelists,
     type Comparison,
+    type DiffRequest,
     type DiffTiming,
     type FileChange,
     type LineSelection,
+    type RevisionPair,
     type SelectionChange,
+    type SideRef,
     type SelectionOwner,
     type StageComparison,
   } from "../lib/api";
@@ -38,6 +44,7 @@
   import type { HighlightMode } from "./editor";
   import FilePane, { type NoticeKind } from "./FilePane.svelte";
   import ThreeVersionsPane from "./ThreeVersionsPane.svelte";
+  import RevisionsPreview from "./RevisionsPreview.svelte";
   import {
     loadOptions,
     softWrapItem,
@@ -82,6 +89,11 @@
   ];
 
   let files = $state.raw<FileChange[]>([]);
+  // A request of two revisions (H§4): its own files and titles, no status, stage or line selection.
+  let revisions = $state.raw<{ files: RevisionPair[]; title: string } | null>(null);
+  // Each request of two revisions builds its panes again, even for the same file.
+  let requestCount = $state(0);
+  // The path of the working-tree file, or the index of the pair of a request of two revisions.
   let current = $state<string | null>(null);
   let version = $state(0);
   // Until the application says who keeps them, nobody does: no line checkboxes.
@@ -110,8 +122,17 @@
   let transitions: Promise<unknown> = Promise.resolve();
   let measuring = $state(false);
 
-  const position = $derived(files.findIndex((file) => file.path === current));
-  const comparison = $derived(stagingArea ? chosenComparison : null);
+  // What the toolbar steps through: the changed files, or the pairs of the request.
+  const entries = $derived<{ key: string; label: string }[]>(
+    revisions
+      ? revisions.files.map((pair, index) => ({ key: String(index), label: pairLabel(pair) }))
+      : files.map((file) => ({ key: file.path, label: file.path })),
+  );
+  const position = $derived(entries.findIndex((entry) => entry.key === current));
+  const currentPair = $derived(
+    revisions && current !== null ? (revisions.files[Number(current)] ?? null) : null,
+  );
+  const comparison = $derived(stagingArea && !revisions ? chosenComparison : null);
   // The combined view has two panes: with the three versions it is not offered.
   const showingThree = $derived(
     comparison === "three" && !combined && current !== null && !threeless.has(current),
@@ -144,6 +165,17 @@
   }
 
   const byPath = (left: FileChange, right: FileChange) => (left.path < right.path ? -1 : 1);
+
+  // The file the pane saves: the local side, else the right one.
+  const localPath = (pair: RevisionPair) =>
+    pair.left.revision === LOCAL_REVISION ? pair.left.path : pair.right.path;
+
+  function pairLabel(pair: RevisionPair): string {
+    const { left, right } = pair;
+    return left.revision === null || left.path === right.path
+      ? right.path
+      : `${left.path} -> ${right.path}`;
+  }
 
   async function refreshFiles() {
     try {
@@ -188,7 +220,7 @@
 
   function refresh() {
     version++;
-    refreshFiles();
+    if (!revisions) refreshFiles();
   }
 
   // The selection is kept by its owner (the Commit view or the dialog), and this window shows it as soon
@@ -207,6 +239,11 @@
 
   async function open(path: string) {
     if (path === current) return;
+    // The pairs of a request are all here: only the file shown changes.
+    if (revisions) {
+      transition(() => (current = path));
+      return;
+    }
     try {
       await diffWindowOpen(path);
     } catch (failure) {
@@ -228,6 +265,73 @@
     }
   }
 
+  // Another request arrives with the window open: what was typed is saved first, as when switching
+  // files, and if that is not possible the window and the backend keep the one it had.
+  async function showRequest(request: DiffRequest) {
+    // The request already shown: what the backend sends back when the window restores it after a
+    // save that failed. Showing it again would retry that save and restore it again, forever.
+    if (request.kind === "revisions" && revisions && sameRequest(request, revisions)) {
+      // The same files asked for again from another one of them: only the file shown changes.
+      if (request.selected !== undefined) void open(openedOn(request));
+      return;
+    }
+    const previous: DiffRequest | null = revisions
+      ? { kind: "revisions", ...revisions }
+      : current !== null
+        ? { kind: "worktree", path: current }
+        : null;
+    if (request.kind === "worktree") {
+      if (!revisions) {
+        await showFile(request.path);
+        return;
+      }
+      if (await transition(() => leaveRevisions(request.path))) {
+        await refreshFiles();
+        return;
+      }
+    } else if (
+      await transition(() => {
+        if (combined) setCombined(false);
+        revisions = { files: request.files, title: request.title };
+        requestCount++;
+        current = openedOn(request);
+        threeless = new Map();
+      })
+    ) {
+      return;
+    }
+    if (previous) {
+      await diffWindowOpenRequest(previous).catch((failure) => notify("error", errorText(failure)));
+    }
+  }
+
+  const sameSide = (left: SideRef, right: SideRef) =>
+    left.revision === right.revision && left.path === right.path && left.title === right.title;
+
+  // The pair a request of two revisions opens on (`ListSelection`'s index), the first without one.
+  const openedOn = ({ files, selected }: { files: RevisionPair[]; selected?: number }) =>
+    String(Math.max(0, Math.min(selected ?? 0, files.length - 1)));
+
+  const sameRequest = (
+    request: { files: RevisionPair[]; title: string },
+    shown: { files: RevisionPair[]; title: string },
+  ) =>
+    request.title === shown.title &&
+    request.files.length === shown.files.length &&
+    request.files.every(
+      (pair, index) =>
+        sameSide(pair.left, shown.files[index].left) &&
+        sameSide(pair.right, shown.files[index].right) &&
+        (pair.center === undefined) === (shown.files[index].center === undefined) &&
+        (!pair.center || sameSide(pair.center, shown.files[index].center!)),
+    );
+
+  function leaveRevisions(path: string) {
+    revisions = null;
+    current = path;
+    threeless = new Map();
+  }
+
   async function drawn(timing: Omit<DiffTiming, "paintMs">) {
     await emitDiffDrawn({ ...timing, paintMs: await nextFrame(frameLimit()) });
   }
@@ -237,8 +341,8 @@
   }
 
   function step(direction: 1 | -1) {
-    const next = files[position + direction];
-    if (next) open(next.path);
+    const next = entries[position + direction];
+    if (next) open(next.key);
   }
 
   // When reaching the last change of a file, F7 continues with the next one.
@@ -318,13 +422,13 @@
 
   function openFilesMenu(event: MouseEvent) {
     const first = Math.max(0, position - MENU_FILES / 2);
-    const nearby = files.slice(first, first + MENU_FILES);
+    const nearby = entries.slice(first, first + MENU_FILES);
     openMenu(
       event,
       "Changed files",
-      nearby.map((file) => ({ value: file.path, label: file.path })),
+      nearby.map((entry) => ({ value: entry.key, label: entry.label })),
       current,
-      (path) => path && open(path),
+      (key) => key && open(key),
     );
   }
 
@@ -391,7 +495,8 @@
   onMount(() => {
     const stops = [
       onRepoChanged(refresh),
-      onDiffOpen(showFile),
+      onDiffOpen((path) => showRequest({ kind: "worktree", path })),
+      onDiffRequest(showRequest),
       onDiffClose(closeWindow),
       onDiffFlush(async () => {
         await diffFlushed(await transition());
@@ -410,8 +515,14 @@
       try {
         stagingArea = effectiveStaging(await settingsGet());
         measuring = await perfEnabled();
-        current = await diffWindowPath();
-        await refreshFiles();
+        const initial = await diffWindowRequest();
+        if (initial?.kind === "revisions") {
+          revisions = { files: initial.files, title: initial.title };
+          current = openedOn(initial);
+        } else {
+          current = initial?.path ?? null;
+          await refreshFiles();
+        }
         await Promise.all(stops);
         await emitDiffReady();
       } catch (failure) {
@@ -466,15 +577,20 @@
       class="action"
       title="Compare Next File (⌃⇧→)"
       aria-label="Compare Next File"
-      disabled={position < 0 || position >= files.length - 1}
+      disabled={position < 0 || position >= entries.length - 1}
       onclick={() => step(1)}
     >
       <Icon name="right" />
     </button>
-    <button type="button" class="choice file" onclick={openFilesMenu} disabled={files.length === 0}>
-      <span class="path">{current ?? ""}</span>
+    <button
+      type="button"
+      class="choice file"
+      onclick={openFilesMenu}
+      disabled={entries.length === 0}
+    >
+      <span class="path">{entries[position]?.label ?? current ?? ""}</span>
       {#if position >= 0}
-        <span class="count">{position + 1}/{files.length}</span>
+        <span class="count">{position + 1}/{entries.length}</span>
       {/if}
       <Icon name="chevronDown" size={12} />
     </button>
@@ -556,7 +672,7 @@
       title="Show Combined Diff"
       aria-label="Show Combined Diff"
       aria-pressed={combined}
-      disabled={comparison === "three"}
+      disabled={comparison === "three" || revisions !== null}
       onclick={() => transition(() => setCombined(!combined))}
     >
       <Icon name="diff" />
@@ -591,6 +707,28 @@
           {/if}
         </section>
       {/each}
+    {:else if currentPair?.center}
+      {#key `${requestCount}/${current}`}
+        <RevisionsPreview pair={currentPair} place="Default" />
+      {/key}
+    {:else if currentPair}
+      {#key `${requestCount}/${current}`}
+        <FilePane
+          bind:this={single}
+          path={localPath(currentPair)}
+          pair={currentPair}
+          {version}
+          {options}
+          checkboxes={false}
+          included={false}
+          selection={[]}
+          lists={null}
+          onselection={() => {}}
+          onnotice={notify}
+          onwrap={setWrap}
+          ondrawn={measuring ? drawn : undefined}
+        />
+      {/key}
     {:else if current}
       {#key current}
         {@const path = current}

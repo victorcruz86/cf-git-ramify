@@ -135,7 +135,7 @@ fn first_parent(repo: &Path, hash: &str) -> Result<Option<String>, GitError> {
     }
 }
 
-fn parse_name_status(output: &[u8]) -> Vec<ChangedFile> {
+pub(crate) fn parse_name_status(output: &[u8]) -> Vec<ChangedFile> {
     let mut fields = output
         .split(|byte| *byte == 0)
         .map(|field| String::from_utf8_lossy(field).into_owned());
@@ -163,7 +163,11 @@ pub fn gitlink_side(hash: &str) -> Side {
     }
 }
 
-fn gitlink_at(repo: &Path, revision: &str, path: &str) -> Result<Option<String>, GitError> {
+pub(crate) fn gitlink_at(
+    repo: &Path,
+    revision: &str,
+    path: &str,
+) -> Result<Option<String>, GitError> {
     let args = git::exact(&["--literal-pathspecs", "ls-tree", "-z", revision, "--", path]);
     let listed = git::run(repo, &args)?;
     let head = listed
@@ -180,7 +184,7 @@ fn gitlink_at(repo: &Path, revision: &str, path: &str) -> Result<Option<String>,
 
 // If `path` exists on disk, git says "exists on disk, but not in"; any other failure is a
 // damaged or inaccessible object, not a missing file.
-fn is_absent(stderr: &str) -> bool {
+pub(crate) fn is_absent(stderr: &str) -> bool {
     ["does not exist in", "but not in", "Not a valid object name"]
         .iter()
         .any(|message| stderr.contains(message))

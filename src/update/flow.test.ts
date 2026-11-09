@@ -250,6 +250,27 @@ describe("the actions share a flow", () => {
     expect(titled("Updated branch:").body).toBe("other");
   });
 
+  // `GitBranchActionsUtil.updateBranches`: the other branches fetched first, the current one last
+  // through Update Project, and one notification for what was updated (`B:921`).
+  test("updating_several_branches_sends_one_notification_and_the_current_goes_last", async () => {
+    const order: string[] = [];
+    const backend = api({
+      updateBranch: vi.fn(async (name: string) => {
+        order.push(name);
+      }) as never,
+      update: vi.fn(async () => {
+        order.push("update project");
+        return result();
+      }) as never,
+    });
+
+    await flow(backend).updateBranches(["main", "other", "third"]);
+
+    expect(order).toEqual(["other", "third", "update project"]);
+    expect(titled("Updated branches:").body).toBe("other\nthird");
+    expect(get(notifications).filter(({ title }) => title.startsWith("Updated branch"))).toHaveLength(1);
+  });
+
   test("update_of_another_branch_that_fails_gives_update_failed", async () => {
     const backend = api({
       updateBranch: vi.fn(async () => {

@@ -48,6 +48,8 @@
     onback?: () => void;
     // `ActionSelectionAid.NUMBERING`: the rows carry a number, and that key chooses them.
     numbered?: boolean;
+    // The title of a titled `ListPopup`, shown above the rows.
+    title?: string;
   }
 
   let {
@@ -63,6 +65,7 @@
     focused = true,
     onback,
     numbered = false,
+    title,
   }: Props = $props();
 
   const MARGIN = 8;
@@ -209,6 +212,9 @@
   style:top="{top}px"
   onkeydown={keydown}
 >
+  {#if title}
+    <div class="title">{title}</div>
+  {/if}
   {#if query}
     <div class="query">{query}</div>
   {/if}
@@ -291,6 +297,15 @@
     border-radius: 8px;
     outline: none;
     box-shadow: 0 6px 24px rgb(0 0 0 / 40%);
+  }
+
+  .title {
+    padding: 2px 14px 6px;
+    margin-bottom: 4px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    border-bottom: 1px solid var(--menu-separator);
   }
 
   .query {

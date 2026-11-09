@@ -22,7 +22,12 @@ Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 
 function open(
   data: DiffData,
-  extra: { unified?: boolean; editable?: boolean; options?: EditorOptions } = {},
+  extra: {
+    unified?: boolean;
+    editable?: boolean;
+    options?: EditorOptions;
+    editSide?: "old" | "new";
+  } = {},
 ) {
   const handlers: Handlers = { ontoggle: vi.fn(), onedit: vi.fn(), onfocus: vi.fn() };
   const parent = document.body.appendChild(document.createElement("div"));
@@ -31,6 +36,7 @@ function open(
     data,
     draft: null,
     editable: extra.editable ?? true,
+    editSide: extra.editSide,
     unified: extra.unified ?? false,
     embedded: false,
     options: extra.options ?? OPTIONS,
@@ -182,6 +188,37 @@ test("the_unified_view_has_checkbox_and_number_on_the_old_lines", () => {
     "4",
     "5",
   ]);
+});
+
+test("the_unified_view_edits_a_left_master_side_with_the_right_lines_as_blocks", () => {
+  // `UnifiedDiffViewer` with `MASTER_SIDE = LEFT`: the left text is the document.
+  const { parent, handlers } = open(data("a\nb\nc\nd\n", "a\nz\nd\n", [hunk(1, 2, 1, 1)]), {
+    unified: true,
+    editSide: "old",
+  });
+  const contents = parent.querySelectorAll<HTMLElement>(".cm-content");
+  expect(contents).toHaveLength(1);
+  const view = EditorView.findFromDOM(contents[0]) as EditorView;
+
+  expect(view.state.readOnly).toBe(false);
+  expect(view.state.sliceDoc()).toBe("a\nb\nc\nd\n");
+  expect(lineTexts(parent, ".rm-old-line")).toEqual(["z"]);
+  expect(lineTexts(parent, ".rm-old-numbers .cm-gutterElement").slice(1)).toEqual([
+    "1",
+    "",
+    "",
+    "2",
+    "3",
+    "4",
+  ]);
+
+  view.dispatch({ changes: { from: 0, insert: "X" }, userEvent: "input.type" });
+
+  expect(editors?.dirty).toBe(true);
+  expect(editors?.content()).toBe("Xa\nb\nc\nd\n");
+  expect(handlers.onedit).toHaveBeenCalled();
+  editors?.markSaved(editors.snapshot());
+  expect(editors?.dirty).toBe(false);
 });
 
 test("reloading_the_file_keeps_the_editor_and_changes_the_hunks", () => {

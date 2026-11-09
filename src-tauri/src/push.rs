@@ -837,7 +837,6 @@ mod tests {
     use crate::task::Runner;
     use crate::test_support::{in_task, TempRepo};
     use std::os::unix::fs::PermissionsExt;
-    use std::process::Command;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
     use tempfile::TempDir;
@@ -855,7 +854,7 @@ mod tests {
 
     fn bare() -> TempDir {
         let dir = TempDir::new().unwrap();
-        let status = Command::new("git")
+        let status = crate::test_support::git_command()
             .args(["init", "-q", "--bare", "-b", "main"])
             .arg(dir.path())
             .status()
@@ -1009,7 +1008,7 @@ mod tests {
         }
 
         fn remote_hash(&self, reference: &str) -> String {
-            let output = Command::new("git")
+            let output = crate::test_support::git_command()
                 .arg("-C")
                 .arg(self.origin.path())
                 .args(["rev-parse", "--verify", "-q", reference])
@@ -2122,7 +2121,7 @@ mod tests {
         harness.repo.git(&["checkout", "-q", "main"]);
         harness.repo.commit("a.txt", b"main\n", "main");
         // `git log -c` only shows the merges that resolved a conflict.
-        let _ = Command::new("git")
+        let _ = crate::test_support::git_command()
             .arg("-C")
             .arg(harness.path())
             .args(["merge", "-q", "side"])

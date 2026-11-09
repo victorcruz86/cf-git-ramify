@@ -1572,7 +1572,7 @@ mod tests {
         repo.commit("f.txt", b"other\n", "other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("f.txt", b"main\n", "main");
-        let merge = Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "--no-edit", "other"])
             .output()
@@ -1841,7 +1841,7 @@ mod tests {
         write(&repo, "base", b"content\n");
         let blob = repo.git(&["hash-object", "-w", "base"]);
         let entry = format!("100644 {} 2\tf.txt\n", blob.trim());
-        let mut child = Command::new("git")
+        let mut child = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["update-index", "--index-info"])
             .stdin(std::process::Stdio::piped())
@@ -1856,7 +1856,7 @@ mod tests {
     }
 
     fn index_info(repo: &TempRepo, entries: &str) {
-        let mut child = Command::new("git")
+        let mut child = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["update-index", "--add", "--index-info"])
             .stdin(std::process::Stdio::piped())
@@ -2585,7 +2585,7 @@ mod tests {
         fs::remove_file(repo.path().join("content")).unwrap();
         let mut info = format!("100644,{},", blob.trim()).into_bytes();
         info.extend_from_slice(b"caf\xe9.txt");
-        let added = Command::new("git")
+        let added = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["update-index", "--add", "--cacheinfo"])
             .arg(OsStr::from_bytes(&info))
@@ -2905,7 +2905,7 @@ mod tests {
     }
 
     fn tree_entries(repo: &TempRepo) -> Vec<String> {
-        let output = Command::new("git")
+        let output = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["ls-tree", "-r", "-z", "--name-only", "HEAD"])
             .output()
@@ -3434,7 +3434,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         crash_after_unstaging(&repo, dir.path(), &request(&["a.txt"]));
         repo.git(&["checkout", "--", "b.txt", "a.txt"]);
-        let merge = Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "--no-edit", "other"])
             .output()
@@ -3763,7 +3763,7 @@ mod tests {
         repo.commit("f.txt", b"other\n", "other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("f.txt", b"main\n", "main");
-        let _ = Command::new("git")
+        let _ = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "--no-edit", "other"])
             .output()
@@ -4000,7 +4000,7 @@ mod tests {
         repo.commit("a.txt", b"other\n", "other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"main\n", "main");
-        let rebase = Command::new("git")
+        let rebase = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(args)
             .output()

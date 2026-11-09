@@ -6,8 +6,9 @@
   import { inGutter, loadWrap, softWrapItem, storeWrap, type DiffPlace } from "./options";
   import { createTextsView } from "./textsView";
 
-  // Two given texts, read only: the preview of a stash or shelf change and Apply Patch's
-  // `Show Difference`. The texts are untrusted and are only shown as text.
+  // Two given texts, read only: the preview of a stash or shelf change, Apply Patch's
+  // `Show Difference` and the blocks of Show History for Selection. The texts are untrusted and
+  // are only shown as text.
   interface Props {
     oldText: string;
     newText: string;
@@ -17,9 +18,11 @@
     // Whose `Soft-Wrap` it remembers: by default the place SavedPatchesDiffPreview uses,
     // `SavedPatchesUiPlace` (off by default); Apply Patch's `Show Difference` is `Default`.
     place?: DiffPlace;
+    // The lines (from 0) where the texts start in their files, for the line numbers.
+    starts?: [number, number];
   }
 
-  let { oldText, newText, path, titles, place = "SavedPatchesUiPlace" }: Props = $props();
+  let { oldText, newText, path, titles, place = "SavedPatchesUiPlace", starts }: Props = $props();
 
   const PLACE = untrack(() => place);
 
@@ -47,10 +50,17 @@
     menu = { x: event.clientX, y: event.clientY, items: [softWrapItem(wrap, toggleWrap)] };
   }
 
+  // What the view was built from: the same texts again (a parent that recomputes its props) keep
+  // the view, its scroll and its folds.
+  let built: string | null = null;
+
   $effect(() => {
-    const [before, after, file] = [oldText, newText, path];
+    const [before, after, file, from] = [oldText, newText, path, starts];
+    const identity = JSON.stringify([before, after, file, from ?? [0, 0]]);
+    if (view && identity === built) return;
+    built = identity;
     clearView();
-    view = createTextsView(host, before, after, file, wrap);
+    view = createTextsView(host, before, after, file, wrap, from);
   });
 
   onDestroy(clearView);

@@ -15,16 +15,19 @@ use tauri::{
 };
 
 use crate::askpass::{PromptKind, Server};
+use crate::block_history::{self, SELECTION_HISTORY_WINDOW};
 use crate::branch_info::BranchSync;
 use crate::changelists::{ChangelistError, Changelists};
 use crate::commit::{
     self, CommitError, CommitOptions, CommitRequest, CommitWarning, RecoveryReport,
 };
+use crate::compare::{self, DiffRequest};
 use crate::conflicts;
 use crate::console::{self, Console, ConsoleLine};
 use crate::diff::{self, ChangedFile, FileSides};
 use crate::editor::{self, Prompt};
 use crate::git::{self, GitError};
+use crate::history;
 use crate::hunks::{self, Hunk, HunkError, LineSelection};
 use crate::idea_import;
 use crate::log::commands::SharedLog;
@@ -40,6 +43,7 @@ use crate::staging;
 use crate::status::{self, FileChange};
 use crate::storage;
 use crate::task::{Runner, TaskId};
+use crate::viewer::{self, VIEWER_WINDOW};
 use crate::watch::{self, RepoChange, Watcher};
 use crate::worktree_diff::{self, Comparison, WorktreeSides};
 
@@ -169,6 +173,7 @@ pub(crate) fn failed(message: String) -> ApiError {
 
 const REPO_CHANGED_EVENT: &str = "repo-changed";
 const DIFF_OPEN_EVENT: &str = "diff-open";
+const DIFF_REQUEST_EVENT: &str = "diff-request";
 const DIFF_CLOSE_EVENT: &str = "diff-close";
 const DIFF_FLUSH_EVENT: &str = "diff-flush";
 const DIFF_FLUSH_WAIT: Duration = Duration::from_secs(10);
@@ -219,8 +224,23 @@ const ONGOING_MENU: [&str; 8] = [
     "Git.ResolveConflicts",
 ];
 
+// `Git.MainMenu.FileActions` (`Git > Current File`), the group of `Git.FileActions`: its title and
+// items follow the selection of the focused window, which sets them with `git_menu_current_file`.
+const FILE_GROUP: &str = "Git.MainMenu.FileActions";
+const FILE_MENU: [&str; 8] = [
+    "CheckinFiles",
+    "Git.Add",
+    "Annotate",
+    "Compare.SameVersion",
+    "Compare.Selected",
+    "Git.CompareWithBranch",
+    "Vcs.ShowTabbedFileHistory",
+    "Vcs.ShowHistoryForBlock",
+];
+
+// Without a selection every file action is off (`GitFileActionGroup` titles it `Current File`).
 fn starts_disabled(id: &str) -> bool {
-    ONGOING_MENU.contains(&id)
+    ONGOING_MENU.contains(&id) || FILE_MENU.contains(&id)
 }
 
 // What only applies with the repository in a normal state (`GitMerge.update`, `GitRebase.update`): it starts
@@ -228,8 +248,9 @@ fn starts_disabled(id: &str) -> bool {
 // starts enabled and is disabled while any fetch of the app runs (`GitFetch.update`).
 const NORMAL_MENU: [&str; 3] = ["Git.Merge", "Git.Rebase", "Git.Fetch"];
 
+// The file actions are not: `git_menu_current_file` sets them.
 fn driven_by_state(id: &str) -> bool {
-    starts_disabled(id) || NORMAL_MENU.contains(&id)
+    ONGOING_MENU.contains(&id) || NORMAL_MENU.contains(&id)
 }
 
 // The entries with an action, groups included and in order.
@@ -245,7 +266,7 @@ fn menu_items(entries: &[GitMenuEntry]) -> Vec<(&'static str, &'static str)> {
 }
 
 // `Git.MainMenu` of plugin.xml, in its order. What the app does not have yet comes in with its phase.
-const GIT_MENU: [GitMenuEntry; 28] = [
+const GIT_MENU: [GitMenuEntry; 30] = [
     Item("CheckinProject", "Commit…"),
     Item("Vcs.Push", "Push…"),
     Item("Vcs.UpdateProject", "Update Project…"),
@@ -271,6 +292,8 @@ const GIT_MENU: [GitMenuEntry; 28] = [
     Item("Git.Tag", "New Tag…"),
     Item("Git.Reset", "Reset HEAD…"),
     Separator,
+    // `Vcs.Show.Log`: `Show {0} Log` with the name of the VCS.
+    Item("Vcs.Show.Log", "Show Git Log"),
     // `Patch.MainMenu`.
     Group(
         PATCH_GROUP,
@@ -297,6 +320,26 @@ const GIT_MENU: [GitMenuEntry; 28] = [
             Item("Git.Unstash", "Unstash Changes…"),
             // `action.ChangesView.Revert.text`.
             Item("ChangesView.Revert", "Rollback..."),
+        ],
+    ),
+    // `Git.MainMenu.FileActions` = `Git.FileActions`, with the texts of a selected file; the focused
+    // window gives the ones of its selection.
+    Group(
+        FILE_GROUP,
+        "Current File",
+        &[
+            Item("CheckinFiles", "Commit File…"),
+            Item("Git.Add", "Add"),
+            Separator,
+            Item("Annotate", "Annotate with Git Blame"),
+            Item(
+                "Compare.SameVersion",
+                "Compare with the Same Repository Version",
+            ),
+            Item("Compare.Selected", "Compare with Revision..."),
+            Item("Git.CompareWithBranch", "Compare with Branch…"),
+            Item("Vcs.ShowTabbedFileHistory", "Show History"),
+            Item("Vcs.ShowHistoryForBlock", "Show History for Selection…"),
         ],
     ),
     Separator,
@@ -342,7 +385,16 @@ fn close_event_of(label: &str) -> &'static str {
     }
 }
 
+// The viewer and the selection history have nothing to save: they close at once.
 pub fn request_close(app: &AppHandle, label: &str) {
+    if label == VIEWER_WINDOW {
+        viewer::close(app);
+        return;
+    }
+    if label == SELECTION_HISTORY_WINDOW {
+        block_history::close(app);
+        return;
+    }
     let _ = app.emit_to(label, close_event_of(label), ());
 }
 
@@ -754,9 +806,9 @@ pub struct AppState {
     // Dropping it stops watching the previous repository.
     pub watcher: Mutex<Option<Watcher>>,
     pub branch_sync: BranchSync,
-    // The file the diff window must show. It does not go in the URL: a reused window is not
+    // What the diff window must show. It does not go in the URL: a reused window is not
     // loaded again.
-    pub diff_path: Mutex<Option<String>>,
+    pub diff_request: Mutex<Option<DiffRequest>>,
     // Whoever waits for the diff window to save what was written.
     pub diff_flush: Mutex<VecDeque<Sender<bool>>>,
     // What the merge window shows, while it is open.
@@ -783,7 +835,7 @@ impl Default for AppState {
             log: SharedLog::default(),
             watcher: Mutex::default(),
             branch_sync: BranchSync::default(),
-            diff_path: Mutex::default(),
+            diff_request: Mutex::default(),
             diff_flush: Mutex::default(),
             merge_session: Mutex::default(),
             activation: Mutex::default(),
@@ -1057,7 +1109,7 @@ pub fn quit(app: AppHandle) {
 
 pub fn close_main(app: AppHandle) {
     leave(app, CLOSE_ACTION, false, |app| {
-        for label in [DIFF_WINDOW, MERGE_WINDOW, MAIN_WINDOW] {
+        for label in [DIFF_WINDOW, MERGE_WINDOW, VIEWER_WINDOW, MAIN_WINDOW] {
             if let Some(window) = app.get_webview_window(label) {
                 let _ = window.hide();
             }
@@ -1267,10 +1319,80 @@ pub fn git_menu_enable(ids: Vec<String>, app: AppHandle) -> Result<(), ApiError>
     set_ongoing_enabled(items, &ids).map_err(|error| failed(error.to_string()))
 }
 
+// An entry of `Git > Current File` as the focused window computes it for its selection.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurrentFileItem {
+    id: String,
+    text: String,
+    enabled: bool,
+}
+
+// `GitFileActionGroup.update` and the update of each file action: the window that has the focus
+// says the title and its entries; an entry it does not name is off.
+#[tauri::command]
+pub fn git_menu_current_file(
+    title: String,
+    items: Vec<CurrentFileItem>,
+    app: AppHandle,
+) -> Result<(), ApiError> {
+    let set = || -> tauri::Result<()> {
+        let Some(menu) = app.menu() else {
+            return Ok(());
+        };
+        let Some(group) = find_submenu(menu.items()?, FILE_GROUP)? else {
+            return Ok(());
+        };
+        group.set_text(&title)?;
+        for kind in group.items()? {
+            if let MenuItemKind::MenuItem(item) = kind {
+                match items.iter().find(|wanted| wanted.id == item.id().0) {
+                    Some(wanted) => {
+                        item.set_text(&wanted.text)?;
+                        item.set_enabled(wanted.enabled)?;
+                    }
+                    None => item.set_enabled(false)?,
+                }
+            }
+        }
+        Ok(())
+    };
+    set().map_err(|error| failed(error.to_string()))
+}
+
+// The entries of `Current File` act on the selection of the focused window: the viewer's own file
+// when it has the focus. The rest always go to the main window.
+fn action_window(id: &str, viewer_focused: bool) -> &'static str {
+    if viewer_focused && FILE_MENU.contains(&id) {
+        VIEWER_WINDOW
+    } else {
+        MAIN_WINDOW
+    }
+}
+
 // It does not raise the window: the interface does that if the action is going to be handled, and a modal dialog or
 // the lack of a repository leave it as it was.
 pub fn git_menu_action(app: &AppHandle, id: &str) {
-    let _ = app.emit_to(MAIN_WINDOW, GIT_ACTION_EVENT, id);
+    let viewer_focused = app
+        .get_webview_window(VIEWER_WINDOW)
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false);
+    let _ = app.emit_to(action_window(id, viewer_focused), GIT_ACTION_EVENT, id);
+}
+
+const GIT_FILE_ACTION_EVENT: &str = "git-file-action";
+
+// A file action of the viewer's editor menu that the main window carries out (Commit File…, Add,
+// Rollback…, Resolve Conflicts…), with the files it applies to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitFileAction {
+    id: String,
+    paths: Vec<String>,
+}
+
+#[tauri::command]
+pub fn git_file_action(action: GitFileAction, app: AppHandle) -> Result<(), ApiError> {
+    app.emit_to(MAIN_WINDOW, GIT_FILE_ACTION_EVENT, action)
+        .map_err(|error| failed(error.to_string()))
 }
 
 #[tauri::command]
@@ -1314,6 +1436,8 @@ pub async fn repo_open(
     if let Some(window) = app_for_diff.get_webview_window(MERGE_WINDOW) {
         let _ = window.destroy();
     }
+    viewer::close(&app_for_diff);
+    block_history::close(&app_for_diff);
     Ok(info)
 }
 
@@ -1356,6 +1480,8 @@ fn clean_shelf(app: AppHandle, base: Option<PathBuf>, repo: PathBuf) {
     thread::spawn(move || {
         run_shelf_cleaner(receiver, SHELF_CLEANING_PERIOD, |dir| {
             let before = shelf::generation(dir);
+            // What the user moved into `shelf-restore/` comes back before the cleanup looks.
+            let _ = shelf::tab::restore_requested(dir, SystemTime::now());
             let _ = shelf::cleanup(dir, SystemTime::now());
             // What the Shelf tab shows changed: it reads the lists again.
             if shelf::generation(dir) != before {
@@ -1642,18 +1768,36 @@ pub async fn diff_window_open(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
+    diff_window_open_request(DiffRequest::Worktree { path }, app, state).await
+}
+
+// The same window, also for two revisions of one or more files (`compare::DiffRequest`).
+#[tauri::command]
+pub async fn diff_window_open_request(
+    request: DiffRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
     let repo = current_repo(&state)?;
-    let checked = path.clone();
-    blocking_api(move || Ok(worktree_diff::check_inside(&repo, &checked)?)).await?;
-    *state.diff_path.lock().unwrap() = Some(path.clone());
+    let checked = request.clone();
+    blocking_api(move || Ok(compare::check_request(&repo, &checked)?)).await?;
+    *state.diff_request.lock().unwrap() = Some(request.clone());
+    let title = match &request {
+        DiffRequest::Worktree { path } => path.clone(),
+        DiffRequest::Revisions { title, .. } => title.clone(),
+    };
+    let notify = |window: &WebviewWindow| match &request {
+        DiffRequest::Worktree { path } => window.emit_to(DIFF_WINDOW, DIFF_OPEN_EVENT, path),
+        DiffRequest::Revisions { .. } => window.emit_to(DIFF_WINDOW, DIFF_REQUEST_EVENT, &request),
+    };
     let opened = match app.get_webview_window(DIFF_WINDOW) {
         Some(window) => window
-            .set_title(&path)
+            .set_title(&title)
             .and_then(|()| reveal(&window))
-            .and_then(|()| window.emit_to(DIFF_WINDOW, DIFF_OPEN_EVENT, &path)),
+            .and_then(|()| notify(&window)),
         None => {
             WebviewWindowBuilder::new(&app, DIFF_WINDOW, WebviewUrl::App(DIFF_WINDOW_URL.into()))
-                .title(&path)
+                .title(&title)
                 .inner_size(1200.0, 800.0)
                 .visible(false)
                 .background_color(tauri::webview::Color(0x1e, 0x1f, 0x22, 0xff))
@@ -1664,9 +1808,18 @@ pub async fn diff_window_open(
     opened.map_err(|error| failed(error.to_string()))
 }
 
+// The file of a working-tree request; `None` with two revisions.
 #[tauri::command]
 pub fn diff_window_path(state: State<'_, AppState>) -> Option<String> {
-    state.diff_path.lock().unwrap().clone()
+    match state.diff_request.lock().unwrap().as_ref() {
+        Some(DiffRequest::Worktree { path }) => Some(path.clone()),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+pub fn diff_window_request(state: State<'_, AppState>) -> Option<DiffRequest> {
+    state.diff_request.lock().unwrap().clone()
 }
 
 // `multiple.file.merge.request.title`, with the full path as `presentableUrl`.
@@ -2515,7 +2668,8 @@ pub async fn repo_has_commit_hooks(state: State<'_, AppState>) -> Result<bool, A
 
 // The whole message of HEAD, for the Amend checkbox.
 pub fn last_message(repo: &Path) -> Result<String, GitError> {
-    let output = git::run(repo, &["log", "-1", "--format=%B"])?;
+    let [no, signatures] = history::NO_SIGNATURES;
+    let output = git::run(repo, &[no, signatures, "log", "-1", "--format=%B"])?;
     Ok(String::from_utf8_lossy(&output).trim_end().to_string())
 }
 
@@ -2566,7 +2720,6 @@ mod tests {
     use crate::test_support::{in_task, TempRepo};
     use std::ffi::{OsStr, OsString};
     use std::os::unix::ffi::OsStrExt;
-    use std::process::Command;
     use std::sync::mpsc;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -2719,6 +2872,19 @@ mod tests {
     fn last_commit_message_whole() {
         let repo = TempRepo::new();
         repo.commit("a.txt", b"one\n", "subject\n\nbody");
+
+        assert_eq!(last_message(repo.path()).unwrap(), "subject\n\nbody");
+    }
+
+    // With signed commits and `log.showSignature` on, the signature check stays out of the message.
+    #[test]
+    fn last_commit_message_without_the_signature_check() {
+        let repo = TempRepo::new();
+        repo.sign_commits();
+        repo.commit("a.txt", b"one\n", "subject\n\nbody");
+        assert!(repo
+            .git(&["log", "-1", "--format=%B"])
+            .contains("No signature"));
 
         assert_eq!(last_message(repo.path()).unwrap(), "subject\n\nbody");
     }
@@ -2912,7 +3078,7 @@ mod tests {
         fs::write(repo.path().join("a.txt"), "local\n").unwrap();
         repo.git(&["stash", "save", "-q", "stashed"]);
         repo.commit("a.txt", b"other\n", "two");
-        let popped = Command::new("git")
+        let popped = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["stash", "pop"])
             .output()
@@ -2935,7 +3101,7 @@ mod tests {
         repo.commit("a.txt", b"side\n", "side");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"main\n", "main");
-        let merged = Command::new("git")
+        let merged = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "side"])
             .output()
@@ -2971,7 +3137,12 @@ mod tests {
     // so as not to continue if it could not be saved.
     #[test]
     fn whatever_touches_the_repository_saves_the_diff_window_first() {
-        let source = [include_str!("commands.rs"), include_str!("vcs_commands.rs")].concat();
+        let source = [
+            include_str!("commands.rs"),
+            include_str!("vcs_commands.rs"),
+            include_str!("get_version.rs"),
+        ]
+        .concat();
         for name in [
             "rollback_files",
             "lines_rollback",
@@ -3006,6 +3177,8 @@ mod tests {
             "shelf_import_idea",
             "shelf_import_to_shelf",
             "shelf_patch_create",
+            "revision_get_check",
+            "revision_get",
         ] {
             let start = source.find(&format!("pub async fn {name}(")).unwrap();
             let mut lines = source[start..].lines();
@@ -3869,7 +4042,7 @@ mod tests {
         )
         .unwrap();
 
-        let blob = std::process::Command::new("git")
+        let blob = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["cat-file", "blob", "HEAD:a.txt"])
             .output()
@@ -4053,7 +4226,7 @@ mod tests {
     }
 
     fn blob_at_head(repo: &TempRepo, path: &str) -> Vec<u8> {
-        std::process::Command::new("git")
+        crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["cat-file", "blob", &format!("HEAD:{path}")])
             .output()
@@ -4215,7 +4388,7 @@ mod tests {
         repo.commit("a.txt", b"1\nOTHER\n3\n", "other");
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", b"1\nMAIN\n3\n", "main");
-        let merge = std::process::Command::new("git")
+        let merge = crate::test_support::git_command()
             .current_dir(repo.path())
             .args(["merge", "other"])
             .output()
@@ -4562,6 +4735,7 @@ mod tests {
                 "New Branch…",
                 "New Tag…",
                 "Reset HEAD…",
+                "Show Git Log",
                 "Create Patch from Local Changes...",
                 "Apply Patch...",
                 "Apply Patch from Clipboard...",
@@ -4571,6 +4745,14 @@ mod tests {
                 "Stash Changes…",
                 "Unstash Changes…",
                 "Rollback...",
+                "Commit File…",
+                "Add",
+                "Annotate with Git Blame",
+                "Compare with the Same Repository Version",
+                "Compare with Revision...",
+                "Compare with Branch…",
+                "Show History",
+                "Show History for Selection…",
                 "Manage Remotes…",
                 "Clone…",
                 "Create Git Repository…",
@@ -4626,9 +4808,62 @@ mod tests {
                         "Rollback..."
                     ]
                 ),
+                (
+                    FILE_GROUP,
+                    "Current File",
+                    vec![
+                        "Commit File…",
+                        "Add",
+                        "Annotate with Git Blame",
+                        "Compare with the Same Repository Version",
+                        "Compare with Revision...",
+                        "Compare with Branch…",
+                        "Show History",
+                        "Show History for Selection…"
+                    ]
+                ),
             ]
         );
         assert!(!starts_disabled(LOCAL_CHANGES_GROUP));
+    }
+
+    // `Git.MainMenu.FileActions` between Uncommitted Changes and Manage Remotes…: it is always there,
+    // its entries start off and only the focused window's selection turns them on, never the
+    // repository state; with the viewer focused they act on its file.
+    #[test]
+    fn the_current_file_actions_follow_the_focused_window() {
+        let position = |id: &str| {
+            GIT_MENU.iter().position(|entry| match entry {
+                Item(item, _) | Group(item, _, _) => *item == id,
+                Separator => false,
+            })
+        };
+        let file = position(FILE_GROUP).unwrap();
+        assert_eq!(position(LOCAL_CHANGES_GROUP), Some(file - 1));
+        assert!(matches!(GIT_MENU[file + 1], Separator));
+        assert_eq!(position("Git.Configure.Remotes"), Some(file + 2));
+        assert_eq!(
+            position("Vcs.Show.Log"),
+            Some(position(PATCH_GROUP).unwrap() - 1)
+        );
+        assert!(matches!(
+            GIT_MENU[position("Vcs.Show.Log").unwrap() - 1],
+            Separator
+        ));
+
+        assert!(!starts_disabled(FILE_GROUP));
+        for id in FILE_MENU {
+            assert!(is_git_menu_item(id), "{id}");
+            assert!(starts_disabled(id), "{id}");
+            assert!(!driven_by_state(id), "{id}");
+            assert_eq!(action_window(id, true), VIEWER_WINDOW, "{id}");
+            assert_eq!(action_window(id, false), MAIN_WINDOW, "{id}");
+        }
+        assert!(!is_git_menu_item(FILE_GROUP));
+        assert!(is_git_menu_item("Vcs.Show.Log"));
+        assert!(!starts_disabled("Vcs.Show.Log"));
+        assert_eq!(action_window("Vcs.Show.Log", true), MAIN_WINDOW);
+        assert_eq!(action_window("ChangesView.Revert", true), MAIN_WINDOW);
     }
 
     // `ChangesView.Shelve` is an executor action, hidden with the staging area like Create Patch;
@@ -4712,6 +4947,9 @@ mod tests {
     fn the_ongoing_actions_start_disabled() {
         let ongoing: Vec<&str> = ONGOING_MENU.to_vec();
         for (id, _) in git_menu_items() {
+            if FILE_MENU.contains(&id) {
+                continue;
+            }
             let abort_or_resume = id.ends_with(".Abort")
                 || id.starts_with("Git.Rebase.")
                 || id == "Git.ResolveConflicts";
@@ -4945,7 +5183,12 @@ mod tests {
         }
         granted.sort();
 
-        let all = vec!["diff".to_string(), "main".to_string(), "merge".to_string()];
+        let all = vec![
+            "diff".to_string(),
+            "main".to_string(),
+            "merge".to_string(),
+            "viewer".to_string(),
+        ];
         let main = vec!["main".to_string()];
         let sorted = |mut windows: Vec<String>| {
             windows.sort();
@@ -4959,6 +5202,11 @@ mod tests {
             granted,
             [
                 ("core:default".to_string(), all),
+                // The selection history only listens to its updates.
+                (
+                    "core:event:default".to_string(),
+                    vec!["selection-history".to_string()]
+                ),
                 ("dialog:allow-open".to_string(), main.clone()),
                 ("dialog:allow-save".to_string(), main),
             ]
@@ -5005,7 +5253,7 @@ mod tests {
         let repo = TempRepo::new();
         repo.commit("a.txt", b"base\n", "base");
         let git = |args: &[&str]| {
-            let status = Command::new("git")
+            let status = crate::test_support::git_command()
                 .args(args)
                 .current_dir(repo.path())
                 .output()

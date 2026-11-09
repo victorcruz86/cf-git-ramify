@@ -56,7 +56,8 @@ export function expandPaths(
   const known = new Set([...changed, ...unversioned]);
   const paths = request.paths.flatMap((root) => {
     if (known.has(root)) return [root];
-    const prefix = `${root.replace(/\/+$/, "")}/`;
+    // "" is the repository's own folder (the root of the Project tree): every change.
+    const prefix = root === "" ? "" : `${root.replace(/\/+$/, "")}/`;
     return changed.filter((path) => path.startsWith(prefix));
   });
   return { ...request, paths: [...new Set(paths)] };

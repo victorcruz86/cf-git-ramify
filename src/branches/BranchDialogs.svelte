@@ -148,6 +148,7 @@
     rebaseConflicts: (saved) => operation.resolveStoppedRebase(saved),
     restored,
     updateBranch: update.updateBranch,
+    updateBranches: update.updateBranches,
     pushBranch: pushing.pushBranch,
     pushUpTo: pushing.pushUpTo,
   });

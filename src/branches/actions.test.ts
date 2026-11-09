@@ -627,7 +627,7 @@ describe("delete", () => {
 
     expect(dialogs.asked[0]).toMatchObject({
       kind: "deleteRemote",
-      branch: "origin/x",
+      branches: ["origin/x"],
       tracking: ["x"],
     });
     expect(backend.deleteRemote).toHaveBeenCalledWith("origin/x", true);
@@ -635,6 +635,39 @@ describe("delete", () => {
       title: "Deleted remote branch origin/x",
       body: "Also deleted local branch: b",
     });
+  });
+
+  // `GitDeleteRemoteBranchOperation.execute`: the trackers of all of them, one question
+  // (`B:1253-1257`), then each deletion; a branch only takes its own trackers with it.
+  test("deleting_several_remote_branches_asks_once", async () => {
+    const backend = api({
+      trackers: vi.fn(async (branch: string) => (branch === "origin/x" ? ["x"] : [])) as never,
+    });
+    const dialogs = ui({ deleteRemote: { alsoLocal: true } });
+
+    await branchActions(dialogs, backend).run({ kind: "deleteRemotes", names: ["origin/x", "origin/y"] });
+
+    expect(dialogs.asked).toEqual([
+      { kind: "deleteRemote", branches: ["origin/x", "origin/y"], tracking: ["x"] },
+    ]);
+    expect(vi.mocked(backend.deleteRemote).mock.calls).toEqual([
+      ["origin/x", true],
+      ["origin/y", false],
+    ]);
+    expect(shown().map(({ title }) => title)).toEqual([
+      "Deleted remote branch origin/x",
+      "Deleted remote branch origin/y",
+    ]);
+  });
+
+  test("updating_several_branches_goes_to_the_update_flow_at_once", async () => {
+    const updateBranches = vi.fn(async () => {});
+    await branchActions(ui({}, { updateBranches }), api()).run({
+      kind: "updateBranches",
+      names: ["main", "side"],
+    });
+
+    expect(updateBranches).toHaveBeenCalledWith(["main", "side"]);
   });
 
   test("cancelling_the_remote_does_not_delete", async () => {

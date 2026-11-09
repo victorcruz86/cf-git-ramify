@@ -891,6 +891,8 @@ mod rewrite {
     use super::*;
     use rama_lib::preserve::RestoreOutcome;
     use rama_lib::rewrite::{self, Rewritten};
+    use rama_lib::settings::{self, CleanTree};
+    use rama_lib::shelf;
 
     // `base`, `A`, `B`, `C` and `D`, each with its own file. Returns their hashes.
     fn five() -> (Scratch, Vec<String>) {
@@ -924,6 +926,31 @@ mod rewrite {
     ) -> Result<Rewritten, GitError> {
         let expected = head(repo);
         in_repo(fixture, repo, move |repo| work(repo, &expected))
+            .recv_timeout(WAIT)
+            .expect("the task did not finish")
+    }
+
+    // As `rewrite_in`, with a data folder the test keeps: the clean-tree setting and the shelf live
+    // there.
+    fn rewrite_with_data(
+        fixture: &Fixture,
+        repo: &Scratch,
+        data: &Path,
+        work: impl FnOnce(&Repo, &str) -> Result<Rewritten, GitError> + Send + 'static,
+    ) -> Result<Rewritten, GitError> {
+        let expected = head(repo);
+        let (path, data) = (repo.path().to_path_buf(), data.to_path_buf());
+        fixture
+            .in_task(repo.path(), move |ctx| {
+                work(
+                    &Repo {
+                        ctx,
+                        path: &path,
+                        data: &data,
+                    },
+                    &expected,
+                )
+            })
             .recv_timeout(WAIT)
             .expect("the task did not finish")
     }
@@ -1069,16 +1096,22 @@ mod rewrite {
         assert!(!repo.in_git_dir("rebase-merge"));
     }
 
-    #[test]
-    fn local_changes_are_saved_and_restored() {
-        let fixture = Fixture::new(true);
+    // A Drop with local changes, saved the way `Clean working tree using:` says: they come back
+    // after the rebase. Returns the repository after a second Drop, of the commit that created
+    // `B.txt`, with `B.txt` changed again: the saved change no longer has its file.
+    fn drop_twice_with_local_changes(
+        fixture: &Fixture,
+        data: &Path,
+        clean_tree: CleanTree,
+    ) -> (Scratch, Rewritten) {
+        settings::save_clean_tree(data, clean_tree).unwrap();
         let (repo, hashes) = five();
         fs::write(repo.path().join("B.txt"), "written by Devin\n").unwrap();
         repo.git(&["add", "B.txt"]);
         fs::write(repo.path().join("D.txt"), "halfway\n").unwrap();
         let dropped = vec![hashes[3].clone()];
 
-        let rewritten = rewrite_in(&fixture, &repo, move |repo, head| {
+        let rewritten = rewrite_with_data(fixture, &repo, data, move |repo, head| {
             rewrite::drop(repo, &dropped, head)
         })
         .unwrap();
@@ -1086,6 +1119,7 @@ mod rewrite {
         assert_eq!(rewritten.outcome, Rebase::Done);
         assert_eq!(repo.subjects(), ["D", "B", "A", "base"]);
         assert_eq!(rewritten.saved.len(), 1);
+        assert_eq!(rewritten.saved[0].saved.kind, clean_tree);
         assert_eq!(
             rewritten.saved[0].saved.message,
             "Uncommitted changes before rebase"
@@ -1101,23 +1135,84 @@ mod rewrite {
         );
         assert_eq!(stashes(&repo), 0);
 
-        // If restoring them clashes with what was rewritten, the entry stays in the stash.
         fs::write(repo.path().join("B.txt"), "again\n").unwrap();
         let b = repo.git(&["rev-parse", "HEAD~1"]).trim().to_string();
         let dropped = vec![b];
-        let rewritten = rewrite_in(&fixture, &repo, move |repo, head| {
+        let rewritten = rewrite_with_data(fixture, &repo, data, move |repo, head| {
             rewrite::drop(repo, &dropped, head)
         })
         .unwrap();
 
         assert_eq!(rewritten.outcome, Rebase::Done);
         assert_eq!(repo.subjects(), ["D", "A", "base"]);
+        assert_eq!(rewritten.saved.len(), 1);
+        nothing_asked(fixture);
+        (repo, rewritten)
+    }
+
+    // With the stash, restoring them clashes with what was rewritten: the entry stays in the stash.
+    #[test]
+    fn local_changes_are_saved_and_restored_with_the_stash() {
+        let fixture = Fixture::new(true);
+        let data = TempDir::new().unwrap();
+
+        let (repo, rewritten) =
+            drop_twice_with_local_changes(&fixture, data.path(), CleanTree::Stash);
+
         assert_eq!(rewritten.saved[0].restore, Some(RestoreOutcome::Conflicts));
         assert_eq!(stashes(&repo), 1);
         assert!(repo
             .git(&["stash", "list"])
             .contains("Uncommitted changes before rebase"));
-        nothing_asked(&fixture);
+        assert!(shelf::list(data.path()).is_empty());
+    }
+
+    // With the shelf, 241's default: `VcsShelveChangesSaver.load` unshelves what applies (`D.txt`)
+    // and the change of a file the rebase removed fails with `Cannot find file to patch: B.txt`
+    // (`PathsVerifier.fileNotFoundMessage`). The failed patch stays in its list
+    // (`ShelveChangesManager.unshelveChangeList` keeps `getFailedPatches`): nothing is lost.
+    #[test]
+    fn local_changes_are_saved_and_restored_with_the_shelf() {
+        let fixture = Fixture::new(true);
+        let data = TempDir::new().unwrap();
+
+        let (repo, rewritten) =
+            drop_twice_with_local_changes(&fixture, data.path(), CleanTree::Shelve);
+
+        assert_eq!(
+            rewritten.saved[0].restore,
+            Some(RestoreOutcome::Failed(
+                "Cannot find file to patch: B.txt".to_string()
+            ))
+        );
+        assert_eq!(stashes(&repo), 0);
+        assert!(!repo.path().join("B.txt").exists());
+        assert_eq!(
+            fs::read_to_string(repo.path().join("D.txt")).unwrap(),
+            "halfway\n"
+        );
+        let saved = &rewritten.saved[0].saved.lists[0];
+        let kept: Vec<_> = shelf::list(data.path())
+            .into_iter()
+            .filter(|list| list.name == saved.name && !list.recycled && !list.deleted)
+            .collect();
+        assert_eq!(
+            kept.len(),
+            1,
+            "the list with the failed change is not in the shelf"
+        );
+        // `VcsShelveChangesSaver.save`: the message and the changelist's name.
+        assert_eq!(
+            kept[0].description,
+            "Uncommitted changes before rebase [Changes]"
+        );
+        assert_eq!(kept[0].description, saved.description);
+        let patch = fs::read_to_string(&kept[0].patch).unwrap();
+        assert!(
+            patch.contains("B.txt") && patch.contains("+again"),
+            "{patch}"
+        );
+        assert!(!patch.contains("D.txt"), "{patch}");
     }
 
     #[test]

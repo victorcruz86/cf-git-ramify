@@ -63,6 +63,7 @@
     unreadableText,
   } from "./request";
   import { storedSignOff, storeSignOff } from "./options";
+  import { expandPaths } from "./dialog";
   import { groupStaging } from "./staging";
   import { partKey, partLists, pathOfKey, type TreeNode } from "./tree";
   import WarningsGate from "./WarningsGate.svelte";
@@ -291,8 +292,9 @@
     panel?.focusTree();
   }
 
-  export function rollback() {
-    panel?.requestRollback();
+  // Without paths, the Rollback of the selection; with them (the Git file menu), of their changes.
+  export function rollback(paths?: string[]) {
+    panel?.requestRollback(paths);
   }
 
   // After Shelve Changes from the dialog: the list it shelved from goes if it was left empty.
@@ -304,6 +306,12 @@
     if (!stagingArea) inclusion = activateInclusion(inclusion, activePaths(), unversionedPaths());
     problem = null;
     editor.focus();
+  }
+
+  // `Commit File…` of the Git file menu: a folder stands for the changes under it.
+  export function checkinFiles(paths: string[]) {
+    const request = { kind: "files" as const, paths, lists: [] };
+    commitFiles(expandPaths(request, activePaths(), panel?.unversionedPaths() ?? []).paths);
   }
 
   function commitFiles(paths: string[]) {

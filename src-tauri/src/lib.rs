@@ -1,18 +1,23 @@
 use tauri::{Manager, RunEvent, WindowEvent};
 
+pub mod annotate;
 pub mod apply_commits;
 pub mod askpass;
+pub mod block_history;
 pub mod branch_info;
 pub mod branches;
 pub mod changelists;
 pub mod commands;
 pub mod commit;
+pub mod compare;
 pub mod conflicts;
 pub mod console;
 pub mod diff;
 pub mod editor;
 pub mod fetch;
+pub mod get_version;
 pub mod git;
+pub mod history;
 pub mod hunks;
 pub mod idea_import;
 pub mod log;
@@ -40,8 +45,10 @@ pub mod task;
 #[cfg(test)]
 mod test_support;
 pub mod todo;
+pub mod tree;
 pub mod update;
 pub mod vcs_commands;
+pub mod viewer;
 pub mod watch;
 pub mod worktree_diff;
 
@@ -75,11 +82,29 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_version,
             commands::initial_repo,
+            viewer::initial_target,
+            viewer::viewer_open,
+            viewer::viewer_targets,
+            viewer::viewer_openable,
+            viewer::viewer_stamp,
+            viewer::viewer_content,
+            block_history::selection_history_open,
+            block_history::selection_history_target,
+            block_history::selection_history_start,
+            block_history::selection_history_close,
+            block_history::selection_history_show_affected,
+            annotate::annotate_start,
+            annotate::annotate_refresh,
+            annotate::annotation_show_in_log,
+            tree::tree_list,
+            tree::tree_list_at,
             commands::show_window,
             commands::hide_window,
             commands::repo_open,
             commands::repo_state,
             commands::git_menu_enable,
+            commands::git_menu_current_file,
+            commands::git_file_action,
             log::commands::log_open,
             log::commands::log_rows,
             log::commands::log_view_set,
@@ -89,6 +114,9 @@ pub fn run() {
             log::commands::log_users,
             log::commands::log_refs,
             log::commands::log_view_close,
+            log::commands::log_history_open,
+            log::commands::log_history_entries,
+            log::commands::log_history_change,
             log::commands::log_find_rows,
             log::commands::log_row_of,
             log::commands::log_adjacent_rows,
@@ -104,6 +132,8 @@ pub fn run() {
             log::commands::commit_changes_start,
             log::commands::log_recent_filters,
             log::commands::log_remember_filter,
+            log::commands::log_compared_branch,
+            log::commands::log_not_picked,
             vcs_commands::branch_checkout,
             vcs_commands::branch_checkout_remote,
             vcs_commands::branch_rebase_onto,
@@ -117,6 +147,7 @@ pub fn run() {
             vcs_commands::operation_abort,
             vcs_commands::conflicts_session,
             vcs_commands::conflict_sides,
+            vcs_commands::merge_range_commits,
             vcs_commands::conflicts_accept,
             vcs_commands::conflict_resolve,
             vcs_commands::stash_list,
@@ -221,6 +252,21 @@ pub fn run() {
             commands::file_write,
             commands::diff_window_open,
             commands::diff_window_path,
+            commands::diff_window_open_request,
+            commands::diff_window_request,
+            compare::compare_sides,
+            compare::compare_preview,
+            compare::compare_local_state,
+            compare::compare_last_revision,
+            compare::compare_resolve,
+            compare::compare_file_revisions,
+            compare::compare_changes_with,
+            compare::compare_changes_between,
+            compare::compare_changes_from_working_tree,
+            compare::compare_tags,
+            compare::compare_current_revision,
+            get_version::revision_get_check,
+            get_version::revision_get,
             commands::diff_flushed,
             commands::merge_window_open,
             commands::merge_window_open_contents,

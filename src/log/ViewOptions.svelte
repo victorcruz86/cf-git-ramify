@@ -20,20 +20,25 @@
     ["currentBranch", "Current Branch"],
   ];
 
+  // `Git.Log.DeepCompare` (B:557).
+  export const NOT_PICKED = "Not Cherry-Picked Commits";
+
   export interface ViewActions {
     onoptions: (change: Partial<LogOptions>) => void;
     onsort: (sort: SortType) => void;
     onlongedges: (show: boolean) => void;
     oncollapse: (collapsed: boolean) => void;
+    // `DeepCompareAction`: checked while a comparison runs or highlights. Only the logs that are a
+    // `MainVcsLogUi` (the Log's own tabs) have it.
+    notPicked?: { checked: boolean; toggle: () => void };
   }
 
-  // The order of `Vcs.Log.PresentationSettings`. `Root Names` has no effect with one repository and
-  // `Not Cherry-Picked Commits` belongs to phase 4.
+  // The order of `Vcs.Log.PresentationSettings`. `Root Names` has no effect with one repository.
   export function viewOptionItems(
     options: LogOptions,
     collapsible: boolean,
     empty: boolean,
-    { onoptions, onsort, onlongedges, oncollapse }: ViewActions,
+    { onoptions, onsort, onlongedges, oncollapse, notPicked }: ViewActions,
   ): MenuItem[] {
     const toggle = (label: string, key: "compactRefs" | "tagNames" | "preferCommitDate" | "refsOnLeft") => ({
       label,
@@ -69,6 +74,16 @@
         checked: options.highlights[key],
         run: () => onoptions({ highlights: { ...options.highlights, [key]: !options.highlights[key] } }),
       })),
+      // `X:328-331`: right after the `Highlight` section, before `Branches`.
+      ...(notPicked
+        ? [
+            {
+              label: NOT_PICKED,
+              checked: notPicked.checked,
+              run: notPicked.toggle,
+            },
+          ]
+        : []),
       { header: "Branches" },
       {
         label: "IntelliSort",

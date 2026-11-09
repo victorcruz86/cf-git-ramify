@@ -1,8 +1,10 @@
+pub mod cherry;
 pub mod collapse;
 pub mod commands;
 pub mod details;
 pub mod filter;
 pub mod graph;
+pub mod history_view;
 pub mod layout;
 pub mod linear_bek;
 pub mod options;

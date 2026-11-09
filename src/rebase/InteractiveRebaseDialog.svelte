@@ -483,6 +483,7 @@
           onoptions={(next) => (options = { ...options, ...next })}
           onselect={() => {}}
           onopen={() => {}}
+          modal
         />
       </div>
       <div class="details">

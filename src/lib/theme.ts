@@ -69,6 +69,13 @@ export const TOKENS = {
   "status-unversioned": "#D1675A",
   "status-conflict": "#D5756C",
   "status-ignored": "#848504",
+  // FILESTATUS_* of the 241 dark New UI scheme (`expUI_darkScheme.xml:55-74`): the Project tree.
+  "tree-status-added": "#73BD79",
+  "tree-status-modified": "#70AEFF",
+  "tree-status-deleted": "#6F737A",
+  "tree-status-unknown": "#E88F89",
+  "tree-status-ignored": "#D69A6B",
+  "tree-status-conflict": "#DE6A66",
   // Messages. Notification.ToolWindow.*
   "notice-info": GREEN[1],
   "notice-info-border": GREEN[2],

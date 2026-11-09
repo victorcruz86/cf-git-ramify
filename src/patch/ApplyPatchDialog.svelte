@@ -133,8 +133,9 @@
     try {
       const loaded = await services.load(source, mapping);
       if (destroyed || token !== request) return;
+      // A binary chosen with `Overwrite` is valid in the new plan, and stays included.
       plan = withOverwrites(loaded, overwriting);
-      included = fresh ? initialIncluded(loaded) : keptIncluded(loaded, included);
+      included = fresh ? initialIncluded(plan) : keptIncluded(plan, included);
       if (fresh && lists && !draftTouched && mode !== "unshelve") draft = initialList(loaded, lists, source);
       after?.(loaded);
     } catch (error) {

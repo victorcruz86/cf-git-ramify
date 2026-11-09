@@ -814,7 +814,7 @@ mod tests {
         harness.git(&["commit", "-qam", "ours"]);
         let patch_file = harness.data.path().join("x.patch");
         fs::write(&patch_file, patch).unwrap();
-        let output = std::process::Command::new("git")
+        let output = crate::test_support::git_command()
             .current_dir(harness.path())
             .args(["apply", "--3way"])
             .arg(&patch_file)

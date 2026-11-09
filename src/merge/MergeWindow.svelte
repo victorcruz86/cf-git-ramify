@@ -27,6 +27,7 @@
     type MergeContents,
     type MergeResult,
     type Settings,
+    type SideDetails,
     type Whitespace,
   } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
@@ -34,7 +35,8 @@
   import Icon from "../lib/Icon.svelte";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { taskResult, trackTasks } from "../lib/tasks";
-  import { MergeEditors } from "./editors";
+  import DetailsDialog from "./DetailsDialog.svelte";
+  import { MergeEditors, type TitleLink } from "./editors";
   import { normalized, statusText, unprocessedMessage, withSeparator } from "./model";
 
   // Ported from MergeRequestProcessor, MergeThreesideViewer.getResolveAction, MergeUtil and
@@ -63,6 +65,8 @@
   };
 
   const CONTINUE = "Continue Merge";
+  // `merge.dialog.customizer.show.details.link.label` (B:1292).
+  const SHOW_DETAILS = "Show Details";
   const WHITESPACE: { value: Whitespace; label: string }[] = [
     { value: "default", label: "Do not ignore" },
     { value: "trim", label: "Trim whitespaces" },
@@ -90,6 +94,8 @@
   // The contents mode of a patch conflict.
   let abortable = $state(false);
   let menu = $state.raw<{ x: number; y: number; label: string; items: MenuItem[] } | null>(null);
+  // The `Show Details` of a side, open.
+  let shownDetails = $state.raw<{ title: string; details: SideDetails } | null>(null);
   // `Soft-Wrap` of the place `Merge`. There is no gear here: the gutter menu is its only toggle.
   let wrap = loadWrap("Merge");
 
@@ -311,7 +317,7 @@
 
   // CTRL_ENTER goes to the default button, before the editor, which with ⌘⏎ would add a line.
   function keydown(event: KeyboardEvent) {
-    if (question || menu || !text) return;
+    if (question || menu || shownDetails || !text) return;
     const command = event.metaKey || event.ctrlKey;
     if (event.key === "Enter" && command && !event.shiftKey && !event.altKey) {
       event.preventDefault();
@@ -323,12 +329,21 @@
     }
   }
 
+  // `getTitleWithShowDetailsAction`: the link at the right of the left and the right title, when the
+  // operation gives that side's commits.
+  function detailsLinks(titles: [string, string, string]): (TitleLink | null)[] {
+    const [left, right] = sides?.details ?? [null, null];
+    const link = (title: string, details: SideDetails | null) =>
+      details ? { label: SHOW_DETAILS, run: () => (shownDetails = { title, details }) } : null;
+    return [link(titles[0], left), null, link(titles[2], right)];
+  }
+
   async function showEditors(blocks: MergeBlock[], titles: [string, string, string], file: string) {
     await tick();
     if (!host || !texts) return;
     editors = new MergeEditors(
       host,
-      { ...texts, blocks, titles, path: file, wrap },
+      { ...texts, blocks, titles, links: detailsLinks(titles), path: file, wrap },
       { onchange: changed, onallprocessed: () => (processed = true) },
     );
     autoApply();
@@ -475,8 +490,14 @@
     {:else if binary && sides}
       <div class="binary">
         {#each sides.titles as title, index (index)}
+          {@const link = detailsLinks(sides.titles)[index]}
           <section>
-            <header>{title}</header>
+            <header>
+              <span class="title-text">{title}</span>
+              {#if link}
+                <button type="button" class="link title-link" onclick={link.run}>{link.label}</button>
+              {/if}
+            </header>
           </section>
         {/each}
       </div>
@@ -528,6 +549,15 @@
     </div>
   {/if}
 </main>
+
+{#if shownDetails && sides}
+  <DetailsDialog
+    title={shownDetails.title}
+    details={shownDetails.details}
+    path={sides.path}
+    onclose={() => (shownDetails = null)}
+  />
+{/if}
 
 {#if question}
   {@const current = question}
@@ -694,6 +724,27 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .host :global(.rm-merge-title-text),
+  .title-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .host :global(.rm-merge-title-link),
+  .title-link {
+    flex: none;
+    margin-left: 8px;
+    padding: 0;
+    font: inherit;
+    color: var(--link);
+    white-space: nowrap;
+    cursor: pointer;
+    background: none;
+    border: 0;
   }
 
   .host :global(.rm-merge-title-gap) {

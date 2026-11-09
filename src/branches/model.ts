@@ -3,6 +3,7 @@ import type { MenuAction, MenuItem } from "../lib/menu";
 import { speedMatch, type SpeedMatch } from "../lib/speedSearch";
 import { shortHash } from "../log/draw";
 import {
+  comparisonItems,
   isProtected,
   truncated,
   type RefOperation,
@@ -311,7 +312,7 @@ const quoted = (name: string) => `'${truncated(name)}'`;
 // `branches.rebase.is.not.possible.in.the.detached.head.state`.
 const DETACHED = "Rebase is not possible in the detached HEAD state";
 
-// `GitBranchPopupActions`, group `Git.Branch`, without what arrives in phase 4 (Compare and Show Diff).
+// `GitBranchPopupActions`, group `Git.Branch` (`X:236-254`).
 export function branchActions(branch: BranchNode, state: BranchState): MenuItem[] {
   const { current, remotes, onvcs, protectedBranches = [], head = null } = state;
   const { name, section, tracked } = branch;
@@ -344,12 +345,23 @@ export function branchActions(branch: BranchNode, state: BranchState): MenuItem[
   const checkoutAndRebase = isCurrent
     ? []
     : [item(`Checkout and Rebase onto ${target}`, "checkoutAndRebase")];
+  // `getCurrentBranchFullPresentation` names a detached HEAD by its short hash; the range starts
+  // at `HEAD` then.
+  const comparisons = comparisonItems(name, {
+    start: current ?? "HEAD",
+    current: target,
+    currentName: current ?? (head ? shortHash(head) : "HEAD"),
+    compare: !isCurrent,
+    // Without commits HEAD has no hash (`repo_state` gives it empty).
+    fresh: head === "",
+  });
   if (remote) {
     return [
       item("Checkout", "checkout"),
       newBranch,
       ...checkoutAndRebase,
       SEPARATOR,
+      ...comparisons,
       ...withCurrent,
       item(`Pull into ${target} Using Merge`, "pullMerge"),
       item(`Pull into ${target} Using Rebase`, "pullRebase"),
@@ -363,6 +375,7 @@ export function branchActions(branch: BranchNode, state: BranchState): MenuItem[
     newBranch,
     ...checkoutAndRebase,
     SEPARATOR,
+    ...comparisons,
     ...withCurrent,
     ...(remotes ? [update] : []),
     item("Push…", "push"),

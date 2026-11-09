@@ -61,6 +61,7 @@
   import { latestOnly } from "./refresh";
   import { listSelections, liveLists, rollbackTargets } from "./request";
   import RollbackDialog from "./RollbackDialog.svelte";
+  import { ADD_FAILED, ADD_PROBLEMS, STAGE_COPY_SAVED } from "../files/addFiles";
   import SnapshotsDialog from "./SnapshotsDialog.svelte";
   import {
     comparisonOf,
@@ -88,8 +89,6 @@
   const GROUP_KEY = "commit.groupByDirectory";
   const NO_PATHS = new Set<string>();
   // `error.adding.files.notification.title` and `error.adding.files.prompt`.
-  const ADD_FAILED = "Failed to add files";
-  const ADD_PROBLEMS = "The following problems have occurred when adding the files:";
 
   interface Props {
     repo: RepoInfo;
@@ -274,8 +273,9 @@
   }
 
   // `ChangesView.Revert` from the Git menu: the Rollback of the selection, or of the active list.
-  export function requestRollback() {
-    openRollback();
+  // From the Git file menu, of the changes at or under its paths (`filterChangesUnderFiles`).
+  export function requestRollback(paths?: string[]) {
+    rollbackOf(paths);
   }
 
   export function focusTree() {
@@ -414,14 +414,35 @@
     }
   }
 
+  // Also an event handler: whatever it is given is not a list of paths.
   function openRollback() {
+    rollbackOf();
+  }
+
+  function rollbackOf(paths?: string[]) {
+    const under = (path: string) =>
+      paths?.some((root) => root === "" || path === root || path.startsWith(`${root}/`));
+    const chosen = paths
+      ? changes.filter((change) => under(change.path)).map((change) => change.path)
+      : selectedFiles.map((file) => file.path);
     if (stagingArea) {
-      revertOrUnstage();
+      // `ChangesView.Revert` with files: the Rollback Changes dialog, back to HEAD, whatever the
+      // staging tree has selected (G§0.1: without paths it is `Git.Stage.Revert`).
+      if (paths) openStagingRollback(chosen);
+      else revertOrUnstage();
       return;
     }
     if (!lists || !hasVersioned) return;
-    const chosen = selectedFiles.map((file) => file.path);
     dialog = { kind: "rollback", ...rollbackTargets(changes, lists, chosen) };
+  }
+
+  // With the staging area there are no lists: every change, the chosen ones checked, or all of
+  // them when none was chosen (`RollbackChangesDialog.rollbackChanges(project)`).
+  function openStagingRollback(chosen: string[]) {
+    const files = changes.filter((change) => change.state !== "untracked" && change.state !== "ignored");
+    if (files.length === 0) return;
+    const checked = chosen.length > 0 ? chosen : files.map((file) => file.path);
+    dialog = { kind: "rollback", files, checked };
   }
 
   // `Git.Stage.Revert`: no dialog, like IntelliJ, because a snapshot is always left.
@@ -646,7 +667,7 @@
   }
 
   function stagingCopy(snapshot: string) {
-    notify("info", "A snapshot was saved of what existed only in the stage.", {
+    notify("info", STAGE_COPY_SAVED, {
       label: "Restore",
       run: () => restore(snapshot),
     });

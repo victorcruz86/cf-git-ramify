@@ -87,7 +87,6 @@ mod tests {
     use crate::task::{Runner, TaskKind};
     use crate::test_support::TempRepo;
     use std::path::Path;
-    use std::process::Command;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
     use tempfile::TempDir;
@@ -104,7 +103,7 @@ mod tests {
 
     fn bare() -> TempDir {
         let dir = TempDir::new().unwrap();
-        let status = Command::new("git")
+        let status = crate::test_support::git_command()
             .args(["init", "-q", "--bare", "-b", "main"])
             .arg(dir.path())
             .status()
@@ -159,7 +158,7 @@ mod tests {
     }
 
     fn git_in(path: &Path, args: &[&str]) {
-        assert!(Command::new("git")
+        assert!(crate::test_support::git_command()
             .current_dir(path)
             .args(args)
             .status()
