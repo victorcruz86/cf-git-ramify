@@ -54,6 +54,8 @@
     sameSides,
     sideMessage,
     sideText,
+    submoduleLeftTitle,
+    submoduleRightTitle,
     unchangedText,
   } from "./sides";
 
@@ -144,12 +146,18 @@
       : null,
   );
   const oldTitle = $derived.by(() => {
+    if (sides?.submodule != null && (pair || !shownComparison)) {
+      return submoduleLeftTitle(pair ? pair.left.revision : sides.submodule);
+    }
     if (pair) return pair.left.title;
     const absent = sides?.old.kind === "absent";
     if (shownComparison === "local") return absent ? "No version in the stage" : "Staged";
     return absent ? "No previous version" : "HEAD";
   });
   const newTitle = $derived.by(() => {
+    if (sides?.submodule != null && (pair || !shownComparison)) {
+      return submoduleRightTitle(pair ? pair.right.revision : null);
+    }
     if (pair) return pair.right.title;
     if (sides?.new.kind === "absent") return "Deleted";
     if (shownComparison === "staged") return "Staged";

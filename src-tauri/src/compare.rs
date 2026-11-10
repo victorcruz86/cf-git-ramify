@@ -118,6 +118,8 @@ pub struct RevisionSides {
     pub new_preview: bool,
     // With a binary side: whether both sides have the same bytes (`DB:46-47`).
     pub identical: Option<bool>,
+    // A side is a submodule: the full hash of the parent's HEAD, empty without one.
+    pub submodule: Option<String>,
 }
 
 // `%B` is the whole message; `-z` ends each commit with a NUL, so no field needs escaping.
@@ -460,6 +462,8 @@ struct Read {
     preview: bool,
     // Of a binary side: the blob it is, or would be, so two binaries compare without their bytes.
     oid: Option<String>,
+    // The side is the commit of a submodule.
+    gitlink: bool,
 }
 
 impl Read {
@@ -469,6 +473,14 @@ impl Read {
             bytes: Vec::new(),
             preview: false,
             oid: None,
+            gitlink: false,
+        }
+    }
+
+    fn submodule(side: Side) -> Self {
+        Self {
+            gitlink: true,
+            ..Self::whole(side)
         }
     }
 
@@ -503,6 +515,7 @@ fn preview_of(bytes: &[u8]) -> Read {
         bytes: cut.to_vec(),
         preview: true,
         oid: None,
+        gitlink: false,
     }
 }
 
@@ -518,15 +531,17 @@ fn read_revision(repo: &Path, hash: &str, path: &str) -> Result<Read, GitError> 
     let object = format!("{hash}:{path}");
     match git::run(repo, &git::exact(&["cat-file", "-e", &object])) {
         Ok(_) => {}
+        // A revision whose object is missing stays git's error (`ls-tree` fails on it): read as
+        // an absent side, reverting its hunk against the local file would empty the file.
         Err(GitError::Failed { stderr, .. }) if stderr.is_empty() || diff::is_absent(&stderr) => {
             return Ok(match diff::gitlink_at(repo, hash, path)? {
-                Some(commit) => Read::whole(diff::gitlink_side(&commit)),
+                Some(commit) => Read::submodule(diff::gitlink_side(&commit)),
                 None => Read::whole(Side::Absent),
             })
         }
         Err(failure @ GitError::Failed { .. }) => {
             return match diff::gitlink_at(repo, hash, path)? {
-                Some(commit) => Ok(Read::whole(diff::gitlink_side(&commit))),
+                Some(commit) => Ok(Read::submodule(diff::gitlink_side(&commit))),
                 None => Err(failure),
             }
         }
@@ -545,6 +560,7 @@ fn read_revision(repo: &Path, hash: &str, path: &str) -> Result<Read, GitError> 
         bytes: content,
         preview: false,
         oid: None,
+        gitlink: false,
     })
 }
 
@@ -597,6 +613,7 @@ fn read_local(repo: &Path, path: &str) -> Result<LocalRead, HunkError> {
                 bytes: stored,
                 preview: false,
                 oid: None,
+                gitlink: false,
             },
         });
     }
@@ -619,8 +636,13 @@ fn read_local(repo: &Path, path: &str) -> Result<LocalRead, HunkError> {
         });
     }
     let (side, note) = worktree_diff::unsplit_side(repo, path)?;
+    let read = if hunks::stored_gitlink(repo, path)?.is_some() {
+        Read::submodule(side)
+    } else {
+        Read::whole(side)
+    };
     Ok(LocalRead {
-        read: Read::whole(side),
+        read,
         editable: false,
         note: note.map(str::to_string),
         hash: None,
@@ -657,6 +679,38 @@ pub fn check_pair(repo: &Path, pair: &RevisionPair) -> Result<(), HunkError> {
         return Err(GitError::Io("both sides are the local file".to_string()).into());
     }
     Ok(())
+}
+
+// The title the window gets: a request for one file that is a submodule ends with `(Submodule)`
+// (`GitB:1382`). With several files the title is the one of the list, not of a file. A side that
+// cannot be read (a revision whose object is missing) is not a submodule: the window always opens,
+// with the plain title, and the sides say what is there.
+pub fn window_title(repo: &Path, request: &DiffRequest) -> String {
+    let local_submodule = |path: &str| {
+        worktree_diff::submodule_of(repo, path).is_ok_and(|found| found.is_some())
+    };
+    match request {
+        DiffRequest::Worktree { path } if local_submodule(path) => diff::submodule_title(path),
+        DiffRequest::Worktree { path } => path.clone(),
+        DiffRequest::Revisions { files, title, .. } => {
+            let mut submodule = false;
+            if let [pair] = files.as_slice() {
+                for side in [&pair.left, &pair.right] {
+                    submodule |= match side.revision.as_deref() {
+                        Some(LOCAL) => local_submodule(&side.path),
+                        Some(hash) => diff::gitlink_at(repo, hash, &side.path)
+                            .is_ok_and(|found| found.is_some()),
+                        None => false,
+                    };
+                }
+            }
+            if submodule {
+                diff::submodule_title(title)
+            } else {
+                title.clone()
+            }
+        }
+    }
 }
 
 // What the diff window may be asked to show: paths inside the repository and at least one file.
@@ -728,6 +782,11 @@ pub fn sides(repo: &Path, left: &SideRef, right: &SideRef) -> Result<RevisionSid
     let editable = has_local && local.editable && !local.read.preview;
     let note = local.note.clone();
     let hash = if has_local { local.hash.clone() } else { None };
+    let submodule = if old.read.gitlink || new.read.gitlink {
+        Some(diff::head_hash(repo)?)
+    } else {
+        None
+    };
     Ok(RevisionSides {
         old: old.read.side,
         new: new.read.side,
@@ -739,6 +798,7 @@ pub fn sides(repo: &Path, left: &SideRef, right: &SideRef) -> Result<RevisionSid
         old_preview: old.read.preview,
         new_preview: new.read.preview,
         identical,
+        submodule,
     })
 }
 
@@ -910,6 +970,131 @@ mod tests {
             path: path.to_string(),
             title: hash.to_string(),
         }
+    }
+
+    #[test]
+    fn the_diff_title_ends_with_submodule_and_the_sides_are_full_hashes() {
+        let repo = TempRepo::new();
+        let first = repo.commit("a.txt", b"one", "first");
+        let submodule = repo.with_submodule("libs/lib");
+        let before = submodule.git(&["rev-parse", "HEAD"]).trim().to_string();
+        let parent = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        let after = submodule.commit("sub.txt", b"changed\n", "second in the submodule");
+        repo.git(&["add", "libs/lib"]);
+        repo.git(&["commit", "-q", "-m", "move the submodule"]);
+        let moved = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        let pair = |left: SideRef, right: SideRef| RevisionPair {
+            left,
+            right,
+            center: None,
+        };
+        let request = |files: Vec<RevisionPair>| DiffRequest::Revisions {
+            files,
+            title: "lib (/x/libs)".to_string(),
+            selected: None,
+        };
+
+        let in_log = request(vec![pair(at(&parent, "libs/lib"), at(&moved, "libs/lib"))]);
+        assert_eq!(
+            window_title(repo.path(), &in_log),
+            "lib (/x/libs) (Submodule)"
+        );
+        let found = sides(
+            repo.path(),
+            &at(&parent, "libs/lib"),
+            &at(&moved, "libs/lib"),
+        )
+        .unwrap();
+        assert_eq!(text(&found.old), before);
+        assert_eq!(text(&found.new), after);
+        assert_eq!(found.submodule.as_deref(), Some(moved.as_str()));
+
+        // The local side of a submodule is its checked-out HEAD, and the left title is the parent's.
+        let local_side = sides(repo.path(), &at(&moved, "libs/lib"), &local("libs/lib")).unwrap();
+        assert_eq!(text(&local_side.new), after);
+        assert!(local_side.submodule.is_some());
+        let with_local = request(vec![pair(at(&moved, "libs/lib"), local("libs/lib"))]);
+        assert!(window_title(repo.path(), &with_local).ends_with(" (Submodule)"));
+
+        let file = request(vec![pair(at(&first, "a.txt"), at(&moved, "a.txt"))]);
+        assert_eq!(window_title(repo.path(), &file), "lib (/x/libs)");
+        let many = request(vec![
+            pair(at(&parent, "libs/lib"), at(&moved, "libs/lib")),
+            pair(at(&first, "a.txt"), at(&moved, "a.txt")),
+        ]);
+        assert_eq!(window_title(repo.path(), &many), "lib (/x/libs)");
+        let worktree = DiffRequest::Worktree {
+            path: "libs/lib".to_string(),
+        };
+        assert_eq!(
+            window_title(repo.path(), &worktree),
+            "libs/lib (Submodule)"
+        );
+    }
+
+    #[test]
+    fn a_submodule_that_is_not_checked_out_gives_an_empty_local_side() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one", "first");
+        let head = "2222222222222222222222222222222222222222".to_string();
+        let gitlink = format!("160000,{head},sub");
+        repo.git(&["update-index", "--add", "--cacheinfo", &gitlink]);
+        repo.git(&["commit", "-q", "-m", "gitlink"]);
+        let moved = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        fs::create_dir(repo.path().join("sub")).unwrap();
+
+        let found = sides(repo.path(), &at(&moved, "sub"), &local("sub")).unwrap();
+
+        assert_eq!(text(&found.old), head);
+        assert_eq!(text(&found.new), "");
+    }
+
+    // The final review: a revision whose object is missing (pruned, or never fetched) does not keep
+    // the window from opening. The title is the plain one, and the sides are git's error (the next
+    // test).
+    #[test]
+    fn a_missing_revision_gives_the_plain_title() {
+        let repo = TempRepo::new();
+        let first = repo.commit("a.txt", b"one", "first");
+        let missing = "1234567890123456789012345678901234567890";
+        let request = DiffRequest::Revisions {
+            files: vec![RevisionPair {
+                left: at(missing, "a.txt"),
+                right: at(&first, "a.txt"),
+                center: None,
+            }],
+            title: "a.txt".to_string(),
+            selected: None,
+        };
+
+        assert!(check_request(repo.path(), &request).is_ok());
+        assert_eq!(window_title(repo.path(), &request), "a.txt");
+    }
+
+    // The re-review, Minor A: a missing revision is git's error, never an absent side. Against the
+    // local file, an absent left side would be one all-inserted hunk, and reverting it would empty
+    // the file. The window still opens, with the plain title, and shows the error.
+    #[test]
+    fn a_missing_revision_against_the_local_file_is_an_error_and_the_file_is_untouched() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one\n", "first");
+        fs::write(repo.path().join("a.txt"), b"mine\n").unwrap();
+        let missing = "1234567890123456789012345678901234567890";
+        let request = DiffRequest::Revisions {
+            files: vec![RevisionPair {
+                left: at(missing, "a.txt"),
+                right: local("a.txt"),
+                center: None,
+            }],
+            title: "a.txt".to_string(),
+            selected: None,
+        };
+
+        assert!(check_request(repo.path(), &request).is_ok());
+        assert_eq!(window_title(repo.path(), &request), "a.txt");
+        let error = sides(repo.path(), &at(missing, "a.txt"), &local("a.txt")).unwrap_err();
+        assert!(format!("{error:?}").contains("not a tree object"), "{error:?}");
+        assert_eq!(fs::read(repo.path().join("a.txt")).unwrap(), b"mine\n");
     }
 
     fn text(side: &Side) -> &str {

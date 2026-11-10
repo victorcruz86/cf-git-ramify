@@ -178,6 +178,7 @@ beforeEach(async () => {
     branches_containing: () => [],
     commit_changes_of: () => [],
     task_cancel: () => undefined,
+    log_signatures: () => nextTask++,
     // No GitHub repository answers.
     github_links: () => [],
   };
@@ -521,4 +522,36 @@ test("no_github_remote_hides_the_history_items", async () => {
   expect(within(menu).queryByRole("menuitem", { name: /^Open on GitHub/ })).toBeNull();
   const toolbar = screen.getByRole("toolbar", { name: "File History Toolbar" });
   expect(within(toolbar).queryByRole("button", { name: "Open on GitHub" })).toBeNull();
+});
+
+// `Vcs.FileHistory.PresentationSettings` has the same `Columns` group: `GPG Signature`, hidden by
+// default, after the others. The Log's own menu is `ViewOptions.test.ts`'s.
+test("the_column_is_hidden_by_default_and_toggles_in_both_columns_menus", async () => {
+  await panel();
+  await showHistory("src/a.txt");
+  const toolbar = await screen.findByRole("toolbar", { name: "File History Toolbar" });
+
+  const columns = async () => {
+    await fireEvent.click(within(toolbar).getByRole("button", { name: "View Options" }));
+    const menu = screen.getByRole("menu", { name: "View Options" });
+    await fireEvent.click(within(menu).getByRole("menuitem", { name: "Columns" }));
+    return screen.getByRole("menu", { name: "Columns" });
+  };
+  const items = (menu: HTMLElement) =>
+    within(menu)
+      .getAllByRole("menuitem")
+      .map((item) => [item.getAttribute("aria-label"), item.textContent?.includes("✓")]);
+
+  expect(items(await columns())).toEqual([
+    ["Author", true],
+    ["Date", true],
+    ["Hash", false],
+    ["GPG Signature", false],
+  ]);
+  await fireEvent.click(within(screen.getByRole("menu", { name: "Columns" })).getByRole("menuitem", { name: "GPG Signature" }));
+
+  await waitFor(() => expect(screen.queryByRole("menu", { name: "Columns" })).toBeNull());
+  expect(items(await columns()).at(-1)).toEqual(["GPG Signature", true]);
+  const saved = JSON.stringify(lastArgs("log_options_set").options);
+  expect(saved).toContain('"columns":["author","date","subject","signature"]');
 });

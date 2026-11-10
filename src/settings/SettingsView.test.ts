@@ -8,6 +8,7 @@ import { dismiss, notifications } from "../lib/notifications";
 import SettingsView from "./SettingsView.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
 
 const SETTINGS: Settings = {
   gitPath: null,
@@ -17,8 +18,6 @@ const SETTINGS: Settings = {
   warnLargeFiles: true,
   largeFilesLimitMb: 50,
   warnBadFileNames: true,
-  signCommits: false,
-  signingKey: null,
   useCredentialHelper: true,
   updateMethod: "merge",
   showUpdateDialog: true,
@@ -40,6 +39,8 @@ function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
   const all: Record<string, (args: never) => unknown> = {
     git_version: () => "2.38.0",
     github_accounts: () => [],
+    gpg_config: () => ({ sign: false, key: null, ssh: false }),
+    gpg_keys: () => [],
     settings_save: (args) => (args as unknown as { settings: Settings }).settings,
     ...commands,
   };
@@ -115,7 +116,6 @@ test("shows the values and the IntelliJ texts", async () => {
   expect(
     screen.getByText("This will disable changelists support. Only for non-modal commit interface."),
   ).toBeTruthy();
-  expect(screen.getByText("Commits signing with GPG key is not configured")).toBeTruthy();
   expect(await screen.findByText("Git version is 2.38.0")).toBeTruthy();
 });
 
@@ -294,24 +294,6 @@ test("Cancel does not save", async () => {
 
   expect(onclose).toHaveBeenCalled();
   expect(calls("settings_save")).toHaveLength(0);
-});
-
-test("the signing key is only edited with signing on and is saved", async () => {
-  mockCommands();
-  const onclose = open();
-
-  expect(screen.queryByRole("textbox", { name: "GPG key" })).toBeNull();
-  await fireEvent.click(checkbox("Sign commits with GPG key:"));
-  await fireEvent.input(screen.getByRole("textbox", { name: "GPG key" }), {
-    target: { value: "ABC123" },
-  });
-  expect(screen.getByText("Commits are signed with GPG key: ABC123")).toBeTruthy();
-  await fireEvent.click(ok());
-
-  await waitFor(() => expect(onclose).toHaveBeenCalled());
-  expect(calls("settings_save")[0][1]).toEqual({
-    settings: { ...SETTINGS, signCommits: true, signingKey: "ABC123" },
-  });
 });
 
 test("Test tries the typed path without saving it", async () => {
@@ -787,4 +769,14 @@ test("the_github_section_comes_after_the_git_sections_and_has_the_accounts_list"
   expect(headings[headings.length - 1]).toBe("GitHub");
   expect(headings.indexOf("GitHub")).toBeGreaterThan(headings.indexOf("Push"));
   expect(await screen.findByText(/No accounts added/)).toBeTruthy();
+});
+
+test("the_old_sign_commits_fields_are_gone", async () => {
+  mockCommands();
+  open();
+  expect(await screen.findByText("Commits signing with GPG key is not configured")).toBeTruthy();
+  expect(screen.queryByLabelText("Sign commits")).toBeNull();
+  expect(screen.queryByText("Signing key")).toBeNull();
+  expect(screen.queryByLabelText(/Signing key/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Configure GPG Key…" })).toBeTruthy();
 });

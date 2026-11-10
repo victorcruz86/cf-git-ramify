@@ -120,8 +120,12 @@ pub fn in_task_as<T: Send + 'static>(
     receive.recv_timeout(Duration::from_secs(60)).unwrap()
 }
 
+// `_dir` is the temporary folder it owns and `root` its work tree. They are the same folder for a
+// repository of its own; a linked worktree lives in a folder inside `_dir`, and a submodule lives
+// inside its parent while `_dir` holds its bare remote.
 pub struct TempRepo {
-    dir: TempDir,
+    _dir: TempDir,
+    root: PathBuf,
 }
 
 impl TempRepo {
@@ -135,16 +139,89 @@ impl TempRepo {
     }
 
     fn init(dir: TempDir) -> Self {
-        let repo = Self { dir };
+        let root = dir.path().to_path_buf();
+        let repo = Self { _dir: dir, root };
         repo.git(&["init", "-q", "-b", "main"]);
-        repo.git(&["config", "user.name", "Test"]);
-        repo.git(&["config", "user.email", "test@example.com"]);
-        repo.git(&["config", "commit.gpgsign", "false"]);
+        repo.configure();
         repo
     }
 
+    fn configure(&self) {
+        self.git(&["config", "user.name", "Test"]);
+        self.git(&["config", "user.email", "test@example.com"]);
+        self.git(&["config", "commit.gpgsign", "false"]);
+    }
+
     pub fn path(&self) -> &Path {
-        self.dir.path()
+        &self.root
+    }
+
+    // A linked worktree of this repository, from `git worktree add`, at `<temporary folder>/<name>`
+    // and on a new branch `<name>` that starts at HEAD. It shares this repository's config.
+    pub fn worktree(&self, name: &str) -> TempRepo {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join(name);
+        self.git(&["worktree", "add", "-q", "-b", name, &root.to_string_lossy()]);
+        TempRepo { _dir: dir, root }
+    }
+
+    // A submodule at `path` (relative to this work tree), added and committed here. Its remote
+    // is a local bare repository with one commit (`sub.txt`), which the returned repository
+    // keeps alive. git refuses local submodule URLs unless `protocol.file.allow` says so: only the
+    // tests do that.
+    pub fn with_submodule(&self, path: &str) -> TempRepo {
+        let seed = TempRepo::new();
+        seed.commit("sub.txt", b"sub\n", "first in the submodule");
+        let bare = TempDir::new().unwrap();
+        let status = git_command()
+            .args(["clone", "-q", "--bare"])
+            .arg(seed.path())
+            .arg(bare.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let url = bare.path().to_string_lossy();
+        self.git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            &url,
+            path,
+        ]);
+        self.git(&["commit", "-q", "-m", &format!("add submodule {path}")]);
+        let submodule = TempRepo {
+            _dir: bare,
+            root: self.path().join(path),
+        };
+        submodule.configure();
+        submodule
+    }
+
+    // A repository of its own at `path`, added here as a gitlink with no entry in `.gitmodules`
+    // (a cloned folder added with `git add`), and committed.
+    pub fn orphan_gitlink(&self, path: &str) {
+        let folder = self.path().join(path);
+        fs::create_dir_all(&folder).unwrap();
+        let inner = TempRepo {
+            _dir: TempDir::new().unwrap(),
+            root: folder,
+        };
+        inner.git(&["init", "-q", "-b", "main"]);
+        inner.configure();
+        inner.git(&["commit", "-q", "--allow-empty", "-m", "inside"]);
+        self.git(&["add", path]);
+        self.git(&["commit", "-q", "-m", &format!("add the gitlink {path}")]);
+    }
+
+    // Whether `name` exists in this work tree's git folder, wherever git keeps it.
+    pub fn in_git_dir(&self, name: &str) -> bool {
+        let git_dir = self.git(&["rev-parse", "--git-dir"]);
+        self.path()
+            .join(git_dir.strip_suffix('\n').unwrap_or(&git_dir))
+            .join(name)
+            .exists()
     }
 
     pub fn commit(&self, file: &str, contents: &[u8], message: &str) -> String {
@@ -323,7 +400,7 @@ impl RepoHarness {
     }
 
     pub fn in_git_dir(&self, name: &str) -> bool {
-        self.path().join(".git").join(name).exists()
+        self.repo.in_git_dir(name)
     }
 
     pub fn ran(&self, command: &str) -> bool {

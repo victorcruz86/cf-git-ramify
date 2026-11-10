@@ -9,6 +9,7 @@ import { trackTasks } from "../lib/tasks";
 import { favorites } from "../branches/state";
 import { drawRows } from "./draw";
 import LogPanel from "./LogPanel.svelte";
+import { defaultOptions, historyOptions } from "./options";
 
 // `Git.Log.DeepCompare` (B:557).
 const NOT_PICKED = "Not Cherry-Picked Commits";
@@ -22,7 +23,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("./draw", async (original) => ({
   ...(await original<typeof import("./draw")>()),
   drawRows: vi.fn(),
-  columnWidths: () => ({ author: 150, date: 100, hash: 72 }),
+  columnWidths: () => ({ author: 150, date: 100, hash: 72, signature: 24 }),
 }));
 
 const HASH_A = "a".repeat(40);
@@ -177,6 +178,7 @@ beforeEach(async () => {
       return id;
     },
     task_cancel: () => undefined,
+    log_signatures: () => nextTask++,
   };
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -464,4 +466,38 @@ test("a_filter_change_while_the_toggle_checks_the_branch_is_seen", async () => {
   await screen.findByText(CANCELLED);
   expect(calls("log_not_picked")).toHaveLength(0);
   expect(await checked()).toBe(false);
+});
+
+// `GitCommitSignatureStatusProvider`: `GPG Signature` (`GitB:1084`) is hidden by default, and comes
+// after the other columns in `Columns` (`ToggleLogColumnsActionGroup`). The file history's own menu
+// is `HistoryTab.test.ts`'s.
+test("the_column_is_hidden_by_default_and_toggles_in_both_columns_menus", async () => {
+  expect(defaultOptions().columns).not.toContain("signature");
+  expect(defaultOptions(true).columns).not.toContain("signature");
+  expect(historyOptions().columns).not.toContain("signature");
+  await panel();
+
+  const columns = async () => {
+    await fireEvent.click(within(await viewOptions()).getByRole("menuitem", { name: "Columns" }));
+    return screen.getByRole("menu", { name: "Columns" });
+  };
+  const items = (menu: HTMLElement) =>
+    within(menu)
+      .getAllByRole("menuitem")
+      .map((item) => [item.getAttribute("aria-label"), item.textContent?.includes("✓")]);
+
+  expect(items(await columns())).toEqual([
+    ["Author", true],
+    ["Date", true],
+    ["Hash", false],
+    ["GPG Signature", false],
+  ]);
+  await fireEvent.click(within(screen.getByRole("menu", { name: "Columns" })).getByRole("menuitem", { name: "GPG Signature" }));
+
+  await waitFor(() => expect(calls("log_options_set").length).toBeGreaterThan(0));
+  const saved = JSON.stringify(calls("log_options_set").at(-1)?.[1]);
+  expect(saved).toContain('"columns":["subject","author","date","signature"]');
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  expect(vi.mocked(drawRows).mock.calls.at(-1)?.[0].options.columns).toContain("signature");
+  expect(items(await columns()).at(-1)).toEqual(["GPG Signature", true]);
 });

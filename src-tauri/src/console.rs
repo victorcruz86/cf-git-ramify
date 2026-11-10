@@ -32,8 +32,10 @@ const WRITING: [&str; 19] = [
     "update-index",
     "update-ref",
 ];
-// Read forms of a write command (`GitStashUtils` uses `STASH.readLockingCommand()`).
-const READING_FORMS: [(&str, &[&str]); 1] = [("stash", &["list", "show"])];
+// Read forms of a write command (`GitStashUtils` uses `STASH.readLockingCommand()`). `submodule
+// status` is the read rama runs after every Update (decision 7), which 241 does not run there.
+const READING_FORMS: [(&str, &[&str]); 2] =
+    [("stash", &["list", "show"]), ("submodule", &["status"])];
 // For these the normal output is shown, not just the errors (`setStdoutSuppressed(false)`).
 const SHOWING_STDOUT: [&str; 2] = ["rebase", "commit"];
 
@@ -333,6 +335,7 @@ mod tests {
             &["remote", "add", "o", "u"],
             &["stash", "list"],
             &["-c", "a=b", "stash", "show", "-p"],
+            &["submodule", "status", "--recursive"],
             &["rev-list", "--count", "HEAD"],
             &["-c", "a=b", "diff", "--stat"],
             &["ls-files"],

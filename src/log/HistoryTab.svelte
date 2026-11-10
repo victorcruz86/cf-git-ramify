@@ -29,6 +29,7 @@
   import { historyMenu, showDiffLabel, type HistoryCommit, type HistoryHandlers } from "./historyMenu";
   import LogView from "./LogView.svelte";
   import { toggleColumn, type LogColumn, type LogOptions, type Splits } from "./options";
+  import { SIGNATURE_COLUMN } from "./signatures";
   import type { HistoryTarget } from "./tabKinds";
 
   const MIN_SPLIT = 0.1;
@@ -36,6 +37,8 @@
     ["author", "Author"],
     ["date", "Date"],
     ["hash", "Hash"],
+    // `column.name.commit.signature` (`GitB:1084`): external-status columns come after the others.
+    ["signature", SIGNATURE_COLUMN],
   ];
   const LOCATIONS: [LogOptions["diffPreviewAt"], string][] = [
     ["bottom", "Bottom"],

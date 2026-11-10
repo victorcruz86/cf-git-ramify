@@ -1,4 +1,5 @@
-import type { FileSides, RevisionSides, Side, WorktreeSides } from "../lib/api";
+import { BASE_VERSION, YOUR_VERSION } from "../changes/tab";
+import { LOCAL_REVISION, type FileSides, type RevisionSides, type Side, type WorktreeSides } from "../lib/api";
 
 const BYTES_IN_MB = 1024 * 1024;
 
@@ -42,6 +43,18 @@ export function revisionsMessage(sides: RevisionSides): string | null {
   return sideMessage(sides.old) ?? sideMessage(sides.new);
 }
 
+// `GitSubmoduleDiffRequestProvider`: each side is titled by its revision number, which is the full
+// hash of the commit, and the default one when it has none (`ChangeDiffRequestProducer`). In Local
+// Changes the left side is the parent's HEAD, and the local side has no revision.
+export function submoduleTitle(revision: string | null, fallback: string): string {
+  return revision && revision !== LOCAL_REVISION ? revision : fallback;
+}
+
+export const submoduleLeftTitle = (revision: string | null) =>
+  submoduleTitle(revision, BASE_VERSION);
+export const submoduleRightTitle = (revision: string | null) =>
+  submoduleTitle(revision, YOUR_VERSION);
+
 export function sameSides(
   left: WorktreeSides | RevisionSides,
   right: WorktreeSides | RevisionSides,
@@ -50,6 +63,7 @@ export function sameSides(
     left.hash === right.hash &&
     left.editable === right.editable &&
     left.conflicted === right.conflicted &&
+    left.submodule === right.submodule &&
     sideText(left.old) === sideText(right.old) &&
     sideText(left.new) === sideText(right.new) &&
     left.old.kind === right.old.kind &&

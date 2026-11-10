@@ -76,6 +76,8 @@ const RESTORE_CONFLICTS =
 const RESTORE_BLOCKED =
   "These files changed on disk while your changes were saved. The version on disk must be committed or moved first.";
 const AFTER_ABORT = "The update was aborted.";
+// Decision 7: rama's own, as 241 only logs the failure of `GitSubmoduleUpdater`.
+const SUBMODULE_UPDATE_FAILED = "Submodule update failed";
 
 export type UpdateRequest =
   | { kind: "updateProject"; method: UpdateMethod; hidden: boolean }
@@ -421,6 +423,9 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
       });
     } else if (outcome.kind === "notReady" || outcome.kind === "error") {
       notify({ kind: "error", title: title ?? "Cannot update", body: outcome.reason });
+    }
+    if (update.submoduleError) {
+      notify({ kind: "error", title: SUBMODULE_UPDATE_FAILED, body: update.submoduleError });
     }
     if (saved && restore?.kind === "restoredWithoutIndex") {
       notify(restoredWithoutIndex(saved.message, null));

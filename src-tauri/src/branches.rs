@@ -1054,6 +1054,26 @@ mod tests {
         assert!(harness.ran("checkout other --"), "{:?}", harness.commands());
     }
 
+    // 241 has no worktree check (P§3.4): git refuses (`is already used by worktree at`, or `is
+    // already checked out at` in older gits), no checkout detector matches, and the error is the
+    // generic `Could not checkout {0}` (`GitB:1156`) with git's output, which the front end titles.
+    #[test]
+    fn checking_out_a_branch_used_by_another_worktree_shows_could_not_checkout_with_gits_error() {
+        let harness = two_branches();
+        let linked = harness.repo.worktree("linked");
+
+        let outcome = harness.run(|repo| checkout(repo, "linked", CheckoutMode::Plain));
+
+        let text = message(outcome.unwrap_err());
+        assert!(
+            text.starts_with("git checkout linked -- failed: fatal: 'linked' is already"),
+            "{text}"
+        );
+        assert!(text.contains(&linked.path().display().to_string()), "{text}");
+        assert_eq!(harness.current(), "main");
+        assert_eq!(harness.git(&["status", "--porcelain"]), "");
+    }
+
     // Two branches that collide on `a.txt`, with the merge stopped, resolved and staged.
     fn stopped_merge() -> Harness {
         let harness = two_branches();

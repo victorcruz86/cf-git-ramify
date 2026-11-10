@@ -29,8 +29,6 @@ const SETTINGS: Settings = {
   warnLargeFiles: true,
   largeFilesLimitMb: 50,
   warnBadFileNames: true,
-  signCommits: false,
-  signingKey: null,
   useCredentialHelper: true,
   updateMethod: "merge",
   showUpdateDialog: true,

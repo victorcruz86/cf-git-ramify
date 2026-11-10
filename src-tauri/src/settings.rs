@@ -57,8 +57,6 @@ pub struct Settings {
     pub large_files_limit_mb: u32,
     // `WARN_ABOUT_BAD_FILE_NAMES`.
     pub warn_bad_file_names: bool,
-    pub sign_commits: bool,
-    pub signing_key: Option<String>,
     // IntelliJ turns it off by default because it stores in Password Safe, although the user's
     // configuration has it on. Here the credentials stay in the system: without the helper, git
     // would ask for them on every command.
@@ -116,8 +114,6 @@ impl Default for Settings {
             warn_large_files: true,
             large_files_limit_mb: 50,
             warn_bad_file_names: true,
-            sign_commits: false,
-            signing_key: None,
             use_credential_helper: true,
             incoming_check: IncomingCheck::Auto,
             update_method: UpdateMethod::Merge,
@@ -251,7 +247,6 @@ impl Settings {
     fn normalized(self) -> Self {
         Self {
             git_path: filled(self.git_path),
-            signing_key: filled(self.signing_key),
             update_paths: clean_paths(self.update_paths),
             github_connection_timeout_ms: self
                 .github_connection_timeout_ms
@@ -543,7 +538,6 @@ mod tests {
         assert!(settings.warn_large_files);
         assert_eq!(settings.large_files_limit_mb, 50);
         assert!(settings.warn_bad_file_names);
-        assert!(!settings.sign_commits);
         assert!(settings.use_credential_helper);
         assert_eq!(settings.incoming_check, IncomingCheck::Auto);
         assert_eq!(settings.update_method, UpdateMethod::Merge);
@@ -553,7 +547,6 @@ mod tests {
         assert!(settings.preview_push_on_commit);
         assert!(!settings.preview_push_protected_only);
         assert_eq!(settings.git_path, None);
-        assert_eq!(settings.signing_key, None);
         // `TextDiffSettingsHolder`: `MERGE_AUTO_APPLY_NON_CONFLICTED_CHANGES = false` e
         // `IGNORE_POLICY = DEFAULT`.
         assert!(!settings.merge_auto_apply);
@@ -752,8 +745,6 @@ mod tests {
             warn_large_files: false,
             large_files_limit_mb: 7,
             warn_bad_file_names: false,
-            sign_commits: true,
-            signing_key: Some("ABC123".to_string()),
             use_credential_helper: false,
             incoming_check: IncomingCheck::Never,
             update_method: UpdateMethod::Rebase,
@@ -806,12 +797,34 @@ mod tests {
         assert!(settings.use_credential_helper);
     }
 
+    // Signing moved to the repository's git config (decision 1): the old app-wide fields are read
+    // as unknown ones and are gone from the file after the next save.
+    #[test]
+    fn an_old_settings_file_with_sign_commits_still_loads() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(FILE_NAME),
+            r#"{"stagingArea": true, "signCommits": true, "signingKey": "ABC123"}"#,
+        )
+        .unwrap();
+
+        let settings = load(dir.path());
+        assert!(settings.staging_area);
+        assert!(!dir.path().join(CORRUPT_FILE_NAME).exists());
+
+        save(dir.path(), &settings).unwrap();
+
+        let text = fs::read_to_string(dir.path().join(FILE_NAME)).unwrap();
+        assert!(!text.contains("signCommits"), "{text}");
+        assert!(!text.contains("signingKey"), "{text}");
+        assert_eq!(load(dir.path()), settings);
+    }
+
     #[test]
     fn blank_texts_count_as_no_value() {
         let dir = TempDir::new().unwrap();
         let settings = Settings {
             git_path: Some("  ".to_string()),
-            signing_key: Some(String::new()),
             ..Default::default()
         };
 
@@ -819,7 +832,6 @@ mod tests {
 
         let read = load(dir.path());
         assert_eq!(read.git_path, None);
-        assert_eq!(read.signing_key, None);
     }
 
     #[test]

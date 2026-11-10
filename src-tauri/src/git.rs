@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -6,6 +7,8 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{OnceLock, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
+
+use crate::gpg;
 
 const FALLBACK_BINARIES: [&str; 2] = ["/opt/homebrew/bin/git", "/usr/bin/git"];
 const READ_BUFFER_BYTES: usize = 64 * 1024;
@@ -190,6 +193,35 @@ pub fn git_path(repo: &Path, name: &str) -> Result<PathBuf, GitError> {
     Ok(repo.join(path.trim_end_matches('\n')))
 }
 
+// The work tree's own git folder and the common one, canonical (FSEvents reports canonical paths).
+// They are the same folder in a normal clone and in a submodule; in a linked worktree the first is
+// `<common>/worktrees/<name>`. `--git-common-dir` is relative to the current folder: older gits
+// have no `--path-format=absolute`, so it is resolved against `repo`, as in `git_path`.
+pub fn git_dirs(repo: &Path) -> Result<(PathBuf, PathBuf), GitError> {
+    let read = |flag: &str| -> Result<PathBuf, GitError> {
+        let output = run(repo, &["rev-parse", flag])?;
+        let path = String::from_utf8(output)
+            .map_err(|_| GitError::Io("Invalid output from git rev-parse".to_string()))?;
+        let path = path.strip_suffix('\n').unwrap_or(&path);
+        repo.join(path)
+            .canonicalize()
+            .map_err(|error| GitError::Io(format!("Cannot read the git folder {path}: {error}")))
+    };
+    Ok((read("--absolute-git-dir")?, read("--git-common-dir")?))
+}
+
+// The work-tree folders of every worktree of the repository, the main one included, as
+// `git worktree list --porcelain` prints them (one `worktree <path>` line each). `-z` is not used:
+// older gits do not have it.
+pub fn worktree_paths(binary: &Path, repo: &Path) -> Result<Vec<PathBuf>, GitError> {
+    let output = run_with_binary(binary, repo, &["worktree", "list", "--porcelain"])?;
+    Ok(String::from_utf8_lossy(&output)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .collect())
+}
+
 // Direct target of HEAD, only if it is exactly `ref: refs/heads/<branch>` and an optional final
 // line. `symbolic-ref` is not used: it follows the chain, and a branch with `ref: <something>`
 // inside exists even if that target does not (`--no-recurse` is not in git 2.38).
@@ -303,10 +335,30 @@ pub(crate) fn command(binary: &Path, repo: &Path, args: &[&str]) -> Result<Comma
         .env("GIT_OPTIONAL_LOCKS", "0")
         // `GitCommand.IJ_HANDLER_MARKER_ENV`: lets the user's hooks tell that the IDE runs git.
         .env("INTELLIJ_GIT_EXECUTABLE", "true");
+    if let Some(path) = with_gpg_folders(env::var_os("PATH")) {
+        command.env("PATH", path);
+    }
     // The tests' git does not read the machine's configuration; the app's does.
     #[cfg(test)]
     crate::test_support::isolate(&mut command);
     Ok(command)
+}
+
+// Decision 3: git runs gpg by the child's `PATH`, and opened from Finder the app's is
+// `/usr/bin:/bin:/usr/sbin:/sbin`. `None`: nothing to change, including when there is no `PATH`,
+// where the child keeps the system's default search.
+fn with_gpg_folders(path: Option<OsString>) -> Option<OsString> {
+    let mut folders: Vec<PathBuf> = env::split_paths(&path?).collect();
+    let missing: Vec<PathBuf> = gpg::FOLDERS
+        .iter()
+        .map(PathBuf::from)
+        .filter(|folder| !folders.contains(folder))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    folders.extend(missing);
+    env::join_paths(folders).ok()
 }
 
 pub(crate) fn check_status(
@@ -420,6 +472,32 @@ mod tests {
         let repo = TempRepo::new();
         let output = run(repo.path(), &["-c", "alias.x=!echo $INTELLIJ_GIT_EXECUTABLE", "x"]).unwrap();
         assert_eq!(output, b"true\n");
+    }
+
+    #[test]
+    fn git_children_get_the_gpg_folders_on_their_path() {
+        let repo = TempRepo::new();
+        let output = run(repo.path(), &["-c", "alias.x=!printf %s \"$PATH\"", "x"]).unwrap();
+        let folders: Vec<PathBuf> =
+            env::split_paths(std::str::from_utf8(&output).unwrap()).collect();
+        for folder in crate::gpg::FOLDERS {
+            assert!(folders.contains(&PathBuf::from(folder)), "{folder} in {folders:?}");
+        }
+
+        // Appended in their order and only when missing; the rest stays as it was.
+        let path = |text: &str| Some(OsString::from(text));
+        assert_eq!(
+            with_gpg_folders(path("/usr/bin:/usr/local/bin/:/bin")),
+            path("/usr/bin:/usr/local/bin/:/bin:/opt/homebrew/bin:/usr/local/MacGPG2/bin")
+        );
+        assert_eq!(
+            with_gpg_folders(path("/usr/bin:/bin:/usr/sbin:/sbin")),
+            path("/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/local/MacGPG2/bin")
+        );
+        let complete = "/usr/local/MacGPG2/bin:/opt/homebrew/bin:/usr/local/bin";
+        assert_eq!(with_gpg_folders(path(complete)), None);
+        // Without a `PATH`, the child keeps the system's default search.
+        assert_eq!(with_gpg_folders(None), None);
     }
 
     #[test]
@@ -784,6 +862,111 @@ mod tests {
             fs::write(repo.path().join(".git/refs/heads/new"), contents).unwrap();
             assert!(head_exists(&linked).is_err(), "{contents:?}");
         }
+    }
+
+    fn canonical(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap()
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = crate::test_support::git_command()
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}");
+    }
+
+    // `<holder>/<main>` with one commit and its linked worktree `<holder>/<linked>`, on `wt`.
+    fn main_and_worktree(holder: &Path, main: &str, linked: &str) -> (PathBuf, PathBuf) {
+        let (main, linked) = (holder.join(main), holder.join(linked));
+        fs::create_dir(&main).unwrap();
+        git_in(&main, &["init", "-q", "-b", "main"]);
+        git_in(
+            &main,
+            &["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"],
+        );
+        git_in(&main, &["worktree", "add", "-q", "-b", "wt", linked.to_str().unwrap()]);
+        (main, linked)
+    }
+
+    #[test]
+    fn the_git_folders_of_a_normal_clone_are_both_its_dot_git() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"1", "one");
+        fs::create_dir(repo.path().join("src")).unwrap();
+        let dot_git = canonical(&repo.path().join(".git"));
+
+        assert_eq!(git_dirs(repo.path()), Ok((dot_git.clone(), dot_git.clone())));
+        assert_eq!(
+            git_dirs(&repo.path().join("src")),
+            Ok((dot_git.clone(), dot_git))
+        );
+    }
+
+    // `gitdir:` absolute (as `git worktree add` writes it) or relative, in folders with spaces.
+    #[test]
+    fn the_git_folders_of_a_linked_worktree_are_its_own_and_the_common_one() {
+        let holder = TempDir::new().unwrap();
+        let (main, linked) = main_and_worktree(holder.path(), "main repo", "linked tree");
+        let common = canonical(&main.join(".git"));
+        // git turns the space of the folder's name into `-` for the worktree's own folder.
+        let own = common.join("worktrees").join("linked-tree");
+
+        assert_eq!(git_dirs(&linked), Ok((own.clone(), common.clone())));
+
+        let relative = "gitdir: ../main repo/.git/worktrees/linked-tree\n";
+        fs::write(linked.join(".git"), relative).unwrap();
+        assert_eq!(git_dirs(&linked), Ok((own, common)));
+    }
+
+    #[test]
+    fn the_git_folders_of_a_submodule_are_both_its_modules_folder() {
+        let parent = TempRepo::new();
+        parent.commit("a.txt", b"1", "one");
+        let submodule = parent.with_submodule("libs/sub");
+        let modules = canonical(&parent.path().join(".git/modules/libs/sub"));
+
+        assert_eq!(git_dirs(submodule.path()), Ok((modules.clone(), modules)));
+    }
+
+    #[test]
+    fn the_git_folders_of_a_submodule_inside_a_worktree_are_in_the_worktrees_folder() {
+        let main = TempRepo::new();
+        main.commit("a.txt", b"1", "one");
+        let linked = main.worktree("wt");
+        let submodule = linked.with_submodule("sub");
+        let modules = canonical(&main.path().join(".git/worktrees/wt/modules/sub"));
+
+        assert_eq!(git_dirs(submodule.path()), Ok((modules.clone(), modules)));
+    }
+
+    // The main repository was moved: the worktree's `gitdir:` points nowhere. git says `not a git
+    // repository`, which rama shows as it shows it for any folder (`<path> is not a Git
+    // repository`); nothing panics and no watcher starts.
+    #[test]
+    fn a_worktree_with_a_broken_gitdir_fails_to_open_as_not_a_repository() {
+        let holder = TempDir::new().unwrap();
+        let (main, linked) = main_and_worktree(holder.path(), "main", "wt");
+        fs::rename(&main, holder.path().join("moved")).unwrap();
+        let raw = crate::test_support::git_command()
+            .current_dir(&linked)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap();
+        assert!(!raw.status.success());
+        assert!(String::from_utf8_lossy(&raw.stderr).contains("not a git repository"));
+        let refused = GitError::NotARepository {
+            path: linked.display().to_string(),
+        };
+
+        assert_eq!(git_dirs(&linked), Err(refused.clone()));
+        let opened = crate::commands::repo_info(&linked).map(|info| info.path);
+        assert_eq!(opened, Err(refused.clone()));
+        assert_eq!(
+            crate::commands::ApiError::from(refused).message,
+            format!("{} is not a Git repository", linked.display())
+        );
     }
 
     #[test]

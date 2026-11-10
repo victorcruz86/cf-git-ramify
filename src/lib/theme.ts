@@ -123,6 +123,10 @@ export const TOKENS = {
   // VersionControl.Log.Commit.currentBranchBackground and unmatchedForeground.
   "log-current-branch": "#1c2433",
   "log-merge": GREY[7],
+  // The `GPG Signature` icons, rama's own drawings (decision 6): a green badge for a verified
+  // signature, an amber one for the other signed states.
+  "signature-verified": GREEN[5],
+  "signature-signed": YELLOW[7],
 };
 
 export function applyTheme(root: HTMLElement): void {

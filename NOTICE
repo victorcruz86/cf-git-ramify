@@ -8,10 +8,18 @@ Origin
 ------
 
   Project:   IntelliJ IDEA Community Edition (JetBrains/intellij-community)
-  Tag:       idea/232.10072.27 (build IC-232.10072.27, version 2023.2.3)
+  Tag:       idea/241.14494.240 (build IC-241.14494.240, version 2024.1)
   Copyright: JetBrains s.r.o. and contributors. The year of each original file appears in its
              header, at that tag.
   License:   Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+
+The blocks below that state no tag of their own, from "Ported code: src-tauri/src/log/" to
+"Ported code: HEAD, staged and local in three panes", and the test data of
+src-tauri/src/log/testdata/, were written in phases 1 to 3 by reading the tag idea/232.10072.27
+(build IC-232.10072.27, version 2023.2.3), the reference until phase 4 moved it to 2024.1; an
+entry there that names another tag was read at that one.
+docs/reports/phase-4-reference-change.md compares the two tags for those features. Every later
+block names the tag it was read at.
 
 Changes
 -------
@@ -1186,6 +1194,110 @@ Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
   src/shell/toolWindows.ts (Pull Requests)
                                           plugins/github: GHPRToolWindowFactory,
                                           github-core-config.xml (the tool window)
+
+Ported code: commit signing and Configure GPG Key
+-------------------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/gpg.rs                    git4idea: config/gpg/GitGpgConfigUtils
+                                          (readGitGpgConfig, readAvailableSecretKeys,
+                                          parseSecretKeys, checkKeyCapabilities,
+                                          writeGitGpgConfig), GitConfigUtil (getValue,
+                                          setValue), GitImpl (runBundledCommand); platform/util:
+                                          StringUtil (unescapeAnsiStringCharacters)
+  src/settings/GpgKeyRow.svelte           git4idea: config/gpg/GpgSignConfigurableRow,
+                                          GitVcsPanel (the Commit group); GitBundle (texts)
+  src/settings/GpgKeyDialog.svelte        git4idea: config/gpg/GitGpgConfigDialog (initComboBox,
+                                          the key renderer), GitGpgConfigUtils; GitBundle
+                                          (texts)
+  src-tauri/src/commit.rs (signing by git from its config)
+                                          git4idea: checkin/GitRepositoryCommitter (no -S; the
+                                          gpg failure)
+
+Ported code: the GPG Signature column and the signature in the details
+----------------------------------------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/log/signatures.rs         git4idea: log/GitCommitSignatureLoaderBase (the git
+                                          log command, the %G? states),
+                                          GitCommitSignatureLoaderSharedCache,
+                                          SimpleGitCommitSignatureLoader; platform/vcs-log:
+                                          VcsLogExternalStatusColumnService,
+                                          VcsLogCommitSelectionListenerForDetails (one loader
+                                          per table and per panel)
+  src/log/signatures.ts                   git4idea: log/GitCommitSignatureStatusProvider
+                                          (GitCommitSignatureStatusPresentation: the texts and
+                                          the description), GitCommitSignatureLoaderBase;
+                                          platform/vcs-log: VcsLogExternalStatusColumnService,
+                                          CachingVcsCommitsDataLoader; GitBundle (texts)
+  src/log/draw.ts, src/log/LogView.svelte (the signature cell)
+                                          platform/vcs-log: VcsCommitExternalStatusProvider,
+                                          VcsLogIconCellRenderer; git4idea:
+                                          GitCommitSignatureStatusProvider
+  src/log/options.ts, src/log/ViewOptions.svelte, src/log/HistoryTab.svelte (GPG Signature)
+                                          platform/vcs-log: ToggleLogColumnsActionGroup;
+                                          git4idea: GitCommitSignatureStatusProvider; GitBundle
+                                          (texts)
+  src/log/DetailsPanel.svelte (the signature line)
+                                          platform/vcs-log: CommitDetailsPanel,
+                                          VcsLogCommitSelectionListenerForDetails
+
+The two signature icons, src/lib/icons/signatureVerified.svg and
+src/lib/icons/signatureSigned.svg, are rama's own drawings, not 241's.
+
+Ported code: the submodule update after Update Project
+------------------------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/submodules.rs             git4idea: update/GitSubmoduleUpdater (the command),
+                                          GitUpdateProcess (the submodules in detached HEAD),
+                                          GitUpdater (update)
+  src-tauri/src/update.rs (with_submodules)
+                                          git4idea: update/GitUpdateProcess (defineUpdaters: the
+                                          submodules after the repository's own update)
+  src/update/flow.ts (Submodule update failed)
+                                          git4idea: update/GitSubmoduleUpdater (the failure);
+                                          the title is rama's own
+
+Which submodules are moved, and the check that no submodule HEAD that nothing else keeps is
+moved, are rama's own (docs/reports/phase-4-validation.md, part 6, section 2).
+
+Ported code: submodule diffs
+----------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/diff.rs, src-tauri/src/worktree_diff.rs (gitlinks)
+                                          git4idea: diff/GitSubmoduleContentRevision,
+                                          GitContentRevision (createRevision),
+                                          index/GitIndexUtil (the ls-tree hash),
+                                          GitRevisionNumber (asString)
+  src-tauri/src/compare.rs (window_title)
+                                          git4idea: diff/GitSubmoduleDiffRequestProvider;
+                                          platform/diff-impl: DiffRequestFactoryImpl (getTitle);
+                                          GitBundle (texts)
+  src/diff/sides.ts, src/diff/FilePane.svelte (the side titles)
+                                          git4idea: diff/GitSubmoduleDiffRequestProvider;
+                                          platform/vcs-impl: ChangeDiffRequestProducer
+                                          (getRevisionTitle); DiffBundle (texts)
+
+Ported code: linked worktrees and submodules as repositories
+------------------------------------------------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/watch.rs                  git4idea: repo/GitRepositoryFiles (createInstance: the
+                                          files of the worktree git folder and of the main one;
+                                          getRootDirs), repo/GitRepositoryUpdater (the recursive
+                                          roots and the events)
+  src-tauri/src/git.rs (git_dirs)         git4idea: GitUtil (findGitDir),
+                                          repo/GitRepositoryFiles (commondir)
+
+rama asks git for both folders (git rev-parse --absolute-git-dir and --git-common-dir) instead
+of reading the .git file and commondir as 241 does.
 
 Test data: src-tauri/src/log/testdata/
 --------------------------------------

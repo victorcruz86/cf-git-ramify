@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 
 use serde::Serialize;
@@ -165,11 +166,45 @@ pub(crate) fn parse_name_status(output: &[u8]) -> Vec<ChangedFile> {
     files
 }
 
-// How `git diff` shows a submodule: its commit is not in this repository.
+// A submodule is its commit hash as text, the pseudo-content of `GitSubmoduleContentRevision`.
 pub fn gitlink_side(hash: &str) -> Side {
     Side::Text {
-        content: format!("Subproject commit {hash}\n"),
+        content: hash.to_string(),
     }
+}
+
+// The commit checked out in the submodule at `path` (`submodule.currentRevision`), as a side.
+// A folder that is not a repository of its own (a submodule not checked out is an empty folder)
+// gives an empty side: running git there would read the parent's HEAD.
+pub fn submodule_head(repo: &Path, path: &str) -> Result<Side, GitError> {
+    let folder = repo.join(path);
+    if fs::symlink_metadata(folder.join(".git")).is_err() {
+        return Ok(gitlink_side(""));
+    }
+    match git::run(&folder, &["rev-parse", "--verify", "-q", "HEAD^{commit}"]) {
+        Ok(output) => {
+            let hash = String::from_utf8_lossy(&output).trim().to_string();
+            check_hash(&hash)?;
+            Ok(gitlink_side(&hash))
+        }
+        Err(GitError::Failed { .. }) => Ok(gitlink_side("")),
+        Err(error) => Err(error),
+    }
+}
+
+// The full hash of the parent's HEAD, the left title of a submodule in Local Changes
+// (`GitRevisionNumber.asString()`); empty without a commit, which makes the title the default.
+pub fn head_hash(repo: &Path) -> Result<String, GitError> {
+    match git::run(repo, &["rev-parse", "--verify", "-q", "HEAD^{commit}"]) {
+        Ok(output) => Ok(String::from_utf8_lossy(&output).trim().to_string()),
+        Err(GitError::Failed { .. }) => Ok(String::new()),
+        Err(error) => Err(error),
+    }
+}
+
+// `GitB:1382`; the window title of a submodule, after the title of the file.
+pub fn submodule_title(title: &str) -> String {
+    format!("{title} (Submodule)")
 }
 
 pub(crate) fn gitlink_at(
@@ -406,11 +441,57 @@ mod tests {
 
         let sides = file_sides(repo.path(), &hash, "sub", None).unwrap();
 
-        assert_eq!(
-            side_text(&sides.new),
-            format!("Subproject commit {target}\n")
-        );
+        assert_eq!(side_text(&sides.new), target);
         assert_eq!(sides.old, Side::Absent);
+    }
+
+    #[test]
+    fn a_submodule_in_a_commit_shows_parent_and_commit_hashes() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one", "first");
+        let submodule = repo.with_submodule("libs/lib");
+        let before = submodule.git(&["rev-parse", "HEAD"]).trim().to_string();
+        let after = submodule.commit("sub.txt", b"changed\n", "second in the submodule");
+        repo.git(&["add", "libs/lib"]);
+        repo.git(&["commit", "-q", "-m", "move the submodule"]);
+        let hash = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+        let sides = file_sides(repo.path(), &hash, "libs/lib", None).unwrap();
+
+        assert_eq!(side_text(&sides.old), before);
+        assert_eq!(side_text(&sides.new), after);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn the_checked_out_head_of_a_submodule_is_its_side() {
+        let repo = TempRepo::new();
+        let submodule = repo.with_submodule("lib");
+        let head = submodule.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+        let side = submodule_head(repo.path(), "lib").unwrap();
+
+        assert_eq!(side_text(&side), head);
+    }
+
+    #[test]
+    fn a_submodule_that_is_not_checked_out_gives_an_empty_side() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one", "first");
+        fs::create_dir(repo.path().join("lib")).unwrap();
+
+        // The empty folder is inside the parent: git there would answer with the parent's HEAD.
+        let side = submodule_head(repo.path(), "lib").unwrap();
+
+        assert_eq!(side_text(&side), "");
+    }
+
+    #[test]
+    fn the_window_title_of_a_submodule_ends_with_the_word() {
+        assert_eq!(
+            submodule_title("lib (/x/libs)"),
+            "lib (/x/libs) (Submodule)"
+        );
     }
 
     #[test]

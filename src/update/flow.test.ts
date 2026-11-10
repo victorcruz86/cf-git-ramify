@@ -27,6 +27,7 @@ import PublishedCommitsDialog from "../branches/PublishedCommitsDialog.svelte";
 import FixTrackedDialog from "./FixTrackedDialog.svelte";
 import RebaseMergesDialog from "./RebaseMergesDialog.svelte";
 import UpdateDialog from "./UpdateDialog.svelte";
+import Notifications from "../lib/Notifications.svelte";
 
 const PULL_INFO: PullInfo = {
   branch: "main",
@@ -51,6 +52,7 @@ const result = (overrides: Partial<UpdateResult> = {}): UpdateResult => ({
   saved: null,
   restore: null,
   inProgress: false,
+  submoduleError: null,
   ...overrides,
 });
 
@@ -416,6 +418,72 @@ describe("result", () => {
     await flow(backend).updateProject();
 
     expect(titles()).toEqual(["Untracked Files Prevent Merge", "Update canceled"]);
+  });
+});
+
+// Decision 7: git's output reaches an error of rama's own, and the summary stays.
+describe("submodule update", () => {
+  const SUBMODULE_ERROR =
+    "error: Your local changes to the following files would be overwritten by checkout:\n\tsub.txt\nAborting\nfatal: Unable to checkout 'abc' in submodule path 'sub'";
+
+  test("a_failed_submodule_update_gives_its_own_error_and_the_summary_stays", async () => {
+    const range: [string, string] = ["a", "b"];
+    const backend = api({
+      update: vi.fn(async () =>
+        result({ files: 1, commits: 1, range, submoduleError: SUBMODULE_ERROR }),
+      ),
+    });
+
+    await flow(backend).updateProject();
+
+    expect(titles()).toEqual(["Submodule update failed", "1 file updated in 1 commit"]);
+    expect(titled("Submodule update failed").kind).toBe("error");
+    expect(titled("Submodule update failed").body).toBe(SUBMODULE_ERROR);
+  });
+
+  test("nothing_to_update_with_a_failed_submodule_update_is_still_up_to_date", async () => {
+    const backend = api({
+      update: vi.fn(async () =>
+        result({ outcome: { kind: "nothingToUpdate" }, submoduleError: SUBMODULE_ERROR }),
+      ),
+    });
+
+    await flow(backend).updateProject();
+
+    expect(titles()).toEqual(["Submodule update failed", "All files are up to date"]);
+  });
+
+  test("a_pull_with_rebase_and_the_update_after_a_push_show_it_too", async () => {
+    const backend = api({ pull: vi.fn(async () => result({ submoduleError: SUBMODULE_ERROR })) });
+    const { pull, forPush } = flow(backend, [{ ...PULL, options: ["rebase"] }]);
+
+    await pull();
+    expect(titles()).toEqual(["Submodule update failed", "All files are up to date"]);
+    shown().forEach(({ id }) => dismiss(id));
+
+    forPush.report(result({ commits: 2, submoduleError: SUBMODULE_ERROR }), true);
+    expect(titles()).toEqual(["Submodule update failed"]);
+  });
+
+  // A submodule path is repository text: git's output is shown as it is, never as markup.
+  test("git_s_output_is_shown_as_plain_text", async () => {
+    const markup = "fatal: Unable to checkout 'abc' in submodule path '<b>sub</b><img src=x>'";
+    const backend = api({
+      update: vi.fn(async () => result({ submoduleError: markup })),
+    });
+    const { container } = render(Notifications);
+
+    await flow(backend).updateProject();
+
+    expect(await screen.findByText(markup)).toBeTruthy();
+    expect(container.querySelector("b")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  test("without_an_error_there_is_no_submodule_notification", async () => {
+    await flow(api()).updateProject();
+
+    expect(titles()).toEqual(["All files are up to date"]);
   });
 });
 

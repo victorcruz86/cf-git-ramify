@@ -6,6 +6,7 @@
     drawRows,
     MAX_ROWS_TO_MEASURE,
     ROW_HEIGHT,
+    SIGNATURE_WIDTH,
     tableLayout,
     type ColumnWidths,
     type GraphElement,
@@ -16,6 +17,7 @@
   import { elementAt, jumpRow, targetOf } from "./graphHit";
   import type { LogOptions } from "./options";
   import { RowCache, visibleRange } from "./rowCache";
+  import { SIGNATURE_ROWS_AROUND, SignatureColumn, signatureText } from "./signatures";
   import {
     restoreSelection,
     snapshotSelection,
@@ -23,7 +25,7 @@
   } from "./selection";
 
   const OVERSCAN = 5;
-  const INITIAL_WIDTHS: ColumnWidths = { author: 150, date: 100, hash: 72 };
+  const INITIAL_WIDTHS: ColumnWidths = { author: 150, date: 100, hash: 72, signature: SIGNATURE_WIDTH };
   // `Balloon.Position.atRight`, 5 from the mouse.
   const TOOLTIP_OFFSET = 5;
 
@@ -89,6 +91,9 @@
   // no table to select or scroll in.
   let destroyed = false;
   let tip = $state.raw<(ArrowTooltip & { x: number; y: number }) | null>(null);
+  // The `GPG Signature` cell under the mouse: its presentation's text.
+  let signatureTip = $state.raw<{ text: string; x: number; y: number } | null>(null);
+  const signatures = new SignatureColumn(() => schedule());
   const labelBounds = new Map<number, LabelBounds>();
 
   export function scrollElement(): HTMLDivElement {
@@ -249,6 +254,7 @@
     const height = scroller.clientHeight;
     const scrollTop = scroller.scrollTop;
     const range = visibleRange(scrollTop, height, ROW_HEIGHT, count, OVERSCAN);
+    requestSignatures(scrollTop, height);
     measure();
     if (context) {
       drawRows({
@@ -265,6 +271,7 @@
         highlight,
         labelBounds,
         notPicked,
+        signatures,
       });
     }
     if (range.end === range.start) return;
@@ -277,6 +284,40 @@
       ready = true;
       onready?.();
     }
+  }
+
+  // Only while the column is shown, for the visible rows and `SIGNATURE_ROWS_AROUND` more: another
+  // view, other rows, or rows that arrive later ask again. Rows past the painted ones are read too,
+  // without waiting for them.
+  function requestSignatures(scrollTop: number, height: number) {
+    const around = visibleRange(scrollTop, height, ROW_HEIGHT, count, SIGNATURE_ROWS_AROUND);
+    const shown = options.columns.includes("signature") && around.end > around.start;
+    const reading = cache;
+    const loaded = shown && reading.loaded(around.start) && reading.loaded(around.end - 1);
+    if (shown && !loaded) {
+      reading.ensure(around.start, around.end).then(() => {
+        if (reading === cache) schedule();
+      });
+    }
+    signatures.request(shown, `${version}:${around.start}:${around.end}:${loaded}`, () => {
+      const hashes: string[] = [];
+      for (let row = around.start; row < around.end; row++) {
+        const hash = reading.get(row)?.hash;
+        if (hash) hashes.push(hash);
+      }
+      return hashes;
+    });
+  }
+
+  function signatureUnder(event: MouseEvent): string | null {
+    if (!options.columns.includes("signature")) return null;
+    const { row, x } = rowAt(event);
+    const found = row < count ? cache.get(row) : undefined;
+    if (!found) return null;
+    const layout = tableLayout(scroller.clientWidth, options.columns, widths ?? INITIAL_WIDTHS);
+    const cell = layout.cells.find((cell) => cell.column === "signature");
+    if (!cell || x < cell.x || x >= cell.x + cell.width) return null;
+    return signatureText(signatures.get(found.hash));
   }
 
   function resize() {
@@ -342,6 +383,8 @@
 
   // `GraphCommitCellController.performMouseMove`.
   async function mousemove(event: MouseEvent) {
+    const signed = signatureUnder(event);
+    signatureTip = signed === null ? null : { text: signed, x: event.clientX + TOOLTIP_OFFSET, y: event.clientY };
     const { row, element } = elementUnder(event);
     const key = element ? `${row}:${JSON.stringify(element)}` : "";
     if (key === hovered) return;
@@ -466,6 +509,7 @@
     observer.observe(scroller);
     return () => {
       destroyed = true;
+      signatures.stop();
       observer.disconnect();
       cancelAnimationFrame(frame);
     };
@@ -485,12 +529,21 @@
   onclick={click}
   oncontextmenu={contextmenu}
   onmousemove={mousemove}
-  onmouseleave={clearHover}
+  onmouseleave={() => {
+    signatureTip = null;
+    clearHover();
+  }}
   onkeydown={keydown}
 >
   <canvas bind:this={canvas}></canvas>
   <div class="spacer" style:height="{count * ROW_HEIGHT}px"></div>
 </div>
+
+{#if signatureTip}
+  <div class="tip" role="tooltip" style:left="{signatureTip.x}px" style:top="{signatureTip.y}px">
+    {signatureTip.text}
+  </div>
+{/if}
 
 {#if tip}
   <div class="tip" role="tooltip" style:left="{tip.x}px" style:top="{tip.y}px">

@@ -57,6 +57,7 @@ const UPDATED: UpdateResult = {
   saved: null,
   restore: null,
   inProgress: false,
+  submoduleError: null,
 };
 
 const FORCE_CHOICE = {

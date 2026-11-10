@@ -730,6 +730,69 @@ mod tests {
         assert_eq!(harness.read("own.txt"), "mine\n");
     }
 
+    // A detached submodule `sub` at its recorded commit, and a new commit of its remote that the
+    // colleague records and publishes. It gives the submodule, its HEAD and that commit.
+    fn moved_submodule(harness: &Harness) -> (TempRepo, String, String) {
+        let sub = harness.repo.with_submodule("sub");
+        sub.git(&["config", "protocol.file.allow", "always"]);
+        harness.git(&["push", "-q", "origin", "main"]);
+        harness
+            .colleague
+            .git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let before = sub.git(&["rev-parse", "HEAD"]).trim().to_string();
+        let url = sub.git(&["config", "remote.origin.url"]).trim().to_string();
+        let work = TempRepo::new();
+        work.git(&["fetch", "-q", &url, "main"]);
+        work.git(&["checkout", "-q", "-B", "main", "FETCH_HEAD"]);
+        let commit = work.commit("new.txt", b"new\n", "in the submodule's remote");
+        work.git(&["push", "-q", &url, "main"]);
+        let entry = format!("160000,{commit},sub");
+        harness
+            .colleague
+            .git(&["update-index", "--cacheinfo", &entry]);
+        harness
+            .colleague
+            .git(&["commit", "-q", "-m", "move the submodule"]);
+        harness.colleague.git(&["push", "-q", "origin", "main"]);
+        (sub, before, commit)
+    }
+
+    fn ran_submodule_update(harness: &Harness) -> bool {
+        let lines = harness.console.lines();
+        lines
+            .iter()
+            .any(|line| line.command && line.text.contains(" submodule update "))
+    }
+
+    // Part 6, Task 5's ruling: a merge `Pull…` runs git's merge, as 241's does, and leaves the
+    // submodules alone; only the rebase one, which goes through Update, updates them after it.
+    #[test]
+    fn a_merge_pull_does_not_update_the_submodules() {
+        let harness = Harness::new();
+        let (sub, before, commit) = moved_submodule(&harness);
+
+        let result = harness.pull("origin", "main", &[]);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(harness.git(&["rev-parse", "HEAD:sub"]).trim(), commit);
+        assert_eq!(sub.git(&["rev-parse", "HEAD"]).trim(), before);
+        assert!(!ran_submodule_update(&harness));
+    }
+
+    #[test]
+    fn a_rebase_pull_updates_the_submodules() {
+        let harness = Harness::new();
+        let (sub, _, commit) = moved_submodule(&harness);
+
+        let result = harness.pull("origin", "main", &[PullOption::Rebase]);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(sub.git(&["rev-parse", "HEAD"]).trim(), commit);
+        assert!(ran_submodule_update(&harness));
+    }
+
     #[test]
     fn pull_rebase_ignores_the_other_options() {
         let harness = Harness::new();

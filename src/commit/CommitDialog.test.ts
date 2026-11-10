@@ -64,6 +64,7 @@ const SIDES: WorktreeSides = {
   note: null,
   hash: "hash",
   conflicted: false,
+  submodule: null,
 };
 
 let repoChanged: () => void = () => {};

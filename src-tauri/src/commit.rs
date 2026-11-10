@@ -53,11 +53,6 @@ pub struct CommitOptions {
     pub skip_hooks: bool,
     pub author: Option<String>,
     pub cleanup: bool,
-    // They come from the settings, in the backend: the interface does not send them.
-    #[serde(default)]
-    pub sign: bool,
-    #[serde(default)]
-    pub signing_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -417,21 +412,12 @@ fn classify(repo: &Path, options: &CommitOptions, error: GitError) -> CommitErro
     error.into()
 }
 
-fn run_commit(repo: &Path, request: &CommitRequest, lock: &CommitLock) -> Result<(), CommitError> {
-    let file = message_file(&request.message).map_err(|error| GitError::Io(error.to_string()))?;
-    let path = file
-        .path()
-        .to_str()
-        .ok_or_else(|| GitError::Io("Invalid temporary path".to_string()))?;
-    let options = &request.options;
-    let author = options
-        .author
-        .as_ref()
-        .map(|author| format!("--author={author}"));
-    let sign = options
-        .sign
-        .then(|| format!("-S{}", options.signing_key.as_deref().unwrap_or_default()));
-    let mut args = vec!["-c", MESSAGE_ENCODING, "commit", "-F", path];
+fn commit_args<'a>(
+    message_file: &'a str,
+    options: &CommitOptions,
+    author: &'a Option<String>,
+) -> Vec<&'a str> {
+    let mut args = vec!["-c", MESSAGE_ENCODING, "commit", "-F", message_file];
     if options.amend {
         args.push("--amend");
     }
@@ -445,8 +431,22 @@ fn run_commit(repo: &Path, request: &CommitRequest, lock: &CommitLock) -> Result
         args.push("--cleanup=strip");
     }
     args.extend(author.as_deref());
-    args.extend(sign.as_deref());
     args.push("--");
+    args
+}
+
+fn run_commit(repo: &Path, request: &CommitRequest, lock: &CommitLock) -> Result<(), CommitError> {
+    let file = message_file(&request.message).map_err(|error| GitError::Io(error.to_string()))?;
+    let path = file
+        .path()
+        .to_str()
+        .ok_or_else(|| GitError::Io("Invalid temporary path".to_string()))?;
+    let options = &request.options;
+    let author = options
+        .author
+        .as_ref()
+        .map(|author| format!("--author={author}"));
+    let args = commit_args(path, options, &author);
     git::run_mutating_holding(repo, &args, &lock.0)
         .map(drop)
         .map_err(|error| classify(repo, options, error))
@@ -2170,7 +2170,7 @@ mod tests {
     }
 
     #[test]
-    fn gpg_error() {
+    fn the_gpg_failure_still_reads_could_not_sign_the_commit() {
         let repo = TempRepo::new();
         repo.commit("a.txt", b"1\n", "unsigned");
         stage(&repo, "excluded.txt", b"staged\n");
@@ -2181,8 +2181,12 @@ mod tests {
         let error = assert_untouched(&repo, || commit(repo.path(), &request(&["a.txt"])));
 
         assert!(
-            matches!(&error, CommitError::Gpg(text) if text.contains("gpg")),
+            matches!(&error, CommitError::Gpg(text) if text.contains("gpg failed to sign the data")),
             "{error:?}"
+        );
+        assert!(
+            error.to_string().starts_with("Could not sign the commit: error: gpg failed to sign the data"),
+            "{error}"
         );
     }
 
@@ -3670,40 +3674,60 @@ mod tests {
         log
     }
 
-    fn signed(key: Option<&str>) -> CommitRequest {
-        let mut signed = request(&["a.txt"]);
-        signed.options.sign = true;
-        signed.options.signing_key = key.map(str::to_string);
-        signed
-    }
-
+    // Decision 1: git signs by itself from `commit.gpgSign`, as in 241; rama never passes `-S`.
     #[test]
-    fn signing_enabled() {
-        let repo = TempRepo::new();
-        let tools = TempDir::new().unwrap();
-        repo.commit("a.txt", b"1\n", "one");
-        write(&repo, "a.txt", b"2\n");
-        let log = fake_gpg(&repo, tools.path(), false);
-
-        let error = commit(repo.path(), &signed(None)).unwrap_err();
-
-        assert!(log.exists());
-        assert!(matches!(error, CommitError::Gpg(_)), "{error:?}");
-        assert_eq!(commits(&repo), "1\n");
-    }
-
-    #[test]
-    fn signing_with_the_key_from_the_settings() {
+    fn signing_comes_from_the_config_and_its_key() {
         let repo = TempRepo::new();
         let tools = TempDir::new().unwrap();
         repo.commit("a.txt", b"1\n", "one");
         write(&repo, "a.txt", b"2\n");
         let log = fake_gpg(&repo, tools.path(), true);
+        repo.git(&["config", "commit.gpgSign", "true"]);
+        repo.git(&["config", "user.signingkey", "ABC123"]);
 
-        commit(repo.path(), &signed(Some("ABC123"))).unwrap();
+        commit(repo.path(), &request(&["a.txt"])).unwrap();
 
         assert!(fs::read_to_string(log).unwrap().contains("ABC123"));
         assert_eq!(commits(&repo), "2\n");
+    }
+
+    #[test]
+    fn a_commit_is_signed_by_git_from_the_config_without_dash_s() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"1\n", "one");
+        repo.sign_commits();
+        write(&repo, "a.txt", b"2\n");
+
+        commit(repo.path(), &request(&["a.txt"])).unwrap();
+
+        assert!(repo.git(&["cat-file", "commit", "HEAD"]).contains("gpgsig "));
+
+        // Nothing rama passes signs. With the config off and every option on, a recording gpg is
+        // never called and the commit is unsigned: a `-S` or `--gpg-sign` would make git run it.
+        let tools = TempDir::new().unwrap();
+        repo.git(&["config", "--unset", "gpg.format"]);
+        repo.git(&["config", "commit.gpgsign", "false"]);
+        let log = fake_gpg(&repo, tools.path(), true);
+        write(&repo, "a.txt", b"3\n");
+        let mut everything = request(&["a.txt"]);
+        everything.options = CommitOptions {
+            amend: true,
+            sign_off: true,
+            skip_hooks: true,
+            author: Some("A <a@example.com>".to_string()),
+            cleanup: true,
+        };
+
+        commit(repo.path(), &everything).unwrap();
+
+        assert!(!log.exists(), "{:?}", fs::read_to_string(&log));
+        assert!(!repo.git(&["cat-file", "commit", "HEAD"]).contains("gpgsig "));
+
+        // The same gpg is git's own call once the config asks for it.
+        repo.git(&["config", "commit.gpgsign", "true"]);
+        write(&repo, "a.txt", b"4\n");
+        commit(repo.path(), &request(&["a.txt"])).unwrap();
+        assert!(fs::read_to_string(&log).unwrap().contains("-bsau"));
     }
 
     #[test]

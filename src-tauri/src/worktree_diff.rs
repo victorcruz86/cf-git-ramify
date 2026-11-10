@@ -29,6 +29,9 @@ pub struct WorktreeSides {
     pub hash: Option<String>,
     // With a conflict there is no stage to compare: HEAD is shown against the disk, without actions.
     pub conflicted: bool,
+    // The path is a submodule: the full hash of the parent's HEAD, empty without one. The
+    // window titles the diff as one (`GitSubmoduleDiffRequestProvider`).
+    pub submodule: Option<String>,
 }
 
 pub(crate) const NOTE_NOT_UTF8: &str =
@@ -119,7 +122,7 @@ pub(crate) fn unsplit_side(
     }
     if meta.is_dir() {
         return Ok(match hunks::stored_gitlink(repo, path)? {
-            Some(hash) => (diff::gitlink_side(&hash), None),
+            Some(_) => (diff::submodule_head(repo, path)?, None),
             None => (Side::Binary, None),
         });
     }
@@ -149,6 +152,7 @@ fn split_sides(old: Side, parts: &hunks::Sides, hunks: Vec<Hunk>) -> WorktreeSid
         note: note.map(str::to_string),
         hash: Some(content_hash(&parts.disk.bytes)),
         conflicted: false,
+        submodule: None,
     }
 }
 
@@ -168,19 +172,38 @@ fn unsplit_sides(repo: &Path, path: &str, old: Side) -> Result<WorktreeSides, Hu
         note: note.map(str::to_string),
         hash,
         conflicted: false,
+        submodule: None,
     })
+}
+
+// Whether `path` is a submodule in the index or in HEAD, and then the parent's HEAD.
+pub(crate) fn submodule_of(repo: &Path, path: &str) -> Result<Option<String>, HunkError> {
+    // A file on disk is not a submodule, and most diffs are of files: no git for them.
+    let on_disk = fs::symlink_metadata(repo.join(path));
+    if on_disk.is_ok_and(|meta| meta.is_file() || meta.is_symlink()) {
+        return Ok(None);
+    }
+    let in_head = git::head_exists(repo)? && diff::gitlink_at(repo, "HEAD", path)?.is_some();
+    if in_head || hunks::index_gitlink(repo, path)?.is_some() {
+        return Ok(Some(diff::head_hash(repo)?));
+    }
+    Ok(None)
 }
 
 pub fn sides(repo: &Path, path: &str) -> Result<WorktreeSides, HunkError> {
     check_inside(repo, path)?;
     let old = head_side(repo, path)?;
-    match hunks::read_sides(repo, path)? {
+    let found = match hunks::read_sides(repo, path)? {
         Some(parts) => {
             let found = hunks::compute(&parts.base, &parts.stored);
-            Ok(split_sides(old, &parts, found))
+            split_sides(old, &parts, found)
         }
-        None => unsplit_sides(repo, path, old),
-    }
+        None => unsplit_sides(repo, path, old)?,
+    };
+    Ok(WorktreeSides {
+        submodule: submodule_of(repo, path)?,
+        ..found
+    })
 }
 
 fn index_side(repo: &Path, path: &str) -> Result<Side, HunkError> {
@@ -194,6 +217,18 @@ fn index_side(repo: &Path, path: &str) -> Result<Side, HunkError> {
 // conflict has no entry to compare: until the phase 3 merge dialog arrives,
 // HEAD is shown against the disk, to look at, without actions.
 pub fn stage_sides(
+    repo: &Path,
+    path: &str,
+    comparison: Comparison,
+) -> Result<WorktreeSides, HunkError> {
+    let found = stage_sides_of(repo, path, comparison)?;
+    Ok(WorktreeSides {
+        submodule: submodule_of(repo, path)?,
+        ..found
+    })
+}
+
+fn stage_sides_of(
     repo: &Path,
     path: &str,
     comparison: Comparison,
@@ -228,6 +263,7 @@ pub fn stage_sides(
         note: Some(NOTE_STAGED.to_string()),
         hash: None,
         conflicted: false,
+        submodule: None,
     })
 }
 
@@ -668,10 +704,36 @@ mod tests {
 
         let found = sides(repo.path(), "sub").unwrap();
 
-        let shown = format!("Subproject commit {target}\n");
-        assert_eq!(text(&found.old), shown);
-        assert_eq!(text(&found.new), shown);
+        // The folder is empty: the submodule is not checked out, and its side is empty.
+        assert_eq!(text(&found.old), target);
+        assert_eq!(text(&found.new), "");
         assert!(!found.editable);
+        assert!(found.submodule.is_some());
+    }
+
+    #[test]
+    fn a_real_submodule_in_local_changes_shows_its_checked_out_head_on_the_local_side() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one\n", "first");
+        let submodule = repo.with_submodule("libs/lib");
+        let recorded = submodule.git(&["rev-parse", "HEAD"]).trim().to_string();
+        let moved = submodule.commit("sub.txt", b"changed\n", "second in the submodule");
+        let parent = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+        let found = sides(repo.path(), "libs/lib").unwrap();
+
+        assert_eq!(text(&found.old), recorded);
+        assert_eq!(text(&found.new), moved);
+        assert!(!found.editable);
+        assert_eq!(found.submodule, Some(parent));
+    }
+
+    #[test]
+    fn a_file_is_not_a_submodule() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"one\n", "first");
+
+        assert_eq!(sides(repo.path(), "a.txt").unwrap().submodule, None);
     }
 
     #[test]
@@ -875,7 +937,8 @@ mod tests {
 
         let found = stage_sides(repo.path(), "sub", Comparison::Staged).unwrap();
 
-        assert_eq!(text(&found.new), format!("Subproject commit {hash}\n"));
+        assert_eq!(text(&found.new), hash);
+        assert_eq!(found.submodule.as_deref(), Some(hash.as_str()));
     }
 
     #[test]

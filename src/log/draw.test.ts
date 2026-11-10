@@ -1,6 +1,11 @@
 import { expect, test } from "vitest";
 import type { LogRow, PrintRow, ShortEdge } from "../lib/api";
+import signedSvg from "../lib/icons/signatureSigned.svg?raw";
+import verifiedSvg from "../lib/icons/signatureVerified.svg?raw";
 import {
+  BADGE,
+  BARS,
+  CHECK,
   columnWidths,
   drawRows,
   graphCellWidth,
@@ -14,6 +19,7 @@ import {
   type GraphHighlight,
   type GraphMetrics,
 } from "./draw";
+import type { Signature } from "../lib/api";
 import { graphColor } from "./graphColor";
 import { defaultOptions, historyOptions, toggleColumn } from "./options";
 import { TOKENS } from "../lib/theme";
@@ -268,7 +274,7 @@ test("selection_paints_the_brand_color_and_then_its_own", () => {
   ]);
 });
 
-const WIDTHS = { author: 150, date: 100, hash: 64 };
+const WIDTHS = { author: 150, date: 100, hash: 64, signature: 24 };
 const NOW = new Date(2026, 10, 1, 13, 0, 0).getTime();
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -603,4 +609,57 @@ test("each_highlight_is_turned_off_from_view_options", () => {
   expect(fills.map((fill) => fill.color)).toEqual([TOKENS.editor]);
   expect(at("one")!.color).toBe(TOKENS.text);
   expect(at("Ana")!.font.startsWith("bold")).toBe(false);
+});
+
+// The canvas and `Icon` draw the same badge: the SVGs carry the points the canvas uses.
+test("the_signature_icons_on_the_canvas_are_the_svgs", () => {
+  const points = (svg: string, tag: string) =>
+    svg.match(new RegExp(`<${tag} points="([^"]+)"`))![1].split(" ").map((pair) => pair.split(",").map(Number));
+  expect(points(verifiedSvg, "polygon")).toEqual(BADGE);
+  expect(points(signedSvg, "polygon")).toEqual(BADGE);
+  expect(points(verifiedSvg, "polyline")).toEqual(CHECK);
+  const bars = BARS.map(([left, top, right]) => `M${left} ${top}H${right}`).join("");
+  expect(signedSvg).toContain(`d="${bars}"`);
+  expect(verifiedSvg).toContain(`fill="${TOKENS["signature-verified"]}"`);
+  expect(signedSvg).toContain(`stroke="${TOKENS["signature-signed"]}"`);
+});
+
+// `VcsLogIconCellRenderer`: a fixed cell after the others, with the verified badge, the amber one
+// for every other signed state, and nothing for an unsigned or not yet loaded commit.
+test("the_signature_cell_draws_the_icon_of_each_state", () => {
+  const columns = toggleColumn(defaultOptions().columns, "signature");
+  const layout = tableLayout(800, columns, WIDTHS);
+  expect(layout.cells.at(-1)).toEqual({ column: "signature", x: 776, width: 24 });
+  expect(columnWidths(recorder().context, [], NOW).signature).toBe(24);
+
+  const strokesOf = (status: Signature["status"] | null, shown = columns) => {
+    const { context, painted } = recorder();
+    const row = logRow();
+    const signature: Signature | undefined = status
+      ? { hash: row.hash, status, signer: "", fingerprint: "" }
+      : undefined;
+    drawRows({
+      context,
+      width: 800,
+      height: 48,
+      scrollTop: 0,
+      range: { start: 0, end: 1 },
+      rowAt: () => row,
+      selected: new Set(),
+      options: { ...defaultOptions(), columns: shown },
+      widths: WIDTHS,
+      now: NOW,
+      signatures: new Map(signature ? [[row.hash, signature]] : []),
+    });
+    return strokes(painted).filter((stroke) => stroke.points.every(([x]) => x >= 776));
+  };
+  const verified = strokesOf("verified");
+  expect(verified.map((stroke) => stroke.color)).toEqual(["#FFFFFF"]);
+  expect(verified[0].points[0]).toEqual([776 + 4 + CHECK[0][0], 4 + CHECK[0][1]]);
+  for (const status of ["unknown", "expired", "expiredKey", "revokedKey", "cannotVerify", "bad"] as const) {
+    const signed = strokesOf(status);
+    expect(signed.map((stroke) => stroke.color)).toEqual(Array(4).fill(TOKENS["signature-signed"]));
+  }
+  expect(strokesOf(null)).toEqual([]);
+  expect(strokesOf("verified", defaultOptions().columns)).toEqual([]);
 });

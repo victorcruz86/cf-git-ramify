@@ -21,6 +21,7 @@ use crate::commit;
 use crate::conflicts;
 use crate::fetch::{self, FetchResult};
 use crate::git::GitError;
+use crate::gpg::{self, GpgKey, SigningConfig};
 use crate::log::store::refs_fingerprint;
 use crate::merge::{self, MergeOption};
 use crate::merge3::{self, Block, Whitespace};
@@ -58,6 +59,9 @@ const CHANGING_REMOTE: &str = "Changing Remote…";
 const COMMITTING: &str = "Committing…";
 const COMMITTING_MERGE: &str = "Committing Merge…";
 const FETCHING: &str = "Fetching…";
+// The dialog's title (`settings.configure.sign.gpg.for.repo.dialog.title`, decision 2): 241 writes
+// without a progress title of its own.
+const CONFIGURING_GPG: &str = "Configure GPG Key";
 const LOADING_COMMITS: &str = "Loading Commits";
 const LOADING_CONFLICTS: &str = "Loading merge conflicts…";
 const LOADING_REVISIONS: &str = "Loading Revisions…";
@@ -1713,6 +1717,52 @@ pub async fn remote_remove(
     )
 }
 
+// `Configure GPG Key…`: the repository's signing config and the keys gpg can sign with. Both only
+// read, and listing the keys runs gpg, never git.
+#[tauri::command]
+pub async fn gpg_config(state: State<'_, AppState>) -> Result<SigningConfig, ApiError> {
+    let repo = current_repo(&state)?;
+    blocking_api(move || Ok(gpg::config(&repo)?)).await
+}
+
+#[tauri::command]
+pub async fn gpg_keys(state: State<'_, AppState>) -> Result<Vec<GpgKey>, ApiError> {
+    let repo = current_repo(&state)?;
+    blocking_api(move || {
+        let program = gpg::program(&repo)?.ok_or_else(gpg::not_found)?;
+        Ok(gpg::secret_keys(&program)?)
+    })
+    .await
+}
+
+// The `GPG Signature` column and the details: a read task of `git log --no-walk`, which changes
+// nothing. Each table and details panel is a `requester`, and its new request cancels its previous one.
+#[tauri::command]
+pub async fn log_signatures(
+    hashes: Vec<String>,
+    requester: u32,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    let repo = current_repo(&state)?;
+    Ok(state
+        .signatures
+        .start(&state.tasks, &repo, requester, hashes)?)
+}
+
+// It writes `.git/config`, which every worktree of the repository shares.
+#[tauri::command]
+pub async fn gpg_config_set(
+    key: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    let title = CONFIGURING_GPG.to_string();
+    start(&app, &state, TaskKind::Write, title, move |repo| {
+        gpg::write(repo.ctx, key.as_deref())
+    })
+}
+
 // `ls-remote` of a URL, with the name it is to be saved with if known.
 #[tauri::command]
 pub async fn remote_test_url(
@@ -2609,7 +2659,7 @@ mod tests {
     }
 
     // Reads change nothing: there is nothing to save beforehand.
-    const READS: [&str; 52] = [
+    const READS: [&str; 55] = [
         "merge_message",
         "shelf_lists",
         "shelf_sides",
@@ -2663,6 +2713,9 @@ mod tests {
         // Like `fetch_remote`, its fetches change remote refs and FETCH_HEAD only.
         "github_pr_changes",
         "github_pr_checked_out",
+        "gpg_config",
+        "gpg_keys",
+        "log_signatures",
     ];
     // They write the app's own data (the GitHub accounts, the Keychain, a repository's default
     // account, the Pull Requests window's saved choice and its list's searches), never the
@@ -2697,7 +2750,7 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('(').unwrap()])
             .collect();
-        assert_eq!(commands.len(), 133, "{commands:?}");
+        assert_eq!(commands.len(), 137, "{commands:?}");
         let unsaved = |name: &&&str| {
             !READS.contains(name)
                 && !ELSEWHERE.contains(name)

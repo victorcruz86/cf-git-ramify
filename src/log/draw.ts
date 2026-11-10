@@ -1,4 +1,4 @@
-import type { Arrow, EdgeStyle, LogRow, PrintRow } from "../lib/api";
+import type { Arrow, EdgeStyle, LogRow, PrintRow, Signature } from "../lib/api";
 import { TOKENS } from "../lib/theme";
 import { graphColor } from "./graphColor";
 import {
@@ -16,6 +16,7 @@ import {
 } from "./labels";
 import type { LogColumn, LogOptions } from "./options";
 import type { Range } from "./rowCache";
+import { signatureIcon } from "./signatures";
 
 export const ROW_HEIGHT = 24;
 
@@ -58,6 +59,31 @@ const TAG_LINES: [number, number][] = [
   [13.59, 7.08],
 ];
 
+// The `GPG Signature` icons (`signatureVerified.svg`, `signatureSigned.svg`): a badge of eight
+// points in a box of 16, with a check mark, or with three bars.
+const ICON_SIZE = 16;
+export const SIGNATURE_WIDTH = ICON_SIZE + CELL_PADDING;
+const BADGE_POINTS = 8;
+const BADGE_OUTER = 7;
+const BADGE_INNER = 5.6;
+const round2 = (value: number) => Math.round(value * 100) / 100;
+export const BADGE: [number, number][] = Array.from({ length: BADGE_POINTS * 2 }, (_, index) => {
+  const angle = ((-90 + (index * 180) / BADGE_POINTS) * Math.PI) / 180;
+  const radius = index % 2 === 0 ? BADGE_OUTER : BADGE_INNER;
+  const middle = ICON_SIZE / 2;
+  return [round2(middle + radius * Math.cos(angle)), round2(middle + radius * Math.sin(angle))];
+});
+export const CHECK: [number, number][] = [
+  [5.2, 8.1],
+  [7.1, 10],
+  [10.8, 6.2],
+];
+export const BARS: [number, number, number][] = [
+  [5.5, 6.5, 10.5],
+  [5.5, 8.5, 10.5],
+  [5.5, 10.5, 8],
+];
+
 const COLORS = {
   background: TOKENS.editor,
   selection: TOKENS.selection,
@@ -65,6 +91,9 @@ const COLORS = {
   muted: TOKENS["text-secondary"],
   merge: TOKENS["log-merge"],
   currentBranch: TOKENS["log-current-branch"],
+  verified: TOKENS["signature-verified"],
+  signed: TOKENS["signature-signed"],
+  check: "#FFFFFF",
 };
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
@@ -123,6 +152,8 @@ export interface ColumnWidths {
   author: number;
   date: number;
   hash: number;
+  // An icon only, and not resizable (`VcsCommitExternalStatusProvider`).
+  signature: number;
 }
 
 export interface DrawOptions {
@@ -142,6 +173,8 @@ export interface DrawOptions {
   notPicked?: ReadonlySet<string> | null;
   // Filled in with where the labels of each painted row end up.
   labelBounds?: Map<number, LabelBounds>;
+  // What the `GPG Signature` column knows: a commit not in it is drawn without an icon.
+  signatures?: { get(hash: string): Signature | undefined } | null;
 }
 
 export interface LabelBounds {
@@ -280,6 +313,7 @@ export function columnWidths(
     author: Math.min(author + CELL_PADDING, MAX_COLUMN_WIDTH),
     date: Math.min(date + CELL_PADDING, MAX_COLUMN_WIDTH),
     hash,
+    signature: SIGNATURE_WIDTH,
   };
 }
 
@@ -294,7 +328,7 @@ export function nodeAt(print: PrintRow, x: number, y: number): boolean {
 
 export function drawRows(draw: DrawOptions): void {
   const { context, width, height, scrollTop, range, rowAt, selected, options, widths, now } = draw;
-  const { highlight, labelBounds, notPicked = null } = draw;
+  const { highlight, labelBounds, notPicked = null, signatures = null } = draw;
   const layout = tableLayout(width, options.columns, widths);
 
   context.fillStyle = COLORS.background;
@@ -314,7 +348,8 @@ export function drawRows(draw: DrawOptions): void {
       context.fillRect(0, top, width, ROW_HEIGHT);
     }
     const unmatched = notPicked !== null && !notPicked.has(row.hash);
-    const labels = drawText(context, row, top, layout, isSelected, options, now, unmatched);
+    const signature = signatures?.get(row.hash);
+    const labels = drawText(context, row, top, layout, isSelected, options, now, unmatched, signature);
     if (labels) labelBounds?.set(index, labels);
     paintGraphRow(
       context,
@@ -606,6 +641,7 @@ function drawText(
   options: LogOptions,
   now: number,
   unmatched: boolean,
+  signature: Signature | undefined,
 ): LabelBounds | null {
   const y = top + ROW_HEIGHT / 2;
   const merge = (options.highlights.mergeCommits && row.highlight.muted && !isSelected) || unmatched;
@@ -659,11 +695,55 @@ function drawText(
       context.font = FONT;
     } else if (column === "date") {
       context.fillText(dateText(row, options.preferCommitDate, now), x, y, max);
+    } else if (column === "signature") {
+      paintSignature(context, signature, x + (columnWidth - ICON_SIZE) / 2, top + (ROW_HEIGHT - ICON_SIZE) / 2);
     } else {
       context.fillText(shortHash(row.hash), x, y, max);
     }
   }
   return labels.length > 0 ? { x: labelsX, width } : null;
+}
+
+function polyline(context: CanvasRenderingContext2D, points: [number, number][], x: number, y: number) {
+  context.beginPath();
+  points.forEach(([pointX, pointY], index) => {
+    if (index === 0) context.moveTo(x + pointX, y + pointY);
+    else context.lineTo(x + pointX, y + pointY);
+  });
+}
+
+// `VcsLogIconCellRenderer` with `GitCommitSignatureStatusPresentation.icon`.
+function paintSignature(
+  context: CanvasRenderingContext2D,
+  signature: Signature | undefined,
+  x: number,
+  y: number,
+): void {
+  const icon = signatureIcon(signature);
+  if (!icon) return;
+  context.save();
+  context.setLineDash([]);
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  polyline(context, BADGE, x, y);
+  context.closePath();
+  if (icon === "signatureVerified") {
+    context.fillStyle = COLORS.verified;
+    context.fill();
+    context.strokeStyle = COLORS.check;
+    context.lineWidth = 1.5;
+    polyline(context, CHECK, x, y);
+    context.stroke();
+  } else {
+    context.strokeStyle = COLORS.signed;
+    context.lineWidth = 1;
+    context.stroke();
+    for (const [left, top, right] of BARS) {
+      polyline(context, [[left, top], [right, top]], x, y);
+      context.stroke();
+    }
+  }
+  context.restore();
 }
 
 const rowBackground = (row: LogRow, options: LogOptions) =>

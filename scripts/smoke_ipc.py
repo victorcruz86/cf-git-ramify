@@ -40,6 +40,8 @@ NOT_RUN = {
     "github_pr_changes": "fetches from the remote and may ask GitHub for the commits, and reads the real Keychain",
     "github_pr_checkout": "may add a remote, fetches from it, may ask GitHub for the pull request, and reads the real Keychain",
     "github_pr_show_in_log": "may add a remote, fetches from it, may ask GitHub for the pull request, and reads the real Keychain",
+    "gpg_config": "runs only git config, no gpg; it is checked with the Configure GPG Key dialog in the manual list",
+    "gpg_keys": "runs the real gpg, which reads the user's keyring",
 }
 LIMIT_S = 240
 

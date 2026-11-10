@@ -15,6 +15,8 @@
   } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
   import { errorText } from "../lib/errors";
+  import GpgKeyDialog from "./GpgKeyDialog.svelte";
+  import GpgKeyRow from "./GpgKeyRow.svelte";
 
   interface Props {
     settings: Settings;
@@ -58,12 +60,9 @@
   let problem = $state<string | null>(null);
   let saving = $state(false);
   let testRun = 0;
-
-  const signature = $derived(
-    draft.signCommits
-      ? `Commits are signed with GPG key: ${draft.signingKey || "default"}`
-      : "Commits signing with GPG key is not configured",
-  );
+  // `Configure GPG Key…` writes at once, so it is not part of `draft`.
+  let gpgOpen = $state(false);
+  let gpgRow: GpgKeyRow | undefined = $state();
 
   function failureText(path: string | null, failure: unknown): string {
     const notFound = (failure as ApiError).kind === "git_not_found";
@@ -301,23 +300,7 @@
     <p class="comment nested">
       This will disable changelists support. Only for non-modal commit interface.
     </p>
-    <p class="signature">{signature}</p>
-    <div class="key">
-      <label class="checkbox-label">
-        <input type="checkbox" bind:checked={draft.signCommits} />
-        <span class="check" data-state={draft.signCommits ? "on" : "off"}></span>
-        Sign commits with GPG key:
-      </label>
-      {#if draft.signCommits}
-        <input
-          class="input"
-          aria-label="GPG key"
-          placeholder="default"
-          spellcheck="false"
-          bind:value={draft.signingKey}
-        />
-      {/if}
-    </div>
+    <GpgKeyRow bind:this={gpgRow} onconfigure={() => (gpgOpen = true)} />
   </div>
 
   <h3>Push</h3>
@@ -472,6 +455,15 @@
   {/snippet}
 </Dialog>
 
+{#if gpgOpen}
+  <GpgKeyDialog
+    onclose={(changed) => {
+      gpgOpen = false;
+      if (changed) void gpgRow?.refresh();
+    }}
+  />
+{/if}
+
 <style>
   h3 {
     margin: 0 0 10px;
@@ -592,10 +584,6 @@
     margin: -6px 0 0 40px;
   }
 
-  .signature {
-    margin: 6px 0 0;
-  }
-
   .timeout {
     display: flex;
     gap: 8px;
@@ -619,17 +607,5 @@
 
   .unit.disabled {
     color: var(--disabled);
-  }
-
-  .key {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    min-height: 28px;
-  }
-
-  .key .input {
-    flex: 1;
-    min-width: 0;
   }
 </style>

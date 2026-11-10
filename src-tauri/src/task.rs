@@ -195,6 +195,11 @@ impl TaskContext {
         self.report(text, fraction);
     }
 
+    // A line of rama's own in the Console, among git's output.
+    pub fn console_line(&self, text: &str) {
+        self.shared.console.output(text);
+    }
+
     pub fn check_cancelled(&self) -> Result<(), GitError> {
         let expired = self
             .task
@@ -210,29 +215,39 @@ impl TaskContext {
     // A git command of this task. Each child goes in its own process group: cancelling also kills
     // whatever git launches (ssh, hooks, credentials).
     pub fn git(&self, args: &[&str]) -> Result<GitOutput, GitError> {
-        self.run_git(args, false, None, true, Editing::Untouched)
+        self.run_git(args, false, None, true, Editing::Untouched, &[])
     }
 
     // For `--stdin`: the list of a large selection does not fit in the arguments.
     pub fn git_with_input(&self, args: &[&str], input: &[u8]) -> Result<GitOutput, GitError> {
-        self.run_git(args, false, Some(input), true, Editing::Untouched)
+        self.run_git(args, false, Some(input), true, Editing::Untouched, &[])
     }
 
     // Like IntelliJ's `setSilent(false)` + `setStdoutSuppressed(false)`, for the reads that are
     // shown anyway (fetch, clone): the command and all its output go to the console.
     pub fn git_loud(&self, args: &[&str]) -> Result<GitOutput, GitError> {
-        self.run_git(args, true, None, true, Editing::Untouched)
+        self.run_git(args, true, None, true, Editing::Untouched, &[])
+    }
+
+    // Like `git_loud`, with extra environment variables, set after the task's own: for a git that
+    // must run as git itself would run it (`GIT_PROTOCOL_FROM_USER=0` in a submodule's fetch).
+    pub fn git_loud_with_env(
+        &self,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<GitOutput, GitError> {
+        self.run_git(args, true, None, true, Editing::Untouched, env)
     }
 
     // Like `git_loud`, with an input: `git apply` reads the patch from there.
     pub fn git_loud_with_input(&self, args: &[&str], input: &[u8]) -> Result<GitOutput, GitError> {
-        self.run_git(args, true, Some(input), true, Editing::Untouched)
+        self.run_git(args, true, Some(input), true, Editing::Untouched, &[])
     }
 
     // What cannot be left half done, like `executeNonCancelableSection`: saving the changes and
     // giving them back. Cancelling here would leave them in the stash with no one expecting them.
     pub fn git_to_the_end(&self, args: &[&str]) -> Result<GitOutput, GitError> {
-        self.run_git(args, false, None, false, Editing::Untouched)
+        self.run_git(args, false, None, false, Editing::Untouched, &[])
     }
 
     // For commands that may open an editor (`pull.rebase=interactive`, a rebase, a reword):
@@ -245,12 +260,12 @@ impl TaskContext {
         handler: Arc<dyn EditorHandler>,
     ) -> Result<GitOutput, GitError> {
         let Some(editor) = self.shared.editor.get().filter(|_| !self.quiet) else {
-            return self.run_git(args, true, None, true, Editing::Refused);
+            return self.run_git(args, true, None, true, Editing::Refused, &[]);
         };
         let output = self.git(&["rev-parse", "--absolute-git-dir"])?;
         let git_dir = PathBuf::from(output.stdout.trim_end_matches('\n'));
         let registration = editor.register(handler, git_dir);
-        self.run_git(args, true, None, true, Editing::Registered(&registration))
+        self.run_git(args, true, None, true, Editing::Registered(&registration), &[])
     }
 
     // The `git_editing` handler that asks the main window.
@@ -270,6 +285,7 @@ impl TaskContext {
         input: Option<&[u8]>,
         cancellable: bool,
         editing: Editing,
+        env: &[(&str, &str)],
     ) -> Result<GitOutput, GitError> {
         if cancellable {
             self.check_cancelled()?;
@@ -277,6 +293,7 @@ impl TaskContext {
         let binary = self.binary();
         let full = self.full_args(args);
         let mut command = self.command(&binary, &full)?;
+        command.envs(env.iter().copied());
         match editing {
             Editing::Untouched => {}
             Editing::Refused => editor::refuse(&mut command),

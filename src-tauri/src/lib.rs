@@ -17,6 +17,7 @@ pub mod editor;
 pub mod fetch;
 pub mod get_version;
 pub mod git;
+pub mod gpg;
 pub mod history;
 pub mod hosting;
 pub mod hunks;
@@ -43,6 +44,7 @@ pub mod staging;
 pub mod stash;
 pub mod status;
 pub mod storage;
+pub mod submodules;
 pub mod task;
 #[cfg(test)]
 mod test_support;
@@ -203,6 +205,10 @@ pub fn run() {
             vcs_commands::remote_edit,
             vcs_commands::remote_remove,
             vcs_commands::remote_test_url,
+            vcs_commands::gpg_config,
+            vcs_commands::gpg_keys,
+            vcs_commands::log_signatures,
+            vcs_commands::gpg_config_set,
             vcs_commands::clone_repository,
             vcs_commands::init_repository,
             vcs_commands::open_exclude_file,

@@ -24,6 +24,7 @@ const SIDES: WorktreeSides = {
   note: null,
   hash: "hash",
   conflicted: false,
+  submodule: null,
 };
 
 const STATUS = [
@@ -168,6 +169,53 @@ test("without_frames_the_drawn_notice_arrives_without_paint_time", async () => {
     unfocused.mockRestore();
   }
 }, 6_000);
+
+const PARENT_HEAD = "c".repeat(40);
+
+test("a_submodule_in_local_changes_is_titled_by_the_parent_head_and_your_version", async () => {
+  mockCommands({
+    worktree_sides: () => ({
+      ...SIDES,
+      old: { kind: "text", content: "a".repeat(40) },
+      new: { kind: "text", content: "b".repeat(40) },
+      hunks: [],
+      editable: false,
+      hash: null,
+      submodule: PARENT_HEAD,
+    }),
+  });
+  render(DiffWindow);
+  await waitFor(() => expect(document.querySelector(".titles")).not.toBeNull());
+
+  await waitFor(() =>
+    expect(
+      [...document.querySelectorAll(".titles .title > span:first-of-type")].map((title) =>
+        title.textContent?.trim(),
+      ),
+    ).toEqual([PARENT_HEAD, "Your version"]),
+  );
+});
+
+test("a_submodule_without_a_parent_commit_has_the_default_left_title", async () => {
+  mockCommands({
+    worktree_sides: () => ({
+      ...SIDES,
+      old: { kind: "absent" },
+      new: { kind: "text", content: "b".repeat(40) },
+      hunks: [],
+      editable: false,
+      hash: null,
+      submodule: "",
+    }),
+  });
+  render(DiffWindow);
+
+  await waitFor(() =>
+    expect(document.querySelector(".titles .title > span:first-of-type")?.textContent?.trim()).toBe(
+      "Base version",
+    ),
+  );
+});
 
 test("the_align_setting_changes_the_option", async () => {
   mockCommands();
@@ -1301,6 +1349,52 @@ describe("with_a_request_of_two_revisions", () => {
 
     deliver("diff-request", { ...REQUEST, selected: 0 });
     await waitFor(() => expect(document.querySelector(".count")?.textContent).toBe("1/2"));
+  });
+
+  // The re-review, Minor A: a revision whose object is missing is git's error in the window,
+  // never an absent side, so there is no hunk to revert against the local file.
+  test("a_missing_revision_shows_git_s_error_and_nothing_to_revert", async () => {
+    mockRevisions({
+      diff_window_request: () => ({ ...REQUEST, files: [pair("x.txt")] }),
+      compare_sides: () => {
+        throw { kind: "git", message: "fatal: not a tree object" };
+      },
+    });
+    render(DiffWindow);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("fatal: not a tree object");
+    expect(document.querySelector(".rm-editor .cm-line")).toBeNull();
+    expect(checks()).toHaveLength(0);
+    expect(writes()).toHaveLength(0);
+  });
+
+  // `GitSubmoduleDiffRequestProvider`: the full hash of each revision, else the default title.
+  test("a_submodule_in_the_log_is_titled_by_the_full_hashes", async () => {
+    const submodule = {
+      left: { revision: LEFT, path: "libs/lib", title: "aaaaaaaa" },
+      right: { revision: RIGHT, path: "libs/lib", title: "bbbbbbbb" },
+    };
+    mockRevisions({
+      diff_window_request: () => ({ kind: "revisions", title: "lib (/repo/libs)", files: [submodule] }),
+      compare_sides: () => ({ ...REVISION_SIDES, submodule: LEFT }),
+    });
+    await open();
+
+    expect(titles()).toEqual([LEFT, RIGHT]);
+  });
+
+  test("a_submodule_against_the_local_side_has_your_version_on_the_right", async () => {
+    const against = {
+      left: { revision: LEFT, path: "libs/lib", title: LEFT },
+      right: { revision: "local", path: "libs/lib", title: "Local" },
+    };
+    mockRevisions({
+      diff_window_request: () => ({ kind: "revisions", title: "lib (/repo/libs)", files: [against] }),
+      compare_sides: () => ({ ...REVISION_SIDES, submodule: LEFT }),
+    });
+    await open();
+
+    expect(titles()).toEqual([LEFT, "Your version"]);
   });
 
   test("a_revisions_request_lists_only_its_files_and_never_reads_status", async () => {

@@ -220,6 +220,7 @@ export async function runSmoke(): Promise<void> {
     const options = await step("log_options_get", api.logOptionsGet);
     await step("log_options_set", () => api.logOptionsSet(options ?? {}));
     await step("commit_details", () => api.commitDetails([hash]));
+    await task<api.Signature[]>("log_signatures", () => api.logSignatures([hash], 0));
     await step("branches_containing", () => api.branchesContaining(hash));
     const groups = await step<ChangeGroup[]>("commit_changes_of", () =>
       api.commitChangesOf(hash, "parents"),
@@ -339,6 +340,8 @@ export async function runSmoke(): Promise<void> {
     await task("remote_edit", () => api.remoteEdit("smoke", "smoke2", url));
     await task("remote_test_url", () => api.remoteTestUrl(url, null));
     await task("remote_remove", () => api.remoteRemove("smoke2"));
+    // Unchecking only writes `commit.gpgSign false`: no gpg runs.
+    await task("gpg_config_set", () => api.gpgConfigSet(null));
     await task("clone_repository", () => api.cloneRepository(url, `${repo}-clone`));
     await task("init_repository", () => api.initRepository(`${repo}-new`, false));
     await step("open_exclude_file", api.openExcludeFile);

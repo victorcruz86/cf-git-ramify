@@ -1,6 +1,7 @@
 import type { SortType } from "../lib/api";
 
-export type LogColumn = "subject" | "author" | "date" | "hash";
+// `signature` is `GPG Signature` (`Git.CommitSignature`), hidden by default.
+export type LogColumn = "subject" | "author" | "date" | "hash" | "signature";
 export type DiffPreviewAt = "bottom" | "right";
 
 export interface Highlights {

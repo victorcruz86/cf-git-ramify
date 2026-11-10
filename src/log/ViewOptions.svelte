@@ -3,11 +3,14 @@
   import type { MenuAction, MenuItem } from "../lib/Menu.svelte";
   import { collapseLabel, expandLabel } from "./labels";
   import { toggleColumn, type Highlights, type LogColumn, type LogOptions } from "./options";
+  import { SIGNATURE_COLUMN } from "./signatures";
 
   const COLUMNS: [LogColumn, string][] = [
     ["author", "Author"],
     ["date", "Date"],
     ["hash", "Hash"],
+    // `column.name.commit.signature` (`GitB:1084`): external-status columns come after the others.
+    ["signature", SIGNATURE_COLUMN],
   ];
   const SORTS: [SortType, string][] = [
     ["off", "Off"],

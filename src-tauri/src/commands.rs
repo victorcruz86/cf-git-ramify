@@ -32,6 +32,7 @@ use crate::hosting::commands::HostingState;
 use crate::hunks::{self, Hunk, HunkError, LineSelection};
 use crate::idea_import;
 use crate::log::commands::SharedLog;
+use crate::log::signatures::SignatureLoads;
 use crate::messages;
 use crate::operation::{self, RepoState};
 use crate::preserve::{self, Pending};
@@ -45,7 +46,7 @@ use crate::status::{self, FileChange};
 use crate::storage;
 use crate::task::{Runner, TaskId};
 use crate::viewer::{self, VIEWER_WINDOW};
-use crate::watch::{self, RepoChange, Watcher};
+use crate::watch::{self, RepoChange, WatchedPaths, Watcher};
 use crate::worktree_diff::{self, Comparison, WorktreeSides};
 
 #[derive(Debug, Serialize)]
@@ -460,7 +461,8 @@ pub fn resume_watching(
         .as_ref()
         .map(|repo| repo.path.clone());
     let Some(path) = path else { return Ok(()) };
-    replace_watcher(state, Some(watch::start(path, on_change)?));
+    let watcher = watch::start(WatchedPaths::of(&path)?, on_change)?;
+    replace_watcher(state, Some(watcher));
     Ok(())
 }
 
@@ -741,17 +743,6 @@ pub fn commit_staged_locked(
     Ok(hash)
 }
 
-pub fn with_signature(options: CommitOptions, settings: &Settings) -> CommitOptions {
-    CommitOptions {
-        sign: settings.sign_commits,
-        signing_key: settings
-            .signing_key
-            .clone()
-            .filter(|_| settings.sign_commits),
-        ..options
-    }
-}
-
 // What was chosen by lines is looked at with the whole file, like IntelliJ.
 pub fn warnings_for(
     repo: &Path,
@@ -864,6 +855,8 @@ pub struct AppState {
     // GitHub's client and where its tokens are. Shared with the after-fetch hook, which loads the
     // protected branch rules.
     pub hosting: Arc<HostingState>,
+    // The `GPG Signature` column's loads and their app-wide cache.
+    pub signatures: SignatureLoads,
 }
 
 impl Default for AppState {
@@ -887,6 +880,7 @@ impl Default for AppState {
             merge_leave: Mutex::default(),
             merge_ready: Mutex::default(),
             hosting: Arc::new(HostingState::default()),
+            signatures: SignatureLoads::default(),
         }
     }
 }
@@ -1511,7 +1505,7 @@ pub async fn repo_open(
         }
         prune_snapshots(data_base.clone(), root.clone());
         clean_shelf(app.clone(), data_base, root.clone());
-        let watcher = watch::start(root, notifier(app))?;
+        let watcher = watch::start(WatchedPaths::of(&root)?, notifier(app))?;
         Ok((info, watcher))
     })
     .await?;
@@ -1874,12 +1868,12 @@ pub async fn diff_window_open_request(
 ) -> Result<(), ApiError> {
     let repo = current_repo(&state)?;
     let checked = request.clone();
-    blocking_api(move || Ok(compare::check_request(&repo, &checked)?)).await?;
+    let title = blocking_api(move || {
+        compare::check_request(&repo, &checked)?;
+        Ok(compare::window_title(&repo, &checked))
+    })
+    .await?;
     *state.diff_request.lock().unwrap() = Some(request.clone());
-    let title = match &request {
-        DiffRequest::Worktree { path } => path.clone(),
-        DiffRequest::Revisions { title, .. } => title.clone(),
-    };
     let notify = |window: &WebviewWindow| match &request {
         DiffRequest::Worktree { path } => window.emit_to(DIFF_WINDOW, DIFF_OPEN_EVENT, path),
         DiffRequest::Revisions { .. } => window.emit_to(DIFF_WINDOW, DIFF_REQUEST_EVENT, &request),
@@ -2502,8 +2496,6 @@ pub async fn commit_changes(
     let repo = current_repo(&state)?;
     let dir = repo_data_dir(&app, &state)?;
     let locks = state.operations.clone();
-    let options = with_signature(request.options, &current_settings(&app)?);
-    let request = CommitRequest { options, ..request };
     blocking_api(move || commit_locked(&locks, &repo, &dir, &request)).await
 }
 
@@ -2520,8 +2512,6 @@ pub async fn commit_changes_selected(
     let repo = current_repo(&state)?;
     let dir = repo_data_dir(&app, &state)?;
     let locks = state.operations.clone();
-    let options = with_signature(request.options, &current_settings(&app)?);
-    let request = CommitRequest { options, ..request };
     blocking_api(move || commit_selected_locked(&locks, &repo, &dir, request, &selections)).await
 }
 
@@ -2623,7 +2613,6 @@ pub async fn commit_staged(
 ) -> Result<String, ApiError> {
     flush_diff_window(&app, &state, SAVE_ACTION).await?;
     let (locks, repo, dir) = staging_context(&app, &state)?;
-    let options = with_signature(options, &current_settings(&app)?);
     blocking_api(move || commit_staged_locked(&locks, &repo, &dir, &options, &message)).await
 }
 
@@ -3279,6 +3268,7 @@ mod tests {
             "revision_get",
             "github_pr_checkout",
             "github_pr_show_in_log",
+            "gpg_config_set",
         ] {
             let start = source.find(&format!("pub async fn {name}(")).unwrap();
             let mut lines = source[start..].lines();
@@ -4677,23 +4667,6 @@ mod tests {
 
         assert_eq!(repo.git(&["status", "--porcelain"]), "");
         assert_eq!(messages::list(dir.path()), vec!["staged".to_string()]);
-    }
-
-    #[test]
-    fn the_signature_comes_from_the_settings() {
-        let settings = Settings {
-            sign_commits: true,
-            signing_key: Some("ABC123".to_string()),
-            ..Default::default()
-        };
-
-        let options = with_signature(CommitOptions::default(), &settings);
-        assert!(options.sign);
-        assert_eq!(options.signing_key.as_deref(), Some("ABC123"));
-
-        let options = with_signature(options, &Settings::default());
-        assert!(!options.sign);
-        assert_eq!(options.signing_key, None);
     }
 
     #[test]

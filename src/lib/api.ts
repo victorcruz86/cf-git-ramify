@@ -292,6 +292,8 @@ export interface WorktreeSides extends FileSides {
   hash: string | null;
   // With a conflict HEAD is shown against the disk, without actions on the stage.
   conflicted: boolean;
+  // The path is a submodule: the full hash of the parent's HEAD, empty without a commit.
+  submodule: string | null;
 }
 
 export type FileState =
@@ -435,8 +437,6 @@ export interface Settings {
   warnLargeFiles: boolean;
   largeFilesLimitMb: number;
   warnBadFileNames: boolean;
-  signCommits: boolean;
-  signingKey: string | null;
   useCredentialHelper: boolean;
   incomingCheck: IncomingCheck;
   updateMethod: UpdateMethod;
@@ -1070,6 +1070,28 @@ export const commitChangesOf = (hash: string, mode: ChangeMode) =>
 // the selection changes: its result is a `SelectedChanges`.
 export const commitChangesStart = (hashes: string[], limit: number | null) =>
   invoke<number>("commit_changes_start", { hashes, limit });
+// `GitCommitSignature`: `N` (unsigned) has no entry.
+export type SignatureStatus =
+  | "verified"
+  | "unknown"
+  | "expired"
+  | "expiredKey"
+  | "revokedKey"
+  | "cannotVerify"
+  | "bad";
+
+export interface Signature {
+  hash: string;
+  status: SignatureStatus;
+  signer: string;
+  fingerprint: string;
+}
+
+// The signatures of some commits (`git log --no-walk`), for the `GPG Signature` column and the
+// details. Returns the id of a task whose result is a `Signature[]`. `requester` is the table or
+// panel that asks: its new request cancels its previous one.
+export const logSignatures = (hashes: string[], requester: number) =>
+  invoke<number>("log_signatures", { hashes, requester });
 export const logRecentFilters = () => invoke<RecentFilters>("log_recent_filters");
 export const logRememberFilter = (filter: string, values: string[]) =>
   invoke<RecentFilters>("log_remember_filter", { filter, values });
@@ -1220,6 +1242,8 @@ export interface UpdateResult {
   saved: SavedChanges | null;
   restore: RestoreOutcome | null;
   inProgress: boolean;
+  // Git's output when the submodule update after a good Update failed (decision 7).
+  submoduleError: string | null;
 }
 
 export interface UpdateOptions {
@@ -1972,6 +1996,25 @@ export const remoteEdit = (name: string, newName: string, url: string) =>
 export const remoteRemove = (name: string) => invoke<number>("remote_remove", { name });
 export const remoteTestUrl = (url: string, remote: string | null) =>
   invoke<number>("remote_test_url", { url, remote });
+
+// `Configure GPG Key…`. A secret key gpg can sign with, and its first user ID when it has one.
+export interface GpgKey {
+  id: string;
+  userId: string | null;
+}
+
+// The repository's effective `commit.gpgSign` and `user.signingkey`, and whether `gpg.format` is
+// `ssh`.
+export interface SigningConfig {
+  sign: boolean;
+  key: string | null;
+  ssh: boolean;
+}
+
+export const gpgConfig = () => invoke<SigningConfig>("gpg_config");
+export const gpgKeys = () => invoke<GpgKey[]>("gpg_keys");
+// A task: the result arrives with `taskResult`. `null` turns signing off and keeps the key.
+export const gpgConfigSet = (key: string | null) => invoke<number>("gpg_config_set", { key });
 export const cloneRepository = (url: string, directory: string) =>
   invoke<number>("clone_repository", { url, directory });
 export const initRepository = (path: string, confirmed: boolean) =>

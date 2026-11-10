@@ -16,6 +16,7 @@ use crate::preserve::{self, RestoreOutcome, Saved};
 use crate::rebase;
 use crate::settings::{CleanTree, UpdateMethod};
 use crate::snapshots;
+use crate::submodules;
 use crate::task::TaskContext;
 
 const HEAD: &str = "HEAD";
@@ -77,6 +78,8 @@ pub struct UpdateResult {
     pub restore: Option<RestoreOutcome>,
     // Git was left with an unfinished merge or rebase, and there is something to abort.
     pub in_progress: bool,
+    // Decision 7: git's output when the submodule update after it failed. The outcome stays.
+    pub submodule_error: Option<String>,
 }
 
 impl UpdateResult {
@@ -164,6 +167,7 @@ impl From<Outcome> for UpdateResult {
             saved: None,
             restore: None,
             in_progress: false,
+            submodule_error: None,
         }
     }
 }
@@ -650,9 +654,76 @@ fn prepared(
         }
     }
     before_changes()?;
-    repo.ctx
-        .exclusive(|| with_lock(repo, method, options, &tracked.branch))
-        .unwrap_or(Err(GitError::Cancelled))
+    let (result, pending) = repo
+        .ctx
+        .exclusive(|| {
+            let submodules = submodules::before(repo.ctx, repo.path);
+            with_lock(repo, method, options, &tracked.branch).map(|result| {
+                let pending = submodules_to_update(repo, submodules, &result);
+                (result, pending)
+            })
+        })
+        .unwrap_or(Err(GitError::Cancelled))?;
+    Ok(with_submodules(repo, pending, result))
+}
+
+// Decision 7, first half: once, in the open repository, after an update that ended well, with its
+// own changes already back, and still under the lock. Only the submodules that were at their
+// recorded commit before it move (`submodules::decide`). `None`: there is nothing to update.
+fn submodules_to_update(
+    repo: &Repo,
+    before: Option<submodules::Before>,
+    result: &UpdateResult,
+) -> Option<(submodules::Before, submodules::Decision)> {
+    if !matches!(result.outcome, Outcome::Success | Outcome::NothingToUpdate) {
+        return None;
+    }
+    let before = before?;
+    let first = submodules::decide(repo.ctx, repo.path, &before);
+    if first.paths.is_empty() {
+        submodules::note(repo.ctx, &first);
+        return None;
+    }
+    Some((before, first))
+}
+
+// Decision 7, second half, after the lock is let go: the fetch is what takes long, and it talks to
+// the network (`exclusive`: never the write lock while waiting for a remote). The check runs again
+// under the lock, right before an update that does not fetch. Their local changes are not saved:
+// git refuses to overwrite them, and its error goes to the notification while the outcome stays.
+fn with_submodules(
+    repo: &Repo,
+    pending: Option<(submodules::Before, submodules::Decision)>,
+    result: UpdateResult,
+) -> UpdateResult {
+    let Some((before, first)) = pending else {
+        return result;
+    };
+    let (ctx, path) = (repo.ctx, repo.path);
+    let updated = match submodules::fetch_missing(ctx, path, &first) {
+        Err(error) => {
+            submodules::note(ctx, &first);
+            Err(error)
+        }
+        Ok(()) => ctx
+            .exclusive(|| {
+                let last = submodules::decide(ctx, path, &before);
+                submodules::note(ctx, &last);
+                if last.paths.is_empty() {
+                    Ok(())
+                } else {
+                    submodules::update(ctx, &last.paths)
+                }
+            })
+            .unwrap_or(Err(GitError::Cancelled)),
+    };
+    match updated {
+        Ok(()) => result,
+        Err(error) => UpdateResult {
+            submodule_error: Some(fetch::error_text(error)),
+            ..result
+        },
+    }
 }
 
 // `before_changes` runs after the fetch and without the lock: what was written in the diff window
@@ -2448,5 +2519,619 @@ mod tests {
 
         assert_eq!(harness.read("b.txt"), "on disk\n");
         assert_eq!(snapshots::list(harness.data.path()).len(), 1);
+    }
+
+    // Decision 7. The global options of every task, then exactly `submodule update --recursive`
+    // with the literal paths that qualify: no `--init`, no `--force`, and no `protocol.file.allow`,
+    // which only the tests' own git uses.
+    const SUBMODULE_UPDATE: &str = "-c core.quotepath=false -c log.showSignature=false --literal-pathspecs submodule update --no-fetch --recursive -- sub";
+    const NOT_UPDATED: &str =
+        "Submodule sub was not updated: its HEAD is not at the commit the repository records.";
+    const MISSING: &str = "1234567890123456789012345678901234567890";
+
+    fn head_of(repo: &TempRepo) -> String {
+        repo.git(&["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    fn on_a_branch(repo: &TempRepo) -> bool {
+        crate::test_support::git_command()
+            .current_dir(repo.path())
+            .args(["symbolic-ref", "-q", "HEAD"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+
+    // The submodule commands the Console shows.
+    fn submodule_commands(harness: &Harness) -> Vec<String> {
+        let lines = harness.console.lines().into_iter();
+        lines
+            .filter(|line| line.command && line.text.contains(" submodule "))
+            .map(|line| line.text)
+            .collect()
+    }
+
+    fn updated_submodules_once(harness: &Harness) {
+        let commands = submodule_commands(harness);
+        assert_eq!(commands.len(), 1, "{commands:?}");
+        assert!(commands[0].ends_with(SUBMODULE_UPDATE), "{commands:?}");
+        assert!(!commands[0].contains("protocol.file"), "{commands:?}");
+    }
+
+    // `sub`, a submodule of the repository, published with it and received by the colleague.
+    // git refuses to fetch a local path from inside `submodule update` unless the submodule's
+    // config allows it. Here that is the test's own setting, as it would be the user's: what
+    // rama runs never passes it.
+    fn published_submodule(harness: &Harness) -> TempRepo {
+        let sub = harness.repo.with_submodule("sub");
+        sub.git(&["config", "protocol.file.allow", "always"]);
+        harness.git(&["push", "-q", "origin", "main"]);
+        harness
+            .colleague
+            .git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        sub
+    }
+
+    // The colleague records `commit` as `sub` and publishes it: the parent's new tip.
+    fn recorded(harness: &Harness, commit: &str) -> String {
+        let entry = format!("160000,{commit},sub");
+        harness
+            .colleague
+            .git(&["update-index", "--cacheinfo", &entry]);
+        harness
+            .colleague
+            .git(&["commit", "-q", "-m", "move the submodule"]);
+        harness.colleague.git(&["push", "-q", "origin", "main"]);
+        head_of(&harness.colleague)
+    }
+
+    // A new commit on `main` of the submodule's remote.
+    fn upstream_commit(sub: &TempRepo, file: &str, contents: &str) -> String {
+        let url = sub.git(&["config", "remote.origin.url"]).trim().to_string();
+        let work = TempRepo::new();
+        work.git(&["fetch", "-q", &url, "main"]);
+        work.git(&["checkout", "-q", "-B", "main", "FETCH_HEAD"]);
+        let commit = work.commit(file, contents.as_bytes(), "in the submodule's remote");
+        work.git(&["push", "-q", &url, "main"]);
+        commit
+    }
+
+    // A new commit in the submodule's remote, recorded by the colleague. It gives that commit.
+    fn recorded_upstream(harness: &Harness, sub: &TempRepo, file: &str, contents: &str) -> String {
+        let commit = upstream_commit(sub, file, contents);
+        recorded(harness, &commit);
+        commit
+    }
+
+    // A submodule at its recorded commit is still updated when the parent moves the gitlink.
+    #[test]
+    fn update_project_updates_a_detached_submodule_to_the_new_recorded_commit() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let commit = recorded_upstream(&harness, &sub, "new.txt", "new\n");
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), commit);
+        updated_submodules_once(&harness);
+        // The new commit was missing: fetched in the submodule, against its own remote, first.
+        let commands: Vec<String> = harness
+            .console
+            .lines()
+            .into_iter()
+            .filter(|line| line.command)
+            .map(|line| line.text)
+            .collect();
+        let fetch = commands
+            .iter()
+            .position(|text| text.ends_with("/sub fetch --recurse-submodules=no"))
+            .expect("the submodule's fetch");
+        let update = commands
+            .iter()
+            .position(|text| text.ends_with(SUBMODULE_UPDATE))
+            .unwrap();
+        assert!(fetch < update, "{commands:?}");
+    }
+
+    #[test]
+    fn a_submodule_on_a_branch_or_not_initialized_is_left_alone() {
+        let harness = Harness::new();
+        let gone = harness.repo.with_submodule("gone");
+        harness.git(&["submodule", "deinit", "-q", "gone"]);
+        let sub = published_submodule(&harness);
+        let before = head_of(&sub);
+        let commit = recorded_upstream(&harness, &sub, "new.txt", "new\n");
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_ne!(head_of(&sub), commit);
+        assert_eq!(head_of(&sub), before);
+        assert!(on_a_branch(&sub));
+        assert_eq!(fs::read_dir(gone.path()).unwrap().count(), 0);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+    }
+
+    fn console_text(harness: &Harness) -> Vec<String> {
+        let lines = harness.console.lines().into_iter();
+        lines
+            .filter(|line| !line.command)
+            .map(|line| line.text)
+            .collect()
+    }
+
+    #[test]
+    fn nothing_to_update_with_every_submodule_at_its_recorded_commit_runs_nothing() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let before = head_of(&sub);
+
+        let result = harness.update(UpdateMethod::Rebase);
+
+        assert_eq!(result.outcome, Outcome::NothingToUpdate);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), before);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+        assert!(!console_text(&harness)
+            .iter()
+            .any(|text| text.contains("Submodule")));
+    }
+
+    // The ruling on Important 2: a commit made on a detached HEAD stays reachable from that HEAD.
+    #[test]
+    fn a_detached_submodule_with_a_new_commit_on_its_head_keeps_it_and_is_not_updated() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let mine = sub.commit("mine.txt", b"mine\n", "mine, on the detached HEAD");
+        recorded_upstream(&harness, &sub, "new.txt", "new\n");
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), mine);
+        assert!(!on_a_branch(&sub));
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+        let notes: Vec<String> = console_text(&harness)
+            .into_iter()
+            .filter(|text| text.starts_with("Submodule "))
+            .collect();
+        assert_eq!(notes, [NOT_UPDATED]);
+    }
+
+    #[test]
+    fn an_orphan_gitlink_without_gitmodules_is_not_an_error() {
+        let harness = Harness::new();
+        harness.repo.orphan_gitlink("orphan");
+        harness.git(&["push", "-q", "origin", "main"]);
+        harness
+            .colleague
+            .git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        let tip = harness.incoming("c.txt", "c\n");
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(harness.head(), tip);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+    }
+
+    // `git submodule status` fails on the orphan: nothing was attempted, so nothing is reported.
+    #[test]
+    fn an_orphan_gitlink_beside_a_submodule_is_not_an_error() {
+        let harness = Harness::new();
+        harness.repo.orphan_gitlink("orphan");
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let before = head_of(&sub);
+        recorded_upstream(&harness, &sub, "new.txt", "new\n");
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), before);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+    }
+
+    // Review Focus 4: git refuses, nothing is lost, and its error is what the notification shows.
+    #[test]
+    fn a_submodule_with_local_changes_keeps_them_and_the_error_reaches_the_notification() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let before = head_of(&sub);
+        recorded_upstream(&harness, &sub, "sub.txt", "theirs\n");
+        fs::write(sub.path().join("sub.txt"), "mine\n").unwrap();
+        fs::write(sub.path().join("untracked.txt"), "mine too\n").unwrap();
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(head_of(&sub), before);
+        assert_eq!(
+            fs::read_to_string(sub.path().join("sub.txt")).unwrap(),
+            "mine\n"
+        );
+        let untracked = fs::read_to_string(sub.path().join("untracked.txt")).unwrap();
+        assert_eq!(untracked, "mine too\n");
+        let error = result.submodule_error.expect("git's error");
+        assert!(error.contains("would be overwritten"), "{error}");
+        assert!(error.contains("sub.txt"), "{error}");
+        updated_submodules_once(&harness);
+    }
+
+    // `sub` and `sub/inner` both at their recorded commits, detached. The colleague records a
+    // commit of `sub` that records a new commit of `inner`: the recursive call moves both.
+    #[test]
+    fn a_nested_submodule_is_updated_by_the_recursive_call() {
+        let harness = Harness::new();
+        let sub = harness.repo.with_submodule("sub");
+        let inner = sub.with_submodule("inner");
+        let first_outer = head_of(&sub);
+        let first_inner = head_of(&inner);
+        harness.git(&["add", "sub"]);
+        harness.git(&["commit", "-q", "-m", "record the submodule"]);
+        harness.git(&["push", "-q", "origin", "main"]);
+        harness
+            .colleague
+            .git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        let second_inner = inner.commit("sub.txt", b"second\n", "second in the nested one");
+        sub.git(&["add", "inner"]);
+        sub.git(&["commit", "-q", "-m", "record the second one"]);
+        let second_outer = head_of(&sub);
+        sub.git(&["checkout", "-q", "--detach", &first_outer]);
+        inner.git(&["checkout", "-q", "--detach", &first_inner]);
+        recorded(&harness, &second_outer);
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), second_outer);
+        assert_eq!(head_of(&inner), second_inner);
+        updated_submodules_once(&harness);
+    }
+
+    // `--recursive` would move the nested one the user moved, so its parent is left alone too.
+    #[test]
+    fn a_submodule_with_a_moved_one_inside_is_left_alone() {
+        let harness = Harness::new();
+        let sub = harness.repo.with_submodule("sub");
+        let inner = sub.with_submodule("inner");
+        let first_outer = head_of(&sub);
+        harness.git(&["add", "sub"]);
+        harness.git(&["commit", "-q", "-m", "record the submodule"]);
+        harness.git(&["push", "-q", "origin", "main"]);
+        harness
+            .colleague
+            .git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        inner.commit("sub.txt", b"second\n", "second in the nested one");
+        sub.git(&["add", "inner"]);
+        sub.git(&["commit", "-q", "-m", "record the second one"]);
+        let second_outer = head_of(&sub);
+        sub.git(&["checkout", "-q", "--detach", &first_outer]);
+        inner.git(&["checkout", "-q", "--detach", "HEAD~1"]);
+        let mine = inner.commit("mine.txt", b"mine\n", "mine, on the detached HEAD");
+        recorded(&harness, &second_outer);
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), first_outer);
+        assert_eq!(head_of(&inner), mine);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+        let notes: Vec<String> = console_text(&harness)
+            .into_iter()
+            .filter(|text| text.starts_with("Submodule "))
+            .collect();
+        assert_eq!(
+            notes,
+            ["Submodule sub/inner was not updated: its HEAD is not at the commit the repository records."]
+        );
+    }
+
+    // Re-review 1, I2: `mine` is committed on the detached HEAD and staged in the parent, so the
+    // status shows ` ` before. The stash takes the staged gitlink and, without the staging area,
+    // `pop` gives it back unstaged: `+` with the same HEAD afterwards. Nothing but the reflog
+    // would keep `mine`, so it is not checked out over.
+    #[test]
+    fn a_staged_commit_on_a_detached_submodule_head_stays_after_the_stash() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        harness.repo.commit("own.txt", b"own\n", "own");
+        sub.git(&["checkout", "-q", "--detach"]);
+        let mine = sub.commit("mine.txt", b"mine\n", "mine, on the detached HEAD");
+        harness.git(&["add", "sub"]);
+        harness.write("b.txt", "local\n");
+        harness.incoming("c.txt", "c\n");
+
+        let result = harness.update(UpdateMethod::Rebase);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.restore, Some(RestoreOutcome::Restored));
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), mine);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+        let notes: Vec<String> = console_text(&harness)
+            .into_iter()
+            .filter(|text| text.starts_with("Submodule "))
+            .collect();
+        assert_eq!(notes, [NOT_UPDATED]);
+    }
+
+    // Re-review 1, new: another tool commits on `inner`'s detached HEAD while the parent merges.
+    // `sub` still qualifies, but `--recursive` would check `inner` out over that commit.
+    #[test]
+    fn a_nested_submodule_that_gets_a_commit_during_the_merge_is_not_checked_out_over() {
+        let harness = Harness::wrapping(
+            "*\" merge origin/main \"*)\n  git \"$@\"\n  status=$?\n  git -C \"$(cat \"{mark}.inner\")\" -c user.name=T -c user.email=t@e commit -q --allow-empty -m during\n  exit $status\n  ;;",
+        );
+        let sub = harness.repo.with_submodule("sub");
+        let inner = sub.with_submodule("inner");
+        let first_outer = head_of(&sub);
+        let first_inner = head_of(&inner);
+        harness.git(&["add", "sub"]);
+        harness.git(&["commit", "-q", "-m", "record the submodule"]);
+        harness.git(&["push", "-q", "origin", "main"]);
+        harness
+            .colleague
+            .git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        inner.commit("sub.txt", b"second\n", "second in the nested one");
+        sub.git(&["add", "inner"]);
+        sub.git(&["commit", "-q", "-m", "record the second one"]);
+        let second_outer = head_of(&sub);
+        sub.git(&["checkout", "-q", "--detach", &first_outer]);
+        inner.git(&["checkout", "-q", "--detach", &first_inner]);
+        recorded(&harness, &second_outer);
+        let inner_path = format!("{}.inner", harness.mark().display());
+        fs::write(inner_path, inner.path().to_str().unwrap()).unwrap();
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(inner.git(&["log", "-1", "--format=%s"]), "during\n");
+        assert_eq!(inner.git(&["rev-parse", "HEAD~1"]).trim(), first_inner);
+        assert_eq!(head_of(&sub), first_outer);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+    }
+
+    // Check (a) says yes: the HEAD is not what the parent's HEAD records, but the submodule's remote
+    // branch contains it. The staged gitlink comes back unstaged after the stash, the submodule is
+    // updated, and its commit is still on `origin/main`.
+    #[test]
+    fn a_submodule_at_a_commit_its_remote_branch_contains_is_still_updated() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        let recorded_commit = head_of(&sub);
+        harness.repo.commit("own.txt", b"own\n", "own");
+        let upstream = upstream_commit(&sub, "new.txt", "new\n");
+        sub.git(&["fetch", "-q", "origin"]);
+        sub.git(&["checkout", "-q", "--detach", "origin/main"]);
+        harness.git(&["add", "sub"]);
+        harness.write("b.txt", "local\n");
+        harness.incoming("c.txt", "c\n");
+
+        let result = harness.update(UpdateMethod::Rebase);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), recorded_commit);
+        let keeper = sub.git(&["for-each-ref", "--contains", &upstream, "refs/remotes"]);
+        assert!(keeper.contains("refs/remotes/origin/main"), "{keeper}");
+        updated_submodules_once(&harness);
+    }
+
+    // Re-review 2: a stash is not a keeper. It holds the only copy of `mine` (its first parent),
+    // and a later `stash pop` would leave `mine` only in the reflog.
+    #[test]
+    fn a_detached_head_that_only_a_stash_holds_is_not_moved() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        harness.repo.commit("own.txt", b"own\n", "own");
+        sub.git(&["checkout", "-q", "--detach"]);
+        let mine = sub.commit("mine.txt", b"mine\n", "mine, on the detached HEAD");
+        fs::write(sub.path().join("sub.txt"), "stashed\n").unwrap();
+        sub.git(&["stash", "-q"]);
+        harness.git(&["add", "sub"]);
+        harness.write("b.txt", "local\n");
+        harness.incoming("c.txt", "c\n");
+
+        let result = harness.update(UpdateMethod::Rebase);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), mine);
+        assert_eq!(sub.git(&["stash", "list"]).lines().count(), 1);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+    }
+
+    // Re-review 2, Minor 1: the fetch runs before the check, and the update does not fetch. A
+    // commit made in the submodule during that fetch is seen by the second check.
+    #[test]
+    fn a_commit_made_in_the_submodule_during_the_fetch_is_not_checked_out_over() {
+        let harness = Harness::wrapping(
+            "*\" fetch --recurse-submodules=no \"*)\n  git \"$@\"\n  status=$?\n  git -C \"$(cat \"{mark}.sub\")\" -c user.name=T -c user.email=t@e commit -q --allow-empty -m during\n  exit $status\n  ;;",
+        );
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let before = head_of(&sub);
+        recorded_upstream(&harness, &sub, "new.txt", "new\n");
+        let sub_path = format!("{}.sub", harness.mark().display());
+        fs::write(sub_path, sub.path().to_str().unwrap()).unwrap();
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(sub.git(&["log", "-1", "--format=%s"]), "during\n");
+        assert_eq!(sub.git(&["rev-parse", "HEAD~1"]).trim(), before);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+    }
+
+    // The final review: git's own submodule fetch runs with `GIT_PROTOCOL_FROM_USER=0`, so a URL
+    // that came from a repository cannot use a transport that `protocol.allow` leaves to the user,
+    // such as a local path. Without the submodule's own `protocol.file.allow`, rama's fetch is
+    // refused the same way, and git's error reaches the notification.
+    #[test]
+    fn a_submodule_with_a_local_path_url_is_refused_by_the_fetch() {
+        let harness = Harness::new();
+        let sub = harness.repo.with_submodule("sub");
+        harness.git(&["push", "-q", "origin", "main"]);
+        harness
+            .colleague
+            .git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let before = head_of(&sub);
+        recorded_upstream(&harness, &sub, "new.txt", "new\n");
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(head_of(&sub), before);
+        let error = result.submodule_error.expect("git's error");
+        assert!(error.contains("transport 'file' not allowed"), "{error}");
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
+    }
+
+    // The final review, Minor 1 (`task.rs`: never the write lock while waiting for a remote): a
+    // commit made while the submodule's fetch waits does not wait for it, and the update still
+    // goes ahead once the fetch is done.
+    #[test]
+    fn a_commit_during_the_submodule_fetch_does_not_wait_for_it() {
+        let harness = Harness::wrapping(
+            "*\" fetch --recurse-submodules=no \"*)\n  : > \"{mark}\"\n  while [ ! -e \"{mark}.go\" ]; do sleep 0.02; done\n  exec git \"$@\"\n  ;;",
+        );
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let commit = recorded_upstream(&harness, &sub, "new.txt", "new\n");
+        let (_, result) = harness.start(UpdateMethod::Merge, UpdateOptions::default());
+        harness.wait_for_mark();
+        harness.write("mine.txt", "mine\n");
+
+        let (send, committed) = mpsc::channel();
+        harness.runner.start(
+            harness.repo.path(),
+            TaskKind::Write,
+            "Commit".to_string(),
+            move |ctx| {
+                let done = ctx
+                    .git(&["add", "--", "mine.txt"])
+                    .and_then(|_| ctx.git(&["commit", "-q", "-m", "mine"]));
+                send.send(done.is_ok()).unwrap();
+                Ok(())
+            },
+        );
+        let finished = committed.recv_timeout(Duration::from_secs(10));
+        fs::write(harness.scripts.path().join("mark.go"), "").unwrap();
+
+        assert_eq!(finished, Ok(true));
+        let result = result.recv_timeout(WAIT).unwrap();
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(harness.git(&["log", "-1", "--format=%s"]), "mine\n");
+        assert_eq!(head_of(&sub), commit);
+        updated_submodules_once(&harness);
+    }
+
+    // `sub`'s new commit records an `inner` commit that only `inner`'s remote has: it is fetched in
+    // `inner` before the update, which does not fetch. `inner`'s remote is a local path, which its
+    // own config allows, as `published_submodule` does for `sub`.
+    #[test]
+    fn a_nested_submodule_s_missing_commit_is_fetched_before_the_update() {
+        let harness = Harness::new();
+        let sub = harness.repo.with_submodule("sub");
+        let inner = sub.with_submodule("inner");
+        inner.git(&["config", "protocol.file.allow", "always"]);
+        let first_outer = head_of(&sub);
+        harness.git(&["add", "sub"]);
+        harness.git(&["commit", "-q", "-m", "record the submodule"]);
+        harness.git(&["push", "-q", "origin", "main"]);
+        harness
+            .colleague
+            .git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        let second_inner = upstream_commit(&inner, "x.txt", "x\n");
+        let entry = format!("160000,{second_inner},inner");
+        sub.git(&["update-index", "--cacheinfo", &entry]);
+        sub.git(&["commit", "-q", "-m", "record the remote one"]);
+        let second_outer = head_of(&sub);
+        sub.git(&["checkout", "-q", "--detach", &first_outer]);
+        inner.git(&["checkout", "-q", "--detach"]);
+        recorded(&harness, &second_outer);
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), second_outer);
+        assert_eq!(head_of(&inner), second_inner);
+        let fetched = harness.console.lines().into_iter().filter(|line| {
+            line.command
+                && line
+                    .text
+                    .ends_with("/sub/inner fetch --recurse-submodules=no")
+        });
+        assert_eq!(fetched.count(), 1);
+        updated_submodules_once(&harness);
+    }
+
+    // Review Focus 4: the commit is missing from the submodule's remote.
+    #[test]
+    fn a_failed_submodule_update_does_not_change_the_update_outcome() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let before = head_of(&sub);
+        let tip = recorded(&harness, MISSING);
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.title, None);
+        assert_eq!(result.commits, 1);
+        assert_eq!(result.files, 1);
+        assert!(result.range.is_some());
+        assert_eq!(harness.head(), tip);
+        assert_eq!(head_of(&sub), before);
+        // The fetch ran first and did not bring it; `--no-fetch` then fails on it.
+        let fetched =
+            harness.console.lines().into_iter().filter(|line| {
+                line.command && line.text.ends_with(" fetch --recurse-submodules=no")
+            });
+        assert_eq!(fetched.count(), 1);
+        let error = result.submodule_error.expect("git's error");
+        assert!(
+            error.contains(&format!(
+                "Unable to checkout '{MISSING}' in submodule path 'sub'"
+            )),
+            "{error}"
+        );
+        updated_submodules_once(&harness);
+    }
+
+    #[test]
+    fn an_update_that_does_not_succeed_leaves_the_submodules_alone() {
+        let harness = Harness::new();
+        let sub = published_submodule(&harness);
+        sub.git(&["checkout", "-q", "--detach"]);
+        let before = head_of(&sub);
+        recorded_upstream(&harness, &sub, "new.txt", "new\n");
+        harness.diverged_on_a_txt();
+
+        let result = harness.update(UpdateMethod::Merge);
+
+        assert_eq!(result.outcome, Outcome::Conflicts);
+        assert_eq!(result.submodule_error, None);
+        assert_eq!(head_of(&sub), before);
+        assert_eq!(submodule_commands(&harness), Vec::<String>::new());
     }
 }

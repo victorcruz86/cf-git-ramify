@@ -26,14 +26,25 @@
 </script>
 
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import {
     branchesContaining,
     commitDetails,
     type CommitDetails,
     type LogRef,
+    type Signature,
   } from "../lib/api";
   import { errorText } from "../lib/errors";
+  import Icon from "../lib/Icon.svelte";
   import { refColor } from "./labels";
+  import {
+    FINGERPRINT,
+    SIGNED_BY,
+    SignatureLoader,
+    signatureDescription,
+    signatureIcon,
+    signatureText,
+  } from "./signatures";
 
   // `CommitDetailsListPanel`.
   const MAX_COMMITS = 50;
@@ -61,6 +72,11 @@
 
   let commits = $state.raw<CommitDetails[]>([]);
   let branches = $state.raw<Record<string, string[]>>({});
+  let signed = $state.raw<Record<string, Signature>>({});
+  // `VcsLogCommitSelectionListenerForDetails` asks for the signatures of the selection, whether the
+  // column is shown or not. Only the log's own panels do: the dialogs, which have no `In branches:`
+  // either, do not.
+  const signatures = new SignatureLoader();
   let expanded = $state.raw<Set<string>>(new Set());
   let failure = $state<string | null>(null);
   let request = 0;
@@ -103,6 +119,12 @@
     }
   }
 
+  async function loadSignatures(token: number, shown: CommitDetails[]) {
+    const found = await signatures.load(shown.map(({ hash }) => hash));
+    if (token !== request || !found) return;
+    signed = Object.fromEntries(found.map((signature) => [signature.hash, signature]));
+  }
+
   async function load(selected: string[]) {
     const token = ++request;
     failure = null;
@@ -110,6 +132,8 @@
     if (selected.length === 0) {
       commits = [];
       branches = {};
+      signed = {};
+      signatures.cancel();
       return;
     }
     try {
@@ -117,8 +141,14 @@
       if (token !== request) return;
       const same = loaded.every((commit) => commits.some(({ hash }) => hash === commit.hash));
       commits = loaded;
-      if (!same) branches = {};
-      if (showBranches) loadBranches(token, loaded);
+      if (!same) {
+        branches = {};
+        signed = {};
+      }
+      if (showBranches) {
+        loadSignatures(token, loaded);
+        loadBranches(token, loaded);
+      }
     } catch (error) {
       if (token === request) failure = errorText(error);
     }
@@ -128,6 +158,8 @@
     version;
     load(hashes);
   });
+
+  onDestroy(() => signatures.cancel());
 </script>
 
 {#snippet message(text: string, links: Record<string, string>)}
@@ -139,6 +171,30 @@
       {part.text}
     {/if}
   {/each}
+{/snippet}
+
+<!-- `HashAndAuthorPanel`: after the author and committer, in the context-help colour, the icon (whose
+     tooltip is the description) and the text. An unsigned commit has none. -->
+{#snippet signatureLine(signature: Signature)}
+  {@const icon = signatureIcon(signature)}
+  {@const description = signatureDescription(signature)}
+  <p class="meta signature">
+    <span class="signature-icon">
+      {#if icon}<Icon name={icon} />{/if}
+      <span class="tooltip" role="tooltip">
+        <span class="line">{description.text}</span>
+        {#if description.verified}
+          <span class="context">
+            <span class="line gap">{FINGERPRINT}</span>
+            <span class="line">{description.verified.fingerprint}</span>
+            <span class="line gap">{SIGNED_BY}</span>
+            <span class="line">{description.verified.signer}</span>
+          </span>
+        {/if}
+      </span>
+    </span>
+    <span>{signatureText(signature)}</span>
+  </p>
 {/snippet}
 
 {#snippet references(refs: LogRef[])}
@@ -175,6 +231,9 @@
         <p class="meta">{authorLine(commit)}</p>
         {#if committed}
           <p class="meta committed">{committed}</p>
+        {/if}
+        {#if signed[commit.hash]}
+          {@render signatureLine(signed[commit.hash])}
         {/if}
         {@render references(branchRefs(commit))}
         {@render references(tagRefs(commit))}
@@ -252,6 +311,50 @@
   }
 
   .committed {
+    color: var(--muted);
+  }
+
+  .signature {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    color: var(--muted);
+  }
+
+  .signature-icon {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .tooltip {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 20;
+    display: none;
+    padding: 4px 8px;
+    color: var(--text);
+    white-space: nowrap;
+    background: var(--popup-background);
+    border: 1px solid var(--popup-border);
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgb(0 0 0 / 40%);
+  }
+
+  .signature-icon:hover .tooltip {
+    display: block;
+  }
+
+  .line {
+    display: block;
+  }
+
+  .gap {
+    margin-top: 1em;
+  }
+
+  .context {
+    display: block;
     color: var(--muted);
   }
 

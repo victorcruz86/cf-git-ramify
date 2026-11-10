@@ -12,6 +12,7 @@ pub mod parse;
 pub mod print;
 pub mod recent;
 pub mod refs;
+pub mod signatures;
 pub mod sort;
 pub mod store;
 pub mod view;

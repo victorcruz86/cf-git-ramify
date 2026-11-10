@@ -47,6 +47,7 @@ const SIDES: WorktreeSides = {
   note: null,
   hash: "hash",
   conflicted: false,
+  submodule: null,
 };
 
 // jsdom has no ResizeObserver, which `bind:clientHeight` needs, and does no layout for CodeMirror.
