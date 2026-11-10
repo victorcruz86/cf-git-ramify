@@ -569,7 +569,7 @@ pub fn published(
     }
     branches::check_argument(branch, "The branch")?;
     branches::commit_of(repo, branch)?;
-    let patterns = settings::load_repo(repo.data).protected_branches;
+    let patterns = settings::effective_protected(repo.data);
     for (full, short) in protected_remotes(repo.path, &patterns)? {
         let bases = match lines_of(repo, &["merge-base", "--all", &full, branch]) {
             Ok(bases) => bases,

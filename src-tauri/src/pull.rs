@@ -15,7 +15,7 @@ use crate::git::{self, GitError};
 use crate::preserve;
 use crate::settings::UpdateMethod;
 use crate::storage;
-use crate::task::{TaskContext, TaskKind};
+use crate::task::TaskContext;
 use crate::update::{
     self, Before, Outcome, Tracked, UpdateOptions, UpdateResult, LOCAL_CHANGES_OVERWRITTEN,
 };
@@ -64,8 +64,6 @@ pub struct PullInfo {
     pub tracked: Option<(String, String)>,
 }
 
-// With `--rebase` Update takes over, which takes the lock only when it needs it; otherwise `git pull`
-// changes the tree from start to finish.
 // `GitPullSettings`, per repository. Like `GitPullDialog.loadSettings`, they are loaded as they are:
 // what is incompatible stays and shows greyed out. Only what is no longer an option is discarded.
 pub fn read_options(dir: &Path) -> Vec<PullOption> {
@@ -87,14 +85,6 @@ pub fn write_options(dir: &Path, options: &[PullOption]) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(options).map_err(io::Error::other)?;
     storage::write_atomic(&dir.join(OPTIONS_FILE), &json)
-}
-
-pub fn task_kind(options: &[PullOption]) -> TaskKind {
-    if options.contains(&PullOption::Rebase) {
-        TaskKind::Read
-    } else {
-        TaskKind::Write
-    }
 }
 
 pub fn info(path: &Path) -> Result<PullInfo, GitError> {
@@ -219,6 +209,9 @@ fn after_cancel(
     })
 }
 
+// `git pull` changes the tree from start to finish under the repository's write lock. The hook of
+// every successful fetch (`BranchSync::fetched`, the protection loader, which asks GitHub) runs
+// after the lock is let go, so commit and rollback do not wait for GitHub.
 fn merge(
     repo: &Repo,
     sync: &BranchSync,
@@ -226,6 +219,26 @@ fn merge(
     branch: &str,
     options: &[PullOption],
 ) -> Result<UpdateResult, GitError> {
+    let ctx = repo.ctx;
+    let Some(locked) = ctx.exclusive(|| merge_locked(repo, sync, remote, branch, options)) else {
+        // Cancelled while waiting for its turn: nothing ran, as when the task never started.
+        return Ok(Outcome::Cancelled.into());
+    };
+    let (result, pulled) = locked?;
+    if pulled {
+        sync.fetched(ctx, repo.path, remote);
+    }
+    Ok(result)
+}
+
+// The result, and whether `git pull` succeeded (so its fetch did).
+fn merge_locked(
+    repo: &Repo,
+    sync: &BranchSync,
+    remote: &str,
+    branch: &str,
+    options: &[PullOption],
+) -> Result<(UpdateResult, bool), GitError> {
     let ctx = repo.ctx;
     let tracked = Tracked {
         branch: branches::current_name(repo.path)?.unwrap_or_else(|| HEAD.to_string()),
@@ -256,17 +269,16 @@ fn merge(
             let result = update::with_counts(ctx, Outcome::Success.into(), &tracked, before);
             let unfinished = [PullOption::NoCommit, PullOption::Squash];
             if result.commits == 0 && flags.iter().any(|option| unfinished.contains(option)) {
-                return Ok(UpdateResult {
-                    files: incoming_files(ctx, &tracked.target),
-                    ..result
-                });
+                let files = incoming_files(ctx, &tracked.target);
+                return Ok((UpdateResult { files, ..result }, true));
             }
-            Ok(result)
+            Ok((result, true))
         }
         Err(GitError::Cancelled) => {
             after_cancel(repo, index_before.as_deref(), &head_tree, unfinished_before)
+                .map(|result| (result, false))
         }
-        Err(error) => Ok(failure(repo, error, unfinished_before)),
+        Err(error) => Ok((failure(repo, error, unfinished_before), false)),
     }
 }
 
@@ -338,7 +350,7 @@ mod tests {
     use crate::commands::RepoLocks;
     use crate::console::Console;
     use crate::snapshots;
-    use crate::task::Runner;
+    use crate::task::{Runner, TaskKind};
     use crate::test_support::TempRepo;
     use crate::update::{Aborted, Outcome};
     use std::fs;
@@ -358,6 +370,7 @@ mod tests {
         origin: TempDir,
         data: TempDir,
         console: Arc<Console>,
+        locks: Arc<RepoLocks>,
         runner: Runner,
         sync: Arc<BranchSync>,
     }
@@ -389,18 +402,15 @@ mod tests {
             colleague.git(&["fetch", "-q", "origin"]);
             colleague.git(&["checkout", "-q", "-B", "main", "origin/main"]);
             let console = Arc::<Console>::default();
-            let runner = Runner::with(
-                Arc::<RepoLocks>::default(),
-                console.clone(),
-                None,
-                Duration::from_secs(5),
-            );
+            let locks = Arc::<RepoLocks>::default();
+            let runner = Runner::with(locks.clone(), console.clone(), None, Duration::from_secs(5));
             Self {
                 repo,
                 colleague,
                 origin,
                 data: TempDir::new().unwrap(),
                 console,
+                locks,
                 runner,
                 sync: Arc::default(),
             }
@@ -415,7 +425,7 @@ mod tests {
             let options = options.to_vec();
             self.runner.start(
                 self.repo.path(),
-                task_kind(&options),
+                TaskKind::Read,
                 "Pull".to_string(),
                 move |ctx| {
                     let repo = Repo {
@@ -472,7 +482,7 @@ mod tests {
             let options = options.to_vec();
             let id = self.runner.start(
                 self.repo.path(),
-                task_kind(&options),
+                TaskKind::Read,
                 "Pull".to_string(),
                 move |ctx| {
                     let repo = Repo {
@@ -790,16 +800,6 @@ mod tests {
     }
 
     #[test]
-    fn the_task_kind_is_read_with_rebase_and_write_without_it() {
-        assert_eq!(task_kind(&[]), TaskKind::Write);
-        assert_eq!(task_kind(&[PullOption::Squash]), TaskKind::Write);
-        assert_eq!(
-            task_kind(&[PullOption::NoVerify, PullOption::Rebase]),
-            TaskKind::Read
-        );
-    }
-
-    #[test]
     fn pull_does_not_save_changes() {
         let harness = Harness::new();
         harness.incoming("c.txt", "x\n");
@@ -1020,6 +1020,65 @@ mod tests {
 
         assert_eq!(result.outcome, Outcome::Success);
         assert_eq!((result.files, result.commits, result.range), (0, 0, None));
+    }
+
+    // `git pull` changes the tree under the repository's write lock; the hook every fetch calls
+    // (the protection loader, which asks GitHub) runs after it, without the lock, so a commit
+    // does not wait for GitHub. The result is the same as before.
+    #[test]
+    fn a_merge_pull_holds_the_write_lock_for_git_only_and_runs_the_hook_without_it() {
+        let harness = Harness::new();
+        harness.incoming("c.txt", "x\n");
+        let scratch = TempDir::new().unwrap();
+        let mark = scratch.path().join("mark");
+        let hook = harness.repo.path().join(".git/hooks/post-merge");
+        let script = format!("#!/bin/sh\n: > '{}'\nsleep 2\n", mark.display());
+        fs::write(&hook, script).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let locks = harness.locks.clone();
+        let unlocked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = unlocked.clone();
+        let hook_without_lock: crate::branch_info::AfterFetch =
+            Arc::new(move |_ctx, repo, remote| {
+                let free = locks.try_run(repo, Duration::ZERO, || ()).is_some();
+                seen.lock().unwrap().push((remote.to_string(), free));
+            });
+        harness.sync.set_after_fetch(hook_without_lock);
+
+        let (send, receive) = mpsc::channel();
+        let path = harness.repo.path().to_path_buf();
+        let data = harness.data.path().to_path_buf();
+        let sync = harness.sync.clone();
+        harness.runner.start(
+            harness.repo.path(),
+            TaskKind::Read,
+            "Pull".to_string(),
+            move |ctx| {
+                let repo = Repo {
+                    ctx,
+                    path: &path,
+                    data: &data,
+                };
+                send.send(pull(&repo, &sync, "origin", "main", &[], || Ok(())))
+                    .unwrap();
+                Ok(())
+            },
+        );
+        let deadline = Instant::now() + WAIT;
+        while !mark.exists() {
+            assert!(Instant::now() < deadline, "git pull did not merge");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let during_git = harness
+            .locks
+            .try_run(harness.repo.path(), Duration::ZERO, || ());
+        let result = receive.recv_timeout(WAIT).unwrap();
+
+        assert!(during_git.is_none(), "git pull ran without the write lock");
+        assert_eq!(result.outcome, Outcome::Success);
+        assert_eq!(result.commits, 1);
+        assert_eq!(harness.read("c.txt"), "x\n");
+        assert_eq!(*unlocked.lock().unwrap(), [("origin".to_string(), true)]);
     }
 
     #[test]

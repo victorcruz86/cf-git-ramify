@@ -24,6 +24,8 @@ let contents: Record<string, ViewerContent | Error> = {};
 let stamps: Record<string, string | null> = {};
 // The other commands a test answers.
 let more: Record<string, (args: never) => unknown> = {};
+// What `github_links` answers: the GitHub repositories of the remotes.
+let links: { name: string; url: string }[] = [];
 
 const target = (path: string, revision: string | null = null, line: number | null = null) => ({
   path,
@@ -51,6 +53,8 @@ function mockCommands() {
       case "show_window":
       case "hide_window":
         return undefined;
+      case "github_links":
+        return links;
       default:
         if (more[command]) return more[command](args as never);
         throw new Error(`unexpected command: ${command}`);
@@ -86,6 +90,7 @@ async function open(...targets: ViewerTarget[]) {
 }
 
 beforeEach(() => {
+  links = [];
   localStorage.clear();
   annotationOptions.set(DEFAULT_OPTIONS);
   handlers.clear();
@@ -803,4 +808,87 @@ test("an_untracked_file_cannot_be_annotated", async () => {
   const annotate = within(await gutterMenu()).getByRole("menuitem", { name: "Annotate" });
 
   expect((annotate as HTMLButtonElement).disabled).toBe(true);
+});
+
+// `HostedGitRepositoryReferenceUtil`: the lines of the selection (from 0), the end one line up when
+// the selection ends exactly at the start of a line. With no selection and the caret at column 0 of
+// line k the end is k-1: 241's quirk, kept (`#Lk-L(k-1)`).
+test("the_viewer_copies_the_link_with_its_lines", async () => {
+  links = [{ name: "https://github.com/o/r", url: "https://github.com/o/r/blob/abc/src/a.txt" }];
+  more = {
+    repo_status: () => [],
+    repo_state: () => ({ operation: null, branch: "main", label: "main", head: HASH }),
+    branch_list: () => ({ local: [], remote: [], recent: [], current: "main", previous: null }),
+    git_menu_current_file: () => undefined,
+    clipboard_write: () => undefined,
+    open_url: () => undefined,
+  };
+  await open(target("src/a.txt"));
+  await waitFor(() => expect(activeView().state.doc.toString()).toBe("one\ntwo\nthree\n"));
+  const copyLink = async (anchor: number, head = anchor) => {
+    activeView().dispatch({ selection: { anchor, head } });
+    await fireEvent.contextMenu(activeView().contentDOM);
+    const menu = await screen.findByRole("menu", { name: "Editor" });
+    await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy / Paste Special" }));
+    const special = await screen.findByRole("menu", { name: "Copy / Paste Special" });
+    await fireEvent.click(
+      within(special).getByRole("menuitem", { name: "Copy Link to GitHub Repository" }),
+    );
+    return (calls("github_links").at(-1)?.[1] as { target: { lines: number[] } }).target.lines;
+  };
+
+  // The caret in the middle of line 2, the caret at column 0 of line 2, then a selection that ends
+  // at the start of line 3, and one over three lines.
+  expect(await copyLink(5)).toEqual([1, 1]);
+  expect(await copyLink(4)).toEqual([1, 0]);
+  expect(await copyLink(4, 8)).toEqual([1, 1]);
+  expect(await copyLink(1, 10)).toEqual([0, 2]);
+  // One look-up per right-click serves both submenus.
+  expect(calls("github_links")).toHaveLength(4);
+  expect(calls("clipboard_write").at(-1)).toEqual(["clipboard_write", { text: links[0].url }]);
+  expect(calls("github_links").at(-1)?.[1]).toEqual({
+    target: { kind: "file", path: "src/a.txt", lines: [0, 2], revision: null },
+  });
+});
+
+test("a_revision_tab_links_its_own_revision_and_open_in_has_github", async () => {
+  links = [{ name: "https://github.com/o/r", url: "https://github.com/o/r/blob/abc/src/a.txt" }];
+  more = {
+    repo_status: () => [],
+    repo_state: () => ({ operation: null, branch: "main", label: "main", head: HASH }),
+    branch_list: () => ({ local: [], remote: [], recent: [], current: "main", previous: null }),
+    git_menu_current_file: () => undefined,
+    open_url: () => undefined,
+  };
+  await open(target("src/a.txt", HASH));
+  await waitFor(() => expect(activeView().state.doc.toString()).toBe("old one\n"));
+
+  // The caret starts at column 0 of the first line: 241's quirk gives the end `-1`.
+  await fireEvent.contextMenu(activeView().contentDOM);
+  const menu = await screen.findByRole("menu", { name: "Editor" });
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Open In" }));
+  const open_in = await screen.findByRole("menu", { name: "Open In" });
+  await fireEvent.click(within(open_in).getByRole("menuitem", { name: "GitHub" }));
+
+  expect(calls("github_links").at(-1)?.[1]).toEqual({
+    target: { kind: "file", path: "src/a.txt", lines: [0, -1], revision: HASH },
+  });
+  expect(calls("open_url")).toEqual([["open_url", { url: links[0].url }]]);
+});
+
+test("no_github_remote_hides_the_viewer_items", async () => {
+  more = {
+    repo_status: () => [],
+    repo_state: () => ({ operation: null, branch: "main", label: "main", head: HASH }),
+    branch_list: () => ({ local: [], remote: [], recent: [], current: "main", previous: null }),
+    git_menu_current_file: () => undefined,
+  };
+  await open(target("src/a.txt"));
+  await waitFor(() => activeView());
+
+  await fireEvent.contextMenu(activeView().contentDOM);
+  const menu = await screen.findByRole("menu", { name: "Editor" });
+
+  expect(within(menu).queryByRole("menuitem", { name: "Open In" })).toBeNull();
+  expect(within(menu).queryByRole("menuitem", { name: "Copy / Paste Special" })).toBeNull();
 });

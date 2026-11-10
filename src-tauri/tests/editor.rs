@@ -195,10 +195,28 @@ impl Fixture {
         repo: &Path,
         work: impl FnOnce(&TaskContext) -> T + Send + 'static,
     ) -> (TaskId, Receiver<T>) {
+        self.start_task_as(repo, TaskKind::Write, work)
+    }
+
+    // `git_pull` starts a read task: the pull takes the write lock itself, around `git pull`.
+    fn start_pull<T: Send + 'static>(
+        &self,
+        repo: &Path,
+        work: impl FnOnce(&TaskContext) -> T + Send + 'static,
+    ) -> (TaskId, Receiver<T>) {
+        self.start_task_as(repo, TaskKind::Read, work)
+    }
+
+    fn start_task_as<T: Send + 'static>(
+        &self,
+        repo: &Path,
+        kind: TaskKind,
+        work: impl FnOnce(&TaskContext) -> T + Send + 'static,
+    ) -> (TaskId, Receiver<T>) {
         let (send, receive) = mpsc::channel();
         let id = self
             .runner
-            .start(repo, TaskKind::Write, "test".to_string(), move |ctx| {
+            .start(repo, kind, "test".to_string(), move |ctx| {
                 send.send(work(ctx)).unwrap();
                 Ok(())
             });
@@ -518,7 +536,7 @@ fn pull_rebase_interactive_does_not_wait_for_a_terminal() {
     remote.repo.git(&["config", "pull.rebase", "interactive"]);
     let (path, data) = (remote.repo.path().to_path_buf(), TempDir::new().unwrap());
     let data_path = data.path().to_path_buf();
-    let done = fixture.in_task(remote.repo.path(), move |ctx| {
+    let (_, done) = fixture.start_pull(remote.repo.path(), move |ctx| {
         let repo = Repo {
             ctx,
             path: &path,
@@ -661,7 +679,7 @@ fn cancelling_an_interactive_pull_with_the_todo_pending_leaves_no_rebase() {
     let head = remote.repo.git(&["rev-parse", "HEAD"]);
     let (path, data) = (remote.repo.path().to_path_buf(), TempDir::new().unwrap());
     let data_path = data.path().to_path_buf();
-    let (task, done) = fixture.start_task(remote.repo.path(), move |ctx| {
+    let (task, done) = fixture.start_pull(remote.repo.path(), move |ctx| {
         let repo = Repo {
             ctx,
             path: &path,

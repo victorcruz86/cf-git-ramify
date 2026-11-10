@@ -6,6 +6,7 @@ import {
   graphCellWidth,
   graphMetrics,
   nodeAt,
+  formatPrettyDate,
   paintGraphRow,
   prettyDateTime,
   ROW_HEIGHT,
@@ -441,7 +442,8 @@ test("prefer_commit_timestamp_changes_the_date", () => {
   expect(dates(true)).toBe(dateTime(86_400 * 400 * 1000));
 });
 
-// What `DateFormatUtil.formatPrettyDateTime` of the installed app gives for those distances.
+// `DateFormatUtil.doFormatPretty` at idea/241.14494.240 (`DateFormatUtil.java:167`): "minutes ago"
+// up to `HOUR + MINUTE` included, which `UtilBundle`'s `60#1 hour` names for 60 and 61 minutes.
 test("date_as_format_pretty_date_time", () => {
   const ago = (delta: number) => prettyDateTime(NOW - delta, NOW);
 
@@ -452,7 +454,9 @@ test("date_as_format_pretty_date_time", () => {
   expect(ago(90 * SECOND)).toBe("2 minutes ago");
   expect(ago(59 * MINUTE)).toBe("59 minutes ago");
   expect(ago(HOUR)).toBe("1 hour ago");
-  expect(ago(HOUR + MINUTE)).toBe(`Today ${time(NOW - HOUR - MINUTE)}`);
+  expect(ago(HOUR + 30 * SECOND)).toBe("1 hour ago");
+  expect(ago(HOUR + MINUTE)).toBe("1 hour ago");
+  expect(ago(HOUR + MINUTE + SECOND)).toBe(`Today ${time(NOW - HOUR - MINUTE - SECOND)}`);
   expect(ago(-5 * MINUTE)).toBe(`Today ${time(NOW + 5 * MINUTE)}`);
   expect(ago(20 * HOUR)).toBe(`Yesterday ${time(NOW - 20 * HOUR)}`);
   expect(ago(60 * HOUR)).toBe(dateTime(NOW - 60 * HOUR));
@@ -469,6 +473,23 @@ test("the_same_day_last_year_is_not_today", () => {
   const before = new Date(2025, 10, 1, 9, 0, 0).getTime();
 
   expect(prettyDateTime(before, NOW)).toBe(dateTime(before));
+});
+
+// `DateFormatUtil.formatPrettyDate`: no time and no "minutes ago", only Today, Yesterday or the
+// short date.
+test("format_pretty_date_has_no_time", () => {
+  const shortDate = (date: number) => new Intl.DateTimeFormat(undefined, { dateStyle: "short" }).format(date);
+  const ago = (delta: number) => formatPrettyDate(NOW - delta, NOW);
+
+  expect(ago(0)).toBe("Today");
+  expect(ago(5 * MINUTE)).toBe("Today");
+  expect(ago(-5 * MINUTE)).toBe("Today");
+  expect(ago(20 * HOUR)).toBe("Yesterday");
+  expect(ago(60 * HOUR)).toBe(shortDate(NOW - 60 * HOUR));
+  const newYear = new Date(2027, 0, 1, 9, 0, 0).getTime();
+  expect(formatPrettyDate(new Date(2026, 11, 31, 18, 0, 0).getTime(), newYear)).toBe("Yesterday");
+  const lastYear = new Date(2025, 10, 1, 9, 0, 0).getTime();
+  expect(formatPrettyDate(lastYear, NOW)).toBe(shortDate(lastYear));
 });
 
 test("date_width_counts_the_pretty_text", () => {

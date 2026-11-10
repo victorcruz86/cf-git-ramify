@@ -1,0 +1,81 @@
+fragment checkRun on CheckRun {
+name
+conclusion
+isRequired(pullRequestNumber: $number) # See: findPullRequestMergeability
+detailsUrl
+url
+}
+fragment checkSuite on CheckSuite {
+checkRuns(first: 100) {
+pageInfo {
+...pageInfo
+}
+nodes {
+...checkRun
+}
+}
+}
+fragment commitStatusContext on StatusContext {
+context
+state
+isRequired(pullRequestNumber: $number) # See: findPullRequestMergeability
+targetUrl
+}
+fragment commitHash on Commit {
+...nodeInfo
+oid
+abbreviatedOid
+}
+fragment commitWithCheckStatuses on Commit {
+...commitHash
+status {
+contexts {
+...commitStatusContext
+}
+}
+
+checkSuites(first: 100) {
+pageInfo {
+...pageInfo
+}
+nodes {
+...checkSuite
+}
+}
+}
+fragment nodeInfo on Node {
+id
+}
+fragment pullRequestCommitWithCheckStatuses on PullRequestCommit {
+...nodeInfo
+commit {
+...commitWithCheckStatuses
+}
+}
+fragment pageInfo on PageInfo {
+startCursor
+hasPreviousPage
+endCursor
+hasNextPage
+}
+fragment pullRequestMergeability on PullRequest {
+mergeable
+canBeRebased
+mergeStateStatus
+
+commits(last: 1) {
+pageInfo {
+...pageInfo
+}
+nodes {
+...pullRequestCommitWithCheckStatuses
+}
+}
+}
+query($repoOwner: String!, $repoName: String!, $number: Int!) {
+repository(owner: $repoOwner, name: $repoName) {
+pullRequest(number: $number) {
+...pullRequestMergeability
+}
+}
+}

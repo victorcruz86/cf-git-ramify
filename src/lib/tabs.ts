@@ -43,7 +43,8 @@ export function orderContents(ids: ContentId[]): ContentId[] {
 const IN_COMMIT_WINDOW: ContentId[] = ["local-changes", "shelf", "stash"];
 
 // Per window, the contents of `ChangesViewContentManager` it holds, or `null` when it does not exist now.
-// The windows with other contents (Project, Changes, Repositories) hold none of these: `[]` while they exist.
+// The windows with other contents (Project, Changes, Repositories, Pull Requests) hold none of these: `[]` while
+// they exist.
 export type WindowContents = Record<ToolWindowId, ContentId[] | null>;
 
 // Per window, the content it shows; `null` for the windows that hold none.
@@ -62,6 +63,7 @@ export function toolWindows(
     commit: mode === "modal" ? null : ordered.filter((id) => IN_COMMIT_WINDOW.includes(id)),
     changes: own("changes"),
     repositories: own("repositories"),
+    pulls: own("pulls"),
     git: mode === "modal" ? ordered : ordered.filter((id) => !IN_COMMIT_WINDOW.includes(id)),
   };
 }

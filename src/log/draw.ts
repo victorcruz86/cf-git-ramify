@@ -228,18 +228,29 @@ const sameDay = (a: Date, b: Date) =>
   a.getMonth() === b.getMonth() &&
   a.getDate() === b.getDate();
 
-// `DateFormatUtil.doFormatPretty`, which `JBDateFormat.formatPrettyDateTime` uses with the default
-// setting. Its source is not in the reference: the texts are from `UtilBundle`, and the cases were
-// checked against the class of the installed app.
+// `DateFormatUtil.doFormatPretty` (idea/241.14494.240, `DateFormatUtil.java:142-186`), which
+// `JBDateFormat.formatPrettyDateTime` uses with the default setting: "minutes ago" up to
+// `HOUR + MINUTE` included, with the texts of `UtilBundle`.
 export function prettyDateTime(time: number, now: number): string {
   const delta = now - time;
-  if (delta >= 0 && delta <= HOUR) return minutesAgo(roundHalfEven(delta / MINUTE));
+  if (delta >= 0 && delta <= HOUR + MINUTE) return minutesAgo(roundHalfEven(delta / MINUTE));
   const date = new Date(time);
   const today = new Date(now);
   if (sameDay(date, today)) return `Today ${timeFormat.format(time)}`;
   const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
   if (sameDay(date, yesterday)) return `Yesterday ${timeFormat.format(time)}`;
   return dateTimeFormat.format(time);
+}
+
+// `DateFormatUtil.formatPrettyDate`: `doFormatPretty` with `formatTime = false`, which has no
+// "minutes ago": `Today`, `Yesterday`, else the short date.
+export function formatPrettyDate(time: number, now: number): string {
+  const date = new Date(time);
+  const today = new Date(now);
+  if (sameDay(date, today)) return "Today";
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (sameDay(date, yesterday)) return "Yesterday";
+  return shortDate(time);
 }
 
 const dateText = (row: LogRow, preferCommitDate: boolean, now: number) =>

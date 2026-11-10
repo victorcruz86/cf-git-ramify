@@ -5,10 +5,12 @@
     logHistoryChange,
     logHistoryEntries,
     type HistoryChange,
+    type LinkTarget,
     type LogRef,
     type LogSummary,
     type RevisionPair,
   } from "../lib/api";
+  import { CANNOT_OPEN, hostingItems, OPEN_ON_GITHUB } from "../hosting/links";
   import { errorText } from "../lib/errors";
   import Icon from "../lib/Icon.svelte";
   import type { ActionId } from "../lib/keymap";
@@ -92,6 +94,37 @@
   const showDiffPreview = $derived(options.diffPreview && selection.length > 0);
 
   const failed = (failure: unknown) => notify({ kind: "error", title: errorText(failure) });
+  const failedTitle = (failure: unknown) =>
+    notify({ kind: "error", title: CANNOT_OPEN, body: errorText(failure) });
+  const commitTarget = (hash: string): LinkTarget => ({ kind: "commit", hash });
+
+  // The toolbar's `Open on GitHub` of the first selected row (`VcsHistoryActionsGroup.Toolbar`):
+  // present only while a GitHub repository answers for it.
+  let hosting = $state.raw<MenuItem[]>([]);
+  let hostingRequest = 0;
+  $effect(() => {
+    const hash = selection[0];
+    const token = ++hostingRequest;
+    if (!hash) {
+      hosting = [];
+      return;
+    }
+    void hostingItems(commitTarget(hash), "open", OPEN_ON_GITHUB, failedTitle).then((items) => {
+      if (token === hostingRequest) hosting = items;
+    });
+  });
+
+  // One repository opens at once; several drop down, with no arrow on the button otherwise.
+  function openOnGithub(anchor: HTMLElement) {
+    const [item] = hosting;
+    if (!item || !("label" in item)) return;
+    if (!item.submenu) {
+      item.run?.();
+      return;
+    }
+    const bounds = anchor.getBoundingClientRect();
+    menu = { x: bounds.left, y: bounds.bottom, label: OPEN_ON_GITHUB, items: item.submenu };
+  }
 
   // The change of the selection, for the preview and the actions on it.
   const changeOf = (hashes: string[]): Promise<HistoryChange | null> =>
@@ -157,7 +190,7 @@
 
   const run = (work: () => Promise<unknown>) => () => void work().catch(failed);
 
-  function handlers(change: HistoryChange | null): HistoryHandlers {
+  function handlers(change: HistoryChange | null, hosting: MenuItem[] = []): HistoryHandlers {
     const patch = patchChange(change);
     return {
       copy: (text) => void clipboardWrite(text).catch(failed),
@@ -206,6 +239,7 @@
             })
         : undefined,
       newTag: onvcs ? (commit) => onvcs({ kind: "newTag", hash: commit.hash }) : undefined,
+      hosting,
     };
   }
 
@@ -214,8 +248,10 @@
     try {
       const commits = await selectedCommits();
       const change = await changeOf(commits.map((commit) => commit.hash));
+      const hosting =
+        commits.length > 0 ? await hostingItems(commitTarget(commits[0].hash), "open", OPEN_ON_GITHUB, failedTitle) : [];
       if (token !== menuRequest) return;
-      const items = historyMenu(commits, handlers(change));
+      const items = historyMenu(commits, handlers(change, hosting));
       if (items.length > 0) menu = { x, y, label: "File History", items };
     } catch (error) {
       failed(error);
@@ -356,6 +392,18 @@
     >
       <Icon name="groupBy" />
     </button>
+    {#if hosting.length > 0}
+      <span class="separator"></span>
+      <button
+        type="button"
+        class="action"
+        aria-label={OPEN_ON_GITHUB}
+        title={OPEN_ON_GITHUB}
+        onclick={(event) => openOnGithub(event.currentTarget)}
+      >
+        <Icon name="github" />
+      </button>
+    {/if}
     {#if busy}
       <span class="busy" role="status" aria-label="Loading commits…"></span>
     {/if}

@@ -10,6 +10,7 @@
     type LogRef,
     type RowOf,
   } from "../lib/api";
+  import { hostingItems, OPEN_ON_GITHUB } from "../hosting/links";
   import { errorText } from "../lib/errors";
   import { matchLogShortcut, type ActionId } from "../lib/keymap";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
@@ -179,6 +180,10 @@
           ? await menuChecks(commits.map(({ hash }) => hash)).catch(() => undefined)
           : undefined;
       const loaded = changes;
+      const hosting =
+        commits.length > 0
+          ? await hostingItems({ kind: "commit", hash: commits[0].hash }, "open", OPEN_ON_GITHUB)
+          : [];
       const items = contextMenu(
         { commits, parents, children },
         { currentBranch },
@@ -190,6 +195,7 @@
           protectedBranches: $protectedBranches,
           editing,
           paths,
+          hosting,
           createPatch:
             oncreatepatch && loaded.length > 0 ? () => oncreatepatch(loaded) : undefined,
         },

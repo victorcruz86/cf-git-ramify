@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::hosting::protection;
 use crate::merge::MergeOption;
 use crate::merge3::Whitespace;
 use crate::storage;
@@ -87,7 +88,15 @@ pub struct Settings {
     // `SHOW_DROP_COMMIT_DIALOG`: `Ask for confirmation to drop commits`, and the `Don't ask again` of
     // the Drop Commits question.
     pub show_drop_commit_dialog: bool,
+    // `Connection timeout:` of Settings > Version Control > GitHub, in milliseconds as
+    // `GithubSettings.connectionTimeout`: how long a GitHub request waits to connect. The page
+    // shows seconds, `0..60`.
+    pub github_connection_timeout_ms: u64,
 }
+
+// `GithubSettings.CONNECTION_TIMEOUT`, and the most the page's `0..60` seconds allow.
+pub const GITHUB_CONNECTION_TIMEOUT_MS: u64 = 5000;
+pub const GITHUB_CONNECTION_TIMEOUT_MAX_MS: u64 = 60_000;
 
 impl Settings {
     // `Enable staging area` only counts in the non-modal interface (`canEnableStagingArea`): while modal it
@@ -123,6 +132,7 @@ impl Default for Settings {
             non_modal_commit: false,
             clear_initial_commit_message: false,
             show_drop_commit_dialog: true,
+            github_connection_timeout_ms: GITHUB_CONNECTION_TIMEOUT_MS,
         }
     }
 }
@@ -142,6 +152,21 @@ pub struct RepoSettings {
     pub clean_tree: CleanTree,
     // The Shelf tab's options, per project (`ShelveChangesManager.State`).
     pub shelf: ShelfSettings,
+    // The default GitHub account of this repository (`GithubDefaultAccount`, per project in
+    // IntelliJ), as its id `<server>/<login>`.
+    pub github_default_account: Option<String>,
+    // `Load branch protection rules from GitHub` (`GitSharedSettings.synchronizeBranchProtectionRules`).
+    pub load_github_protection: bool,
+}
+
+// What the interface reads of a repository's settings: the saved ones, plus the rules loaded from
+// GitHub, which are shown and never saved (`githubProtected`, the converted regexes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSettingsView {
+    #[serde(flatten)]
+    pub settings: RepoSettings,
+    pub github_protected: Vec<String>,
 }
 
 // `remove_strategy` (`Remove successfully applied files from the shelf`), `show_recycled`
@@ -164,6 +189,9 @@ impl Default for RepoSettings {
             patch: PatchSettings::default(),
             clean_tree: CleanTree::default(),
             shelf: ShelfSettings::default(),
+            github_default_account: None,
+            // `GitSharedSettings.java:36`.
+            load_github_protection: true,
         }
     }
 }
@@ -225,6 +253,9 @@ impl Settings {
             git_path: filled(self.git_path),
             signing_key: filled(self.signing_key),
             update_paths: clean_paths(self.update_paths),
+            github_connection_timeout_ms: self
+                .github_connection_timeout_ms
+                .min(GITHUB_CONNECTION_TIMEOUT_MAX_MS),
             ..self
         }
     }
@@ -257,6 +288,46 @@ pub fn load_repo(dir: &Path) -> RepoSettings {
     try_load_repo(dir).unwrap_or_default()
 }
 
+// `GitSharedSettings.isBranchProtected`'s patterns: the user's, then, when
+// `Load branch protection rules from GitHub` is on, the ones loaded from GitHub. Strict, for
+// whoever forbids something: what cannot be read is an error.
+pub fn try_effective_protected(dir: &Path) -> io::Result<Vec<String>> {
+    let settings = try_load_repo(dir)?;
+    let loaded = if settings.load_github_protection {
+        protection::try_loaded(dir)?
+    } else {
+        Vec::new()
+    };
+    Ok(joined(settings.protected_branches, loaded))
+}
+
+// The same, lenient: what cannot be read counts as the defaults and as no GitHub rules.
+pub fn effective_protected(dir: &Path) -> Vec<String> {
+    let settings = load_repo(dir);
+    let loaded = if settings.load_github_protection {
+        protection::loaded(dir)
+    } else {
+        Vec::new()
+    };
+    joined(settings.protected_branches, loaded)
+}
+
+fn joined(mut patterns: Vec<String>, loaded: Vec<String>) -> Vec<String> {
+    for pattern in loaded {
+        if !patterns.contains(&pattern) {
+            patterns.push(pattern);
+        }
+    }
+    patterns
+}
+
+pub fn load_repo_view(dir: &Path) -> RepoSettingsView {
+    RepoSettingsView {
+        settings: load_repo(dir),
+        github_protected: protection::loaded(dir),
+    }
+}
+
 fn save_repo(dir: &Path, settings: &RepoSettings) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let json = serde_json::to_vec_pretty(settings).map_err(io::Error::other)?;
@@ -269,6 +340,12 @@ pub fn save_protected_branches(dir: &Path, patterns: Vec<String>) -> io::Result<
         protected_branches,
         ..try_load_repo(dir)?
     };
+    save_repo(dir, &settings)
+}
+
+pub fn save_load_github_protection(dir: &Path, load: bool) -> io::Result<()> {
+    let mut settings = try_load_repo(dir)?;
+    settings.load_github_protection = load;
     save_repo(dir, &settings)
 }
 
@@ -435,6 +512,13 @@ pub fn save_shelf_settings(repo_dir: &Path, shelf: ShelfSettings) -> io::Result<
     save_repo(repo_dir, &settings)
 }
 
+// `Set as Default` of the GitHub accounts, or `None` when the default account is removed.
+pub fn save_github_default_account(repo_dir: &Path, id: Option<String>) -> io::Result<()> {
+    let mut settings = try_load_repo(repo_dir)?;
+    settings.github_default_account = id;
+    save_repo(repo_dir, &settings)
+}
+
 // `Don't ask again` of `Successfully created patch`: always reveal, or never.
 pub fn save_show_patch_in_finder(repo_dir: &Path, show: bool) -> io::Result<()> {
     let mut settings = try_load_repo(repo_dir)?;
@@ -476,6 +560,122 @@ mod tests {
         assert_eq!(settings.merge_whitespace, Whitespace::Default);
         // `ADD_SUFFIX_TO_CHERRY_PICKS_OF_PUBLISHED_COMMITS = true`.
         assert!(settings.cherry_pick_suffix);
+        // `GithubSettings.CONNECTION_TIMEOUT = 5000`.
+        assert_eq!(settings.github_connection_timeout_ms, 5000);
+    }
+
+    #[test]
+    fn the_github_connection_timeout_stays_within_sixty_seconds() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(FILE_NAME), r#"{"stagingArea": true}"#).unwrap();
+        assert_eq!(load(dir.path()).github_connection_timeout_ms, 5000);
+
+        for (stored, read) in [
+            (0, 0),
+            (60_000, 60_000),
+            (60_001, 60_000),
+            (u64::MAX, 60_000),
+        ] {
+            let settings = Settings {
+                github_connection_timeout_ms: stored,
+                ..Settings::default()
+            };
+            save(dir.path(), &settings).unwrap();
+            assert_eq!(
+                load(dir.path()).github_connection_timeout_ms,
+                read,
+                "{stored}"
+            );
+        }
+        fs::write(
+            dir.path().join(FILE_NAME),
+            r#"{"githubConnectionTimeoutMs": 90000}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).github_connection_timeout_ms, 60_000);
+    }
+
+    #[test]
+    fn the_default_github_account_is_kept_per_repository_with_the_rest() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(load_repo(dir.path()).github_default_account, None);
+        save_protected_branches(dir.path(), vec!["release".to_string()]).unwrap();
+
+        save_github_default_account(dir.path(), Some("github.com/octocat".to_string())).unwrap();
+        let read = load_repo(dir.path());
+        assert_eq!(
+            read.github_default_account.as_deref(),
+            Some("github.com/octocat")
+        );
+        assert_eq!(read.protected_branches, ["release"]);
+
+        save_github_default_account(dir.path(), None).unwrap();
+        assert_eq!(load_repo(dir.path()).github_default_account, None);
+        assert_eq!(load_repo(dir.path()).protected_branches, ["release"]);
+    }
+
+    // M§1: the interface fills its field with the user's list and saves it back, so the GitHub
+    // rules travel apart and never reach `repo-settings.json`.
+    #[test]
+    fn the_user_list_is_saved_without_the_github_rules() {
+        let dir = TempDir::new().unwrap();
+        // A file written before the setting existed: it is on, as in `GitSharedSettings`.
+        fs::write(
+            dir.path().join(REPO_FILE_NAME),
+            r#"{"protectedBranches": ["main"]}"#,
+        )
+        .unwrap();
+        assert!(load_repo(dir.path()).load_github_protection);
+        assert!(RepoSettings::default().load_github_protection);
+        crate::hosting::protection::testing::seed(
+            dir.path(),
+            &[("origin", &[r"hotfix\/.*", "main"]), ("upstream", &["v1"])],
+        );
+
+        save_protected_branches(dir.path(), vec!["release".to_string(), "main".to_string()])
+            .unwrap();
+
+        let view = load_repo_view(dir.path());
+        assert_eq!(view.settings.protected_branches, ["release", "main"]);
+        assert_eq!(view.github_protected, [r"hotfix\/.*", "main", "v1"]);
+        let sent = serde_json::to_value(&view).unwrap();
+        assert_eq!(
+            sent["protectedBranches"],
+            serde_json::json!(["release", "main"])
+        );
+        assert_eq!(
+            sent["githubProtected"],
+            serde_json::json!([r"hotfix\/.*", "main", "v1"])
+        );
+        assert_eq!(sent["loadGithubProtection"], serde_json::json!(true));
+        let saved = fs::read_to_string(dir.path().join(REPO_FILE_NAME)).unwrap();
+        assert!(!saved.contains("hotfix"), "{saved}");
+        assert!(!saved.contains("githubProtected"), "{saved}");
+        assert_eq!(
+            effective_protected(dir.path()),
+            ["release", "main", r"hotfix\/.*", "v1"]
+        );
+        assert_eq!(
+            try_effective_protected(dir.path()).unwrap(),
+            ["release", "main", r"hotfix\/.*", "v1"]
+        );
+
+        save_load_github_protection(dir.path(), false).unwrap();
+        let read = load_repo(dir.path());
+        assert!(!read.load_github_protection);
+        assert_eq!(read.protected_branches, ["release", "main"]);
+        assert_eq!(effective_protected(dir.path()), ["release", "main"]);
+        // What is shown is still there; only the effective list leaves it out.
+        assert_eq!(load_repo_view(dir.path()).github_protected.len(), 3);
+    }
+
+    #[test]
+    fn a_github_rules_file_that_cannot_be_read_forbids_in_the_strict_list() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(crate::hosting::protection::FILE_NAME)).unwrap();
+
+        assert!(try_effective_protected(dir.path()).is_err());
+        assert_eq!(effective_protected(dir.path()), ["master", "main"]);
     }
 
     #[test]
@@ -568,6 +768,7 @@ mod tests {
             non_modal_commit: true,
             clear_initial_commit_message: true,
             show_drop_commit_dialog: false,
+            github_connection_timeout_ms: 12_000,
         };
 
         save(dir.path(), &settings).unwrap();

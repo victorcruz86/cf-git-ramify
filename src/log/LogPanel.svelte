@@ -978,7 +978,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="panel" bind:this={panelElement} onkeydown={keydown}>
   {#if loading && !view}
-    <p class="status">Cargando…</p>
+    <p class="status">Loading…</p>
   {:else if view && repoEmpty}
     <p class="status">{NO_COMMITS}</p>
   {:else if view || current.history || current.compare}

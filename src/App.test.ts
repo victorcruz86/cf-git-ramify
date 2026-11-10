@@ -96,6 +96,7 @@ const SETTINGS = {
   nonModalCommit: false,
   clearInitialCommitMessage: false,
   showDropCommitDialog: true,
+  githubConnectionTimeoutMs: 5000,
 };
 
 const NON_MODAL = { ...SETTINGS, nonModalCommit: true };
@@ -287,6 +288,105 @@ test("the_stripe_shows_registered_windows_in_registry_order", async () => {
   const input = screen.getByLabelText("Repository path");
   await fireEvent.submit(input.closest("form")!);
   await waitFor(() => expect(stripeLabels()).toEqual(["Project", "Commit", "Git"]));
+  expect(tabState("Commit")).toBe("true");
+});
+
+// `GHPRToolWindowViewModel.selectorVm` is lazy: with one GitHub repository and one account, nothing
+// is sent to GitHub until the Pull Requests window is first shown.
+test("an_automatic_pair_connects_only_once_the_window_is_shown", async () => {
+  const known = {
+    mappings: [
+      { remote: "origin", url: "https://github.com/o/r.git", display: "o/r", server: "github.com", repository: "github.com/o/r" },
+    ],
+    accounts: [
+      { id: "github.com/octocat", server: "github.com", login: "octocat", name: null, error: null, needsLogin: false, isDefault: false },
+    ],
+    saved: null,
+  };
+  const connection = {
+    remote: "origin",
+    url: "https://github.com/o/r.git",
+    account: "github.com/octocat",
+    coordinates: { server: { useHttp: null, host: "github.com", port: null, suffix: null }, owner: "o", name: "r" },
+    viewerLogin: "octocat",
+    repository: {
+      id: "R_1",
+      owner: "o",
+      nameWithOwner: "o/r",
+      viewerPermission: "WRITE",
+      mergeCommitAllowed: true,
+      squashMergeAllowed: true,
+      rebaseMergeAllowed: true,
+      defaultBranch: "main",
+      isFork: false,
+      url: "https://github.com/o/r",
+      sshUrl: "git@github.com:o/r.git",
+    },
+    title: "r",
+  };
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_settings_get: () => ({}),
+    github_known: () => known,
+    github_connect: finishing(41, connection),
+  });
+  render(App);
+  await screen.findByRole("textbox", { name: "Commit Message" });
+  await waitFor(() => expect(stripeLabels()).toEqual(["Project", "Commit", "Pull Requests", "Git"]));
+  await tick();
+  expect(calls("github_connect")).toHaveLength(0);
+
+  await fireEvent.click(screen.getByRole("tab", { name: "Pull Requests" }));
+  await waitFor(() => expect(calls("github_connect")).toHaveLength(1));
+  const pane = screen.getByRole("region", { name: "Pull Requests" });
+  expect(await within(pane).findByRole("tab", { name: "r" })).toBeTruthy();
+});
+
+// `Github.View.Pull.Request` (`GithubViewPullRequestsAction`, in `GitHub.MainMenu` of the Git menu):
+// there only while the Pull Requests window is available, that is while a remote points to a
+// GitHub repository, and it brings the window to the front.
+test("view_pull_requests_is_in_the_git_menu_only_with_the_window_and_brings_it_to_the_front", async () => {
+  const github = {
+    mappings: [
+      { remote: "origin", url: "https://github.com/o/r.git", display: "o/r", server: "github.com", repository: "github.com/o/r" },
+    ],
+    accounts: [],
+    saved: null,
+  };
+  let known = github;
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_settings_get: () => ({}),
+    github_known: () => known,
+  });
+  render(App);
+  await screen.findByRole("textbox", { name: "Commit Message" });
+  const lastIds = () => (calls("git_menu_enable").at(-1)?.[1] as { ids: string[] }).ids;
+  await waitFor(() => expect(stripeLabels()).toEqual(["Project", "Commit", "Pull Requests", "Git"]));
+  await waitFor(() => expect(lastIds()).toContain("Github.View.Pull.Request"));
+  expect(tabState("Pull Requests")).toBe("false");
+
+  deliver("git-action", "Github.View.Pull.Request");
+
+  await waitFor(() => expect(tabState("Pull Requests")).toBe("true"));
+  const pane = screen.getByRole("region", { name: "Pull Requests" });
+  expect(pane.closest(".hidden")).toBeNull();
+  // With no account, the selector offers the login; nothing was sent to GitHub.
+  expect(await within(pane).findByRole("button", { name: "Log In with Token…" })).toBeTruthy();
+  expect(calls("github_connect")).toHaveLength(0);
+
+  // The last GitHub remote goes: the entry goes with the window, and the action does nothing.
+  await fireEvent.click(screen.getByRole("tab", { name: "Commit" }));
+  known = { ...github, mappings: [] };
+  deliver("repo-changed");
+  await waitFor(() => expect(stripeLabels()).toEqual(["Project", "Commit", "Git"]));
+  await waitFor(() => expect(lastIds()).not.toContain("Github.View.Pull.Request"));
+  deliver("git-action", "Github.View.Pull.Request");
+  await tick();
   expect(tabState("Commit")).toBe("true");
 });
 

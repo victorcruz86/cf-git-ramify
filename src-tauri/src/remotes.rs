@@ -89,7 +89,7 @@ pub fn list(repo: &Path) -> Result<Vec<Remote>, GitError> {
 
 // With `refs/remotes/` in front: it is where git keeps its own, and it rejects the same as
 // IntelliJ's name validator (spaces, `..`, `~`…).
-fn check_name(ctx: &TaskContext, name: &str) -> Result<(), GitError> {
+pub(crate) fn check_name(ctx: &TaskContext, name: &str) -> Result<(), GitError> {
     branches::check_argument(name, "The remote name")?;
     match ctx.git(&["check-ref-format", &format!("refs/remotes/{name}")]) {
         Ok(_) => Ok(()),

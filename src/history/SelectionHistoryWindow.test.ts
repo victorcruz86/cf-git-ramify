@@ -35,6 +35,8 @@ const OLDEST = "3333333333333333333333333333333333333333";
 const handlers = new Map<string, (payload: unknown) => void>();
 let pending: SelectionRequest | null = null;
 let more: Record<string, (args: never) => unknown> = {};
+// What `github_links` answers: the GitHub repositories of the remotes.
+let links: { name: string; url: string }[] = [];
 
 const target = (): SelectionRequest => ({
   path: "src/a.txt",
@@ -117,6 +119,7 @@ beforeEach(() => {
   localStorage.clear();
   handlers.clear();
   more = {};
+  links = [];
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
@@ -131,6 +134,8 @@ beforeEach(() => {
       case "task_cancel":
       case "selection_history_close":
         return undefined;
+      case "github_links":
+        return links;
       default:
         if (more[command]) return more[command](args as never);
         throw new Error(`unexpected command: ${command}`);
@@ -506,4 +511,30 @@ test("a_new_selection_replaces_the_stream_and_a_failure_is_shown", async () => {
     expect.stringContaining("Cannot load revision contents: fatal: bad object"),
   );
   expect(screen.getByRole("status").textContent).toBe("");
+});
+
+// `VcsSelectionHistoryDialog.Popup` ends with `Git.Hosting.Open.In.Browser.Group` (`g4x:522`): the
+// commit URL of the first selected row. With no GitHub repository it is not there.
+test("each_menu_has_open_on_github_at_241s_place_selection_history", async () => {
+  links = [{ name: "https://github.com/o/r", url: `https://github.com/o/r/commit/${MIDDLE}` }];
+  more = {
+    compare_local_state: () => ({ root: "/repo", modified: true, current: null, headLabel: "main" }),
+    open_url: () => undefined,
+  };
+  await openWindow();
+  streamAll();
+  finishTask("done");
+  await waitFor(() => expect(rows()).toHaveLength(4));
+
+  await fireEvent.contextMenu(rows()[2]);
+  const menu = await screen.findByRole("menu", { name: "Revisions" });
+  const labels = [...menu.querySelectorAll('[role="menuitem"]')].map((item) =>
+    item.getAttribute("aria-label"),
+  );
+  expect(labels.at(-2)).toBe("Show in Git Log");
+  expect(labels.at(-1)).toBe("Open on GitHub");
+
+  await fireEvent.click(screen.getByRole("menuitem", { name: "Open on GitHub" }));
+  expect(calls("github_links").at(-1)?.[1]).toEqual({ target: { kind: "commit", hash: MIDDLE } });
+  expect(calls("open_url")).toEqual([["open_url", { url: links[0].url }]]);
 });

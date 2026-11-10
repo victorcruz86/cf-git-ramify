@@ -27,6 +27,12 @@ import {
   logViewOpen,
   logViewSet,
   mergeBlocks,
+  githubAccounts,
+  githubGenerateUrl,
+  githubLogin,
+  githubRemove,
+  githubSetDefault,
+  openUrl,
   type CommitRequest,
   type ViewSpec,
   type LineSelection,
@@ -255,5 +261,31 @@ describe("a_targeted_git_action_reaches_its_own_window_only", () => {
     await onDiffRequest(() => {});
     expect(targetOf("diff-request")).toEqual({ target: "diff" });
     window.history.replaceState(null, "", "/");
+  });
+});
+
+describe("GitHub accounts", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockResolvedValue(undefined);
+  });
+
+  it("sends the token once, to the login, and the rest by id or server", async () => {
+    await githubLogin("ghe.example.com", "ghp_TOKEN", null);
+    await githubLogin("github.com", "ghp_OTHER", "github.com/octocat");
+    await githubAccounts();
+    await githubRemove("github.com/octocat");
+    await githubSetDefault("github.com/hubot");
+    await githubGenerateUrl("github.com");
+    await openUrl("https://github.com/settings/tokens/new");
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["github_login", { server: "ghe.example.com", token: "ghp_TOKEN", editing: null }],
+      ["github_login", { server: "github.com", token: "ghp_OTHER", editing: "github.com/octocat" }],
+      ["github_accounts"],
+      ["github_remove", { id: "github.com/octocat" }],
+      ["github_set_default", { id: "github.com/hubot" }],
+      ["github_generate_url", { server: "github.com" }],
+      ["open_url", { url: "https://github.com/settings/tokens/new" }],
+    ]);
   });
 });

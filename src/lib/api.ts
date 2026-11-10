@@ -27,6 +27,13 @@ export interface ApiError {
     // `Get` (`get_version.rs`): the revision could not be read, or the file could not be written.
     | "load_failed"
     | "save_failed"
+    // `github_login`: which field of the login dialog the error belongs to.
+    | "login_server"
+    | "login_token"
+    // `github_connect`: the account has no token.
+    | "missing_token"
+    // GitHub refused the token (the list offers `Re-Login`).
+    | "authentication"
     | "cancelled";
   message: string;
   // With "selection_lost": the file and the chosen hunks that no longer exist.
@@ -454,6 +461,8 @@ export interface Settings {
   clearInitialCommitMessage: boolean;
   // `SHOW_DROP_COMMIT_DIALOG`.
   showDropCommitDialog: boolean;
+  // `Connection timeout:` of the GitHub page, in milliseconds (`0..60000`, default 5000).
+  githubConnectionTimeoutMs: number;
 }
 
 export type CommitMode = "modal" | "non-modal";
@@ -489,6 +498,12 @@ export interface RepoSettings {
   rebase: { options: RebaseFlag[]; newBase: string | null };
   cleanTree: CleanTree;
   shelf?: ShelfSettings;
+  // The default GitHub account of this repository, as `<server>/<login>`.
+  githubDefaultAccount?: string | null;
+  // `Load branch protection rules from GitHub`.
+  loadGithubProtection?: boolean;
+  // The rules loaded from GitHub on the last fetches, already as regexes. Read-only: never saved.
+  githubProtected?: string[];
 }
 
 // `remove_strategy`, `show_recycled` and the grouping of the Shelf tab, per repository.
@@ -1293,6 +1308,8 @@ export interface FetchResult {
 
 export interface RemoteChoice {
   name: string | null;
+  // The name offered instead of the remote branch's own (a pull request's `fork/<branch>`).
+  suggested?: string | null;
   dropCommits: boolean;
   mode: CheckoutMode;
 }
@@ -1921,8 +1938,9 @@ export const repoSettingsGet = () => invoke<RepoSettings>("repo_settings_get");
 export const protectedPatternsCheck = (text: string) =>
   invoke<string | null>("protected_patterns_check", { text });
 export const cleanTreeSet = (cleanTree: CleanTree) => invoke<void>("clean_tree_set", { cleanTree });
-export const protectedBranchesSet = (patterns: string[]) =>
-  invoke<string[]>("protected_branches_set", { patterns });
+// The user's own patterns, without GitHub's, and `Load branch protection rules from GitHub`.
+export const protectedBranchesSet = (patterns: string[], loadGithubProtection: boolean) =>
+  invoke<string[]>("protected_branches_set", { patterns, loadGithubProtection });
 export const forcePushTargetRemember = (remote: string, branch: string) =>
   invoke<void>("force_push_target_remember", { remote, branch });
 export const updateProject = (method: UpdateMethod, options: UpdateOptions) =>
@@ -1963,6 +1981,293 @@ export const openExcludeFile = () => invoke<boolean>("open_exclude_file");
 export const openInNewWindow = (path: string) => invoke<void>("open_in_new_window", { path });
 // Finder with the file selected. `path` must be absolute.
 export const revealInFinder = (path: string) => invoke<void>("reveal_in_finder", { path });
+// The browser, for an `https://` or `http://` URL only.
+export const openUrl = (url: string) => invoke<void>("open_url", { url });
+
+// A GitHub account of Settings > Version Control > GitHub (`src-tauri/src/hosting/commands.rs`).
+// `id` is `<server>/<login>`; `server` shows the scheme only when it was typed. `name` is the full
+// name GitHub gave, and `error` what went wrong asking for it, with `needsLogin` when the row
+// offers `Log in`. `isDefault` is about the open repository.
+export interface AccountView {
+  id: string;
+  server: string;
+  login: string;
+  name: string | null;
+  error: string | null;
+  needsLogin: boolean;
+  isDefault: boolean;
+}
+
+// Every account at once, with no request to GitHub: `name` and `error` are empty, and `needsLogin`
+// is set when there is no token. `githubAccountDetails` fills a row in.
+export const githubAccounts = () => invoke<AccountView[]>("github_accounts");
+// The same rows with no token read, so `needsLogin` is false: on an unsigned build every Keychain
+// read can prompt, and the default-account check runs on every repository open.
+export const githubAccountsWithoutTokens = () =>
+  invoke<AccountView[]>("github_accounts", { tokens: false });
+// One account with its details, which take a request to GitHub.
+export const githubAccountDetails = (id: string) =>
+  invoke<AccountView>("github_account_details", { id });
+// A task whose value is the new `AccountView`. A failure says in its `kind` which field of the
+// dialog it is about: `login_server` or `login_token`. `editing` is the id of the account a row's `Log in`
+// re-logs into: it keeps its server and takes the token's login. The token is sent only here,
+// and no command gives it back.
+export const githubLogin = (server: string, token: string, editing: string | null) =>
+  invoke<number>("github_login", { server, token, editing });
+export const githubRemove = (id: string) => invoke<void>("github_remove", { id });
+// `Set as Default`, for the open repository.
+export const githubSetDefault = (id: string) => invoke<void>("github_set_default", { id });
+// The `Generate…` page of the typed server.
+export const githubGenerateUrl = (server: string) =>
+  invoke<string>("github_generate_url", { server });
+
+// What a place asks a GitHub link for (`src-tauri/src/hosting/links.rs`). `path` is relative to the
+// repository root and `lines` are 0-based, the first and the last (the last can be one less than
+// the first: 241's column-0 rule). `revision` is the commit of a revision tab; without it the
+// file's last commit in HEAD is used.
+export type LinkTarget =
+  | { kind: "commit"; hash: string }
+  | { kind: "file"; path: string; lines?: [number, number] | null; revision?: string | null };
+// One GitHub repository of the remotes; `name` is what the submenu shows.
+export interface LinkReference {
+  name: string;
+  url: string;
+}
+// The links of a target, empty when the place gets none. It asks GitHub nothing.
+export const githubLinks = (target: LinkTarget) =>
+  invoke<LinkReference[]>("github_links", { target });
+
+// The Pull Requests window (`src-tauri/src/hosting/pulls/mod.rs`). A remote that points to a GitHub
+// repository: `display` is what the repository combo shows, `server` the server as an account
+// writes it, and `repository` is `<server>/<owner>/<name>`, as the connect error names it.
+export interface MappingView {
+  remote: string;
+  url: string;
+  display: string;
+  server: string;
+  repository: string;
+}
+// The last successful connect: the remote's URL and the account's id.
+export interface PullsChoice {
+  url: string;
+  account: string;
+}
+// The mappings in the combo's order, every account by login, and the saved choice.
+export interface Known {
+  mappings: MappingView[];
+  accounts: AccountView[];
+  saved: PullsChoice | null;
+}
+export interface GithubServerPath {
+  useHttp: boolean | null;
+  host: string;
+  port: number | null;
+  suffix: string | null;
+}
+export interface RepoCoordinates {
+  server: GithubServerPath;
+  owner: string;
+  name: string;
+}
+export interface GithubRepository {
+  id: string;
+  owner: string;
+  nameWithOwner: string;
+  viewerPermission: string | null;
+  mergeCommitAllowed: boolean;
+  squashMergeAllowed: boolean;
+  rebaseMergeAllowed: boolean;
+  defaultBranch: string | null;
+  isFork: boolean;
+  url: string;
+  sshUrl: string;
+}
+// An open connection. `coordinates` are the repository path GitHub gave (it may have been renamed
+// since the remote was set up); `title` is the list tab's name.
+export interface Connection {
+  remote: string;
+  url: string;
+  account: string;
+  coordinates: RepoCoordinates;
+  viewerLogin: string;
+  repository: GithubRepository;
+  title: string;
+}
+// What the window starts from. It asks GitHub nothing.
+export const githubKnown = () => invoke<Known>("github_known");
+// A task whose value is the `Connection`: `remote` is the remote's name, `account` the account's id.
+export const githubConnect = (remote: string, account: string) =>
+  invoke<number>("github_connect", { remote, account });
+// `Change Repository or Account…`: the saved choice is forgotten.
+export const githubForgetConnection = () => invoke<void>("github_forget_connection");
+
+// The pull request list (`src-tauri/src/hosting/pulls/list.rs`), inside the open connection.
+export type PullStateFilter = "OPEN" | "CLOSED" | "MERGED";
+export type ReviewFilter =
+  | "NO_REVIEW"
+  | "REQUIRED"
+  | "APPROVED"
+  | "CHANGES_REQUESTED"
+  | "REVIEWED_BY_ME"
+  | "NOT_REVIEWED_BY_ME"
+  | "AWAITING_REVIEW";
+// The free text and the filters; `null` is not set.
+export interface SearchValue {
+  text: string | null;
+  state: PullStateFilter | null;
+  assignee: string | null;
+  review: ReviewFilter | null;
+  author: string | null;
+  label: string | null;
+}
+// The last search (`null` until there is one) and the history, oldest first.
+export interface SavedSearch {
+  last: SearchValue | null;
+  history: SearchValue[];
+}
+// `color` is six hex digits without `#`, or `null`.
+export interface PullRequestLabel {
+  name: string;
+  color: string | null;
+}
+export type ReviewerState = "ACCEPTED" | "WAIT_FOR_UPDATES" | "NEED_REVIEW";
+// `name` is the presentable name: the full name, or else the login.
+export interface PullRequestReviewer {
+  name: string;
+  state: ReviewerState;
+}
+// A row of the list. `author` is the login (`null` for a deleted account), `assignees` are
+// presentable names, `unresolved` the review threads neither resolved nor outdated, and
+// `createdAt` GitHub's ISO 8601 time. Every text is GitHub's: it is shown as text.
+export interface PullRequestShort {
+  number: number;
+  title: string;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  author: string | null;
+  createdAt: string;
+  labels: PullRequestLabel[];
+  assignees: string[];
+  reviewers: PullRequestReviewer[];
+  unresolved: number;
+}
+export interface PullRequestPage {
+  items: PullRequestShort[];
+  endCursor: string | null;
+  hasNext: boolean;
+}
+export type ChooserKind = "collaborators" | "assignees" | "labels";
+// A task whose value is the `PullRequestPage`; `cursor` is the previous page's `endCursor`.
+export const githubPrPage = (value: SearchValue, cursor: string | null) =>
+  invoke<number>("github_pr_page", { value, cursor });
+// The update check's ETag, or `null`.
+export const githubPrEtag = () => invoke<string | null>("github_pr_etag");
+// A task whose value is the logins of the collaborators or the assignees, or the label names.
+export const githubPrChooser = (kind: ChooserKind) => invoke<number>("github_pr_chooser", { kind });
+export const githubPrSearchSaved = () => invoke<SavedSearch>("github_pr_search_saved");
+// The search becomes the last one, and with `remember` it goes into the history.
+export const githubPrSearchSave = (value: SearchValue, remember: boolean) =>
+  invoke<SavedSearch>("github_pr_search_save", { value, remember });
+
+// A pull request's tab (`src-tauri/src/hosting/pulls/details.rs` and `changes.rs`), inside the open
+// connection. Every text is GitHub's: it is shown as text.
+export interface HeadRepository {
+  owner: string;
+  isFork: boolean;
+  nameWithOwner: string;
+  url: string;
+  sshUrl: string;
+}
+// `body` is GitHub's Markdown, shown as plain text; `reviewers` are in the map's order.
+export interface PullRequestDetails {
+  number: number;
+  url: string;
+  title: string;
+  body: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  baseRefName: string;
+  baseRefOid: string;
+  headRefName: string;
+  headRefOid: string;
+  headRepository: HeadRepository | null;
+  reviewers: PullRequestReviewer[];
+}
+export type CiJobState = "FAILED" | "PENDING" | "SKIPPED" | "SUCCESS";
+// A status context or a check run of the last commit; `url` is GitHub's.
+export interface CiJob {
+  name: string;
+  state: CiJobState;
+  isRequired: boolean;
+  url: string | null;
+}
+// `headRefOid` is the head it was built for; `hasConflicts` is `null` while GitHub does not know.
+export interface PullRequestStatus {
+  headRefOid: string;
+  jobs: CiJob[];
+  hasConflicts: boolean | null;
+  requiredApprovals: number;
+  isRestricted: boolean;
+}
+// `headline` is the plain headline, `author` the presentable name and `committedDate` ISO 8601.
+export interface PullRequestCommit {
+  oid: string;
+  abbreviatedOid: string;
+  headline: string;
+  author: string;
+  committedDate: string;
+  parents: string[];
+  url: string;
+}
+// A changed file and the revisions its diff shows.
+export interface ChangeWithSides extends ChangedFile {
+  before: string;
+  after: string;
+}
+// `body`: the chosen commit's message body, read from git.
+export interface PullRequestChanges {
+  changes: ChangeWithSides[];
+  body: string | null;
+}
+// Tasks whose values are the `PullRequestDetails`, the `PullRequestStatus` and the commits.
+export const githubPrDetails = (number: number) => invoke<number>("github_pr_details", { number });
+export const githubPrStatus = (number: number) => invoke<number>("github_pr_status", { number });
+export const githubPrCommits = (number: number) => invoke<number>("github_pr_commits", { number });
+// A task whose value is the `PullRequestChanges`: of the whole pull request (`selection` null),
+// after fetching the base branch and the head, or of the commit at `selection` in the commits'
+// order.
+export const githubPrChanges = (
+  number: number,
+  baseRef: string,
+  baseOid: string,
+  headOid: string,
+  selection: number | null,
+) => invoke<number>("github_pr_changes", { number, baseRef, baseOid, headOid, selection });
+
+// What a branch action of a pull request ends in (`src-tauri/src/hosting/pulls/checkout.rs`):
+// `gone`, a deleted fork; `noRemote`, no remote for the head repository, with the URLs GitHub
+// gave; `fetchFailed`, git's output; else the action's value.
+export type Headed<T> =
+  | { kind: "gone" }
+  | { kind: "noRemote"; urls: string[] }
+  | { kind: "fetchFailed"; output: string }
+  | ({ kind: "ready" } & T);
+export interface CheckedOutBranch {
+  branch: string;
+  suggested: string;
+  outcome: RemoteCheckout;
+}
+export interface PullRequestRange {
+  from: string;
+  to: string;
+}
+// Tasks whose values are a `Headed<CheckedOutBranch>` and a `Headed<PullRequestRange>`.
+export const githubPrCheckout = (number: number) => invoke<number>("github_pr_checkout", { number });
+export const githubPrShowInLog = (number: number) => invoke<number>("github_pr_show_in_log", { number });
+// Whether the current branch is the pull request's, from the details its tab loaded.
+export const githubPrCheckedOut = (number: number) => invoke<boolean>("github_pr_checked_out", { number });
 
 // Copy as Patch and Create Patch (`src-tauri/src/patch/create.rs`). A version of a file: `disk` is
 // what `git add` would store now, `selection` HEAD with the chosen lines of the disk.

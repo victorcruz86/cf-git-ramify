@@ -545,9 +545,8 @@ fn check_force(repo: &Repo, spec: &PushSpec) -> Result<(), GitError> {
     if spec.force.is_none() {
         return Ok(());
     }
-    let patterns = settings::try_load_repo(repo.data)
-        .map_err(|error| GitError::Io(error.to_string()))?
-        .protected_branches;
+    let patterns = settings::try_effective_protected(repo.data)
+        .map_err(|error| GitError::Io(error.to_string()))?;
     let branch = branch_name(&spec.target);
     if is_protected(&patterns, branch) {
         return Err(GitError::Io(format!(
@@ -833,6 +832,7 @@ mod tests {
     use super::*;
     use crate::commands::RepoLocks;
     use crate::console::Console;
+    use crate::hosting::protection::testing::{rules, GithubRemote};
     use crate::preserve::Saved;
     use crate::task::Runner;
     use crate::test_support::{in_task, TempRepo};
@@ -1603,6 +1603,47 @@ mod tests {
         }
         assert!(!harness.ran_anything_with("push"));
         assert_eq!(harness.remote_hash("refs/heads/main"), remote);
+    }
+
+    // P§4.1: the rules arrive with a fetch, and `check_force` reads them with the user's.
+    #[test]
+    fn a_fetch_loads_the_remotes_rules_and_force_push_to_them_is_prohibited() {
+        let harness = Harness::new();
+        let github = GithubRemote::new();
+        github.point(harness.path(), "origin", harness.origin.path());
+        harness
+            .sync
+            .set_after_fetch(github.hook(harness.data.path()));
+        harness.repo.git(&["checkout", "-q", "-b", "release/1"]);
+        harness.repo.commit("r.txt", b"r\n", "release");
+        harness
+            .repo
+            .git(&["push", "-q", "-u", "origin", "release/1"]);
+        harness
+            .repo
+            .git(&["commit", "-q", "--amend", "-m", "rewritten"]);
+        let remote = harness.remote_hash("refs/heads/release/1");
+
+        github.fake.reply(rules(&["release/*"]));
+        let sync = harness.sync.clone();
+        let fetched = in_task(&harness.runner, harness.path(), move |ctx| {
+            crate::fetch::fetch_remote(ctx, &sync, "origin")
+        });
+        github.fake.finish();
+        assert_eq!(fetched, Ok(Vec::new()));
+        assert_eq!(
+            settings::try_effective_protected(harness.data.path()).unwrap(),
+            ["master", "main", r"release\/.*"]
+        );
+
+        let result = harness.push(forcing(ForceMode::Plain, "release/1", "release/1"));
+
+        assert_eq!(
+            result.status,
+            PushStatus::Error("Force push to release/1 is prohibited".to_string())
+        );
+        assert!(!harness.ran_anything_with("push"));
+        assert_eq!(harness.remote_hash("refs/heads/release/1"), remote);
     }
 
     // Git accepts these ways of naming the target: none must skip the protection.
@@ -2698,7 +2739,7 @@ mod tests {
         outsider("theirs4.txt", "4\n");
         let sync = harness.sync.clone();
         section("pull without options");
-        let pulled = in_repo(&harness, pull::task_kind(&[]), move |repo| {
+        let pulled = in_repo(&harness, TaskKind::Read, move |repo| {
             pull::pull(repo, &sync, "origin", "main", &[], || Ok(()))
         });
         silence();
@@ -2708,15 +2749,11 @@ mod tests {
         let sync = harness.sync.clone();
         harness.repo.commit("propio3.txt", b"p\n", "own 3");
         section("pull with --rebase (goes through Update)");
-        let pulled = in_repo(
-            &harness,
-            pull::task_kind(&[PullOption::Rebase]),
-            move |repo| {
-                pull::pull(repo, &sync, "origin", "main", &[PullOption::Rebase], || {
-                    Ok(())
-                })
-            },
-        );
+        let pulled = in_repo(&harness, TaskKind::Read, move |repo| {
+            pull::pull(repo, &sync, "origin", "main", &[PullOption::Rebase], || {
+                Ok(())
+            })
+        });
         silence();
         assert_eq!(pulled.outcome, Outcome::Success, "{pulled:?}");
 

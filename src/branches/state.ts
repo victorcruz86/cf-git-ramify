@@ -8,6 +8,7 @@ import {
   repoSettingsGet,
   type BranchKind,
   type FavoriteSet,
+  type RepoSettings,
 } from "../lib/api";
 
 export interface PopupSize {
@@ -51,6 +52,22 @@ export const branchOptions = writable<BranchOptions>(defaultBranchOptions());
 const DEFAULT_PROTECTED = ["master", "main"];
 export const protectedBranches = writable<string[]>(DEFAULT_PROTECTED);
 
+// `GitSharedSettings.isBranchProtected`'s patterns: the user's, then GitHub's when they are loaded.
+export function effectiveProtected(
+  settings: Pick<RepoSettings, "protectedBranches" | "loadGithubProtection" | "githubProtected"> | null,
+): string[] {
+  if (!settings) return DEFAULT_PROTECTED;
+  const own = settings.protectedBranches ?? DEFAULT_PROTECTED;
+  const loaded = settings.loadGithubProtection === false ? [] : (settings.githubProtected ?? []);
+  return [...new Set([...own, ...loaded])];
+}
+
+// After a fetch, which may have loaded new rules from GitHub. A failed read keeps what is shown.
+export async function refreshProtectedBranches() {
+  const settings = await repoSettingsGet().catch(() => null);
+  if (settings) protectedBranches.set(effectiveProtected(settings));
+}
+
 // They are a convenience: if they cannot be read, the defaults apply.
 export async function loadBranchState() {
   const [stored, set, settings] = await Promise.all([
@@ -60,7 +77,7 @@ export async function loadBranchState() {
   ]);
   branchOptions.set({ ...defaultBranchOptions(), ...stored });
   if (set) favorites.set(set);
-  protectedBranches.set(settings?.protectedBranches ?? DEFAULT_PROTECTED);
+  protectedBranches.set(effectiveProtected(settings));
 }
 
 export async function toggleFavorite(name: string, kind: BranchKind) {

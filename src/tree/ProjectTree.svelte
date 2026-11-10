@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import { onRepoChanged, repoStatus, treeList, type TreeEntry } from "../lib/api";
+  import { CANNOT_OPEN, hostingItems, OPEN_IN_GITHUB } from "../hosting/links";
   import { errorText } from "../lib/errors";
   import { matchProjectViewShortcut, matchShortcut } from "../lib/keymap";
   import Menu from "../lib/Menu.svelte";
@@ -271,10 +272,21 @@
     else openFiles([row.entry]);
   }
 
-  function contextMenu(event: MouseEvent, row: TreeRow | null) {
+  // `Open In ▸ GitHub` of the first selected entry (`RevealGroup`): none while no GitHub repository
+  // answers for it, as for the repository itself, an untracked file or an ignored one.
+  let hosting = $state.raw<MenuItem[]>([]);
+
+  async function contextMenu(event: MouseEvent, row: TreeRow | null) {
     event.preventDefault();
     if (row && !nav.selected.has(row.entry.path)) nav.selectOnly(row.entry.path);
-    menu = { x: event.clientX, y: event.clientY };
+    const [x, y] = [event.clientX, event.clientY];
+    const [first] = selectedEntries();
+    hosting = first
+      ? await hostingItems({ kind: "file", path: first.path }, "open", OPEN_IN_GITHUB, (failure) =>
+          notify({ kind: "error", title: CANNOT_OPEN, body: errorText(failure) }),
+        )
+      : [];
+    menu = { x, y };
   }
 
   // `ProjectViewPopupMenu`, with what rama has of it: `Edit Source` (`LangActions.xml:844`) and,
@@ -289,6 +301,8 @@
         run: () => openFiles(entries),
       },
       null,
+      // `RevealGroup`, in `RunContextPopupGroup`, comes before the version control group.
+      ...(hosting.length > 0 ? [{ label: "Open In", submenu: hosting }] : []),
       gitMenu(fileTargets(entries, status)),
     ];
   }

@@ -38,6 +38,12 @@ pub enum GitError {
     Outdated,
     // The user cancelled a long task; it is not a git failure.
     Cancelled,
+    // A GitHub login that failed: whether the dialog shows it under `Server:` or `Token:`.
+    LoginField { server: bool, message: String },
+    // A GitHub account with no token in the Keychain, found when connecting.
+    MissingToken,
+    // GitHub refused the token (241's GithubAuthenticationException): the place offers `Re-Login`.
+    Authentication(String),
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {

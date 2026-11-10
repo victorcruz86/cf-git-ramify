@@ -175,6 +175,7 @@ pub async fn branch_checkout(
 pub async fn branch_checkout_remote(
     remote_branch: String,
     name: Option<String>,
+    suggested: Option<String>,
     drop_commits: bool,
     mode: CheckoutMode,
     app: AppHandle,
@@ -185,6 +186,7 @@ pub async fn branch_checkout_remote(
     start(&app, &state, TaskKind::Write, title, move |repo| {
         let options = RemoteOptions {
             name: name.as_deref(),
+            suggested: suggested.as_deref(),
             drop_commits,
             mode,
         };
@@ -1364,7 +1366,8 @@ pub async fn pull_info(state: State<'_, AppState>) -> Result<PullInfo, ApiError>
     blocking_api(move || Ok(pull::info(&repo)?)).await
 }
 
-// `git pull` changes the tree from start to finish and takes the write lock. With `--rebase` it is
+// `git pull` changes the tree from start to finish and takes the write lock for it, and the
+// protection loader asks GitHub after it, without the lock (`pull::merge`). With `--rebase` it is
 // Update, which takes it only from saving to restoring: see `update_project`.
 #[tauri::command]
 pub async fn git_pull(
@@ -1381,7 +1384,7 @@ pub async fn git_pull(
     start(
         &app,
         &state,
-        pull::task_kind(&options),
+        TaskKind::Read,
         title,
         move |repo| -> Result<UpdateResult, GitError> {
             let state = handle.state::<AppState>();
@@ -1402,7 +1405,12 @@ pub async fn push_info(
     state: State<'_, AppState>,
 ) -> Result<PushInfo, ApiError> {
     let repo = current_repo(&state)?;
-    let repo_settings = settings::load_repo(&repo_data_dir(&app, &state)?);
+    let data = repo_data_dir(&app, &state)?;
+    // The dialog greys out what `check_force` refuses: the user's patterns and GitHub's.
+    let repo_settings = RepoSettings {
+        protected_branches: settings::effective_protected(&data),
+        ..settings::load_repo(&data)
+    };
     blocking_api(move || Ok(push::info(&repo, repo_settings, branch.as_deref())?)).await
 }
 
@@ -1896,18 +1904,22 @@ pub fn push_tags_set(
 pub fn repo_settings_get(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<RepoSettings, ApiError> {
-    Ok(settings::load_repo(&repo_data_dir(&app, &state)?))
+) -> Result<settings::RepoSettingsView, ApiError> {
+    Ok(settings::load_repo_view(&repo_data_dir(&app, &state)?))
 }
 
-// The patterns that are not valid: they are saved, protect nothing, and the interface says so.
+// The user's patterns and `Load branch protection rules from GitHub`. The patterns that are not
+// valid: they are saved, protect nothing, and the interface says so.
 #[tauri::command]
 pub fn protected_branches_set(
     patterns: Vec<String>,
+    load_github_protection: bool,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
-    settings::save_protected_branches(&repo_data_dir(&app, &state)?, patterns.clone())
+    let dir = repo_data_dir(&app, &state)?;
+    settings::save_protected_branches(&dir, patterns.clone())
+        .and_then(|()| settings::save_load_github_protection(&dir, load_github_protection))
         .map_err(|error| failed(error.to_string()))?;
     Ok(push::invalid_patterns(&patterns))
 }
@@ -2597,7 +2609,7 @@ mod tests {
     }
 
     // Reads change nothing: there is nothing to save beforehand.
-    const READS: [&str; 37] = [
+    const READS: [&str; 52] = [
         "merge_message",
         "shelf_lists",
         "shelf_sides",
@@ -2635,6 +2647,33 @@ mod tests {
         "rewrite_undo_check",
         "rewrite_validate",
         "rewrite_interactive_start",
+        "github_accounts",
+        "github_account_details",
+        "github_generate_url",
+        "open_url",
+        "github_links",
+        "github_known",
+        "github_pr_page",
+        "github_pr_etag",
+        "github_pr_chooser",
+        "github_pr_search_saved",
+        "github_pr_details",
+        "github_pr_status",
+        "github_pr_commits",
+        // Like `fetch_remote`, its fetches change remote refs and FETCH_HEAD only.
+        "github_pr_changes",
+        "github_pr_checked_out",
+    ];
+    // They write the app's own data (the GitHub accounts, the Keychain, a repository's default
+    // account, the Pull Requests window's saved choice and its list's searches), never the
+    // repository's files or index.
+    const APP_DATA: [&str; 6] = [
+        "github_login",
+        "github_remove",
+        "github_set_default",
+        "github_connect",
+        "github_forget_connection",
+        "github_pr_search_save",
     ];
     // They work in another folder: the open repository does not change.
     const ELSEWHERE: [&str; 2] = ["clone_repository", "init_repository"];
@@ -2649,6 +2688,7 @@ mod tests {
         let source = [
             code(include_str!("vcs_commands.rs")),
             code(include_str!("get_version.rs")),
+            code(include_str!("hosting/commands.rs")),
         ]
         .concat();
         let source = source.as_str();
@@ -2657,9 +2697,12 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('(').unwrap()])
             .collect();
-        assert_eq!(commands.len(), 110, "{commands:?}");
+        assert_eq!(commands.len(), 133, "{commands:?}");
         let unsaved = |name: &&&str| {
-            !READS.contains(name) && !ELSEWHERE.contains(name) && !WHILE_SAVING.contains(name)
+            !READS.contains(name)
+                && !ELSEWHERE.contains(name)
+                && !WHILE_SAVING.contains(name)
+                && !APP_DATA.contains(name)
         };
         for name in commands.iter().filter(unsaved) {
             let start = source.find(&format!("pub async fn {name}(")).unwrap();

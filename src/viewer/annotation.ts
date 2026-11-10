@@ -301,6 +301,9 @@ export interface AnnotationHandlers {
   // at `line` (from 1) of the text shown translated into it.
   annotate: (target: AnnotationTarget, line: number) => void;
   options: (options: AnnotationOptions) => void;
+  // `Open on GitHub` (`GHOpenInBrowserFromAnnotationActionGroup`), for the commit of the line: given
+  // empty or not at all, there is none. It follows `Annotate Previous Revision` after a separator.
+  hosting?: MenuItem[];
 }
 
 // `AnnotateActionGroup` (`V:766`): the columns, then `Colors ▸` and `Names ▸`. `Show Diff On Hover`
@@ -345,7 +348,8 @@ function viewMenu(
 // `EditorGutterComponentImpl.getTextAnnotationPopupActions`: `Close Annotations` (`EB:76`) first,
 // then `AnnotationPresentation`'s actions: `Show Diff`, `View ▸`, `Copy Revision Number`
 // (`V:914`, only on an annotated line), a separator, `Annotate Revision` (`V:1002`) and `Annotate
-// Previous Revision` (`V:1004`; on a line changed locally, the revision annotated). `line` is from 1.
+// Previous Revision` (`V:1004`; on a line changed locally, the revision annotated), then a separator and
+// the GitHub item (`handlers.hosting`). `line` is from 1.
 // Both pass the annotation's line, not the editor's, with the editor's text
 // (`ShowAnnotateOperationsPopup.getAnnotationLineNumber`; `approximate` for the previous one, so a
 // changed line gives where its change starts): 241's own quirk, kept.
@@ -382,5 +386,8 @@ export function annotationPopup(
       run: () => previous && handlers.annotate(previous, annotationLine),
     },
   );
+  // The extension actions of `AnnotateToggleAction` come after one more separator.
+  const hosting = commit ? (handlers.hosting ?? []) : [];
+  if (hosting.length > 0) items.push(null, ...hosting);
   return items;
 }

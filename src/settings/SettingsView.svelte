@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import { protectedBranches } from "../branches/state";
+  import { effectiveProtected, protectedBranches } from "../branches/state";
+  import AccountsList from "../hosting/AccountsList.svelte";
   import {
     cleanTreeSet,
     gitVersion,
@@ -22,12 +23,15 @@
 
   // `spinner(1..100000, 1)` of the large files row.
   const LIMIT_RANGE = { min: 1, max: 100000 };
+  // `Connection timeout:` is shown in seconds and stored in milliseconds (`GithubSettingsConfigurable`).
+  const TIMEOUT_RANGE = { min: 0, max: 60 };
 
   let { settings, onclose }: Props = $props();
 
   let draft = $state({ ...untrack(() => settings) });
   // One path per line, like the log's path filter.
   let updatePaths = $state(untrack(() => settings.updatePaths.join("\n")));
+  let timeoutSeconds = $state<number | null>(untrack(() => settings.githubConnectionTimeoutMs / 1000));
   // Of the open repository, separated by `;` as in `ParametersListUtil.COLON_LINE_PARSER`. `null`:
   // there is no repository, or they could not be read, and then they are left untouched.
   let protectedText = $state<string | null>(null);
@@ -37,6 +41,15 @@
   let savedCleanTree: CleanTree | null = null;
   // Until it is read nothing is checked: the default would be wrong for a repository with Stash.
   let cleanTreeRead = $state(false);
+  // `Load branch protection rules from GitHub`, and the rules loaded on the last fetches.
+  let loadGithub = $state(true);
+  let githubProtected: string[] = [];
+  // `ExpandableTextFieldWithReadOnlyText.readOnlyText`: GitHub's rules joined with `;`, only when
+  // the checkbox was on as the page opened. It is shown after the user's text and never saved.
+  let readOnlyText = "";
+  // The text the grey suffix was painted for, and the suffix. It shows while the field still has
+  // that text, as `setTextToTriggerStatus` does, and follows the text on focus loss.
+  let readOnly = $state<{ text: string; suffix: string } | null>(null);
   // The error of the first pattern that does not compile, while it is typed. It does not block Save.
   let protectedError = $state<string | null>(null);
   let checkRun = 0;
@@ -79,10 +92,12 @@
       .map((pattern) => pattern.trim())
       .filter(Boolean);
 
+  // The user's patterns first, then the read-only ones.
   async function checkProtected(text: string) {
     const run = ++checkRun;
     try {
-      const error = await protectedPatternsCheck(text);
+      let error = await protectedPatternsCheck(text);
+      if (error === null && readOnlyText) error = await protectedPatternsCheck(readOnlyText);
       if (run === checkRun) protectedError = error;
     } catch {
       if (run === checkRun) protectedError = null;
@@ -95,12 +110,24 @@
     checkTimer = setTimeout(() => void checkProtected(protectedText ?? ""), 300);
   }
 
+  // `updateReadOnlyText`.
+  function paintReadOnly(text: string) {
+    if (!readOnlyText.trim()) return;
+    readOnly = { text, suffix: text.trim() ? `;${readOnlyText}` : readOnlyText };
+  }
+
   async function loadProtected() {
     try {
-      const { protectedBranches: stored, cleanTree: saver } = await repoSettingsGet();
+      const repoSettings = await repoSettingsGet();
+      const { protectedBranches: stored, cleanTree: saver } = repoSettings;
       cleanTree = savedCleanTree = saver;
       cleanTreeRead = true;
+      loadGithub = repoSettings.loadGithubProtection ?? true;
+      githubProtected = repoSettings.githubProtected ?? [];
+      readOnlyText = loadGithub ? githubProtected.join(";") : "";
       protectedText = stored.join(";");
+      // `setText` paints the suffix only for a text that is not blank.
+      if (protectedText.trim()) paintReadOnly(protectedText);
       await checkProtected(protectedText);
     } catch {
       protectedText = null;
@@ -118,8 +145,14 @@
   async function saveProtected() {
     if (protectedText === null) return;
     const list = patterns(protectedText);
-    await protectedBranchesSet(list);
-    protectedBranches.set(list);
+    await protectedBranchesSet(list, loadGithub);
+    protectedBranches.set(
+      effectiveProtected({
+        protectedBranches: list,
+        loadGithubProtection: loadGithub,
+        githubProtected,
+      }),
+    );
   }
 
   // The spinner of IntelliJ keeps the value inside its range; an empty field goes back to what was saved.
@@ -127,6 +160,13 @@
     const whole = Math.trunc(Number(value));
     if (!value || Number.isNaN(whole)) return settings.largeFilesLimitMb;
     return Math.min(LIMIT_RANGE.max, Math.max(LIMIT_RANGE.min, whole));
+  }
+
+  // Zero is a valid timeout; an empty field goes back to what was saved.
+  function validTimeout(value: number | null): number {
+    const whole = Math.trunc(Number(value));
+    if (value === null || Number.isNaN(whole)) return settings.githubConnectionTimeoutMs;
+    return Math.min(TIMEOUT_RANGE.max, Math.max(TIMEOUT_RANGE.min, whole)) * 1000;
   }
 
   async function save() {
@@ -143,6 +183,7 @@
       await settingsSave({
         ...$state.snapshot(draft),
         largeFilesLimitMb: validLimit(draft.largeFilesLimitMb),
+        githubConnectionTimeoutMs: validTimeout(timeoutSeconds),
         updatePaths: paths,
       });
       onclose();
@@ -303,17 +344,35 @@
     {#if protectedText !== null}
       <div class="protected">
         <label for="settings-protected-branches">Protected branches:</label>
-        <input
-          id="settings-protected-branches"
-          class="input"
-          spellcheck="false"
-          bind:value={protectedText}
-          oninput={protectedEdited}
-        />
+        <div class="protected-field">
+          <input
+            id="settings-protected-branches"
+            class="input"
+            spellcheck="false"
+            bind:value={protectedText}
+            oninput={protectedEdited}
+            onblur={() => paintReadOnly(protectedText ?? "")}
+          />
+          {#if readOnly && readOnly.text === protectedText}
+            <span class="read-only" aria-hidden="true"
+              ><span class="typed">{readOnly.text}</span><span class="read-only-suffix"
+                >{readOnly.suffix}</span
+              ></span
+            >
+          {/if}
+        </div>
       </div>
       {#if protectedError}
         <p class="field-error" role="alert">{protectedError}</p>
       {/if}
+      <label class="checkbox-label nested">
+        <input type="checkbox" bind:checked={loadGithub} />
+        <span class="check" data-state={loadGithub ? "on" : "off"}></span>
+        Load branch protection rules from GitHub
+      </label>
+      <p class="comment nested-checkbox">
+        GitHub rules are added to the local rules and synced on every fetch
+      </p>
     {/if}
   </div>
 
@@ -386,6 +445,23 @@
     </label>
   </div>
 
+  <!-- GithubSettingsConfigurable. The accounts act at once: only the timeout goes with Save. -->
+  <h3>GitHub</h3>
+  <AccountsList />
+  <div class="timeout">
+    <label for="settings-github-timeout">Connection timeout:</label>
+    <input
+      id="settings-github-timeout"
+      type="number"
+      class="input limit"
+      min={TIMEOUT_RANGE.min}
+      max={TIMEOUT_RANGE.max}
+      step="1"
+      bind:value={timeoutSeconds}
+    />
+    <span>seconds</span>
+  </div>
+
   {#if problem}
     <p class="field-error" role="alert">{problem}</p>
   {/if}
@@ -456,9 +532,37 @@
     white-space: nowrap;
   }
 
+  .protected-field {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+  }
+
   .protected input {
     flex: 1;
     min-width: 0;
+  }
+
+  /* Painted over the field as its empty text is: the typed text takes its place unseen, and the
+     rules from GitHub follow it in grey. */
+  .read-only {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 9px;
+    overflow: hidden;
+    white-space: pre;
+    pointer-events: none;
+  }
+
+  .read-only .typed {
+    visibility: hidden;
+  }
+
+  .read-only-suffix {
+    color: var(--text-secondary);
   }
 
   .update-paths textarea {
@@ -484,8 +588,19 @@
     margin: -6px 0 0 20px;
   }
 
+  .comment.nested-checkbox {
+    margin: -6px 0 0 40px;
+  }
+
   .signature {
     margin: 6px 0 0;
+  }
+
+  .timeout {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
   }
 
   .large-files {

@@ -6,8 +6,10 @@ import type { LogOptions } from "./options";
 // - `log`: the main tab and `Open New Git Log Tab`, named after their filters (`VcsLogTabsManager`);
 // - `update`: `Update Info`, what an update received (`GitUpdateInfoAsLog`);
 // - `history`: a file's history (`FileHistoryTabsManager`, group `History`);
-// - `compare`: two branches as two logs (`GitCompareBranchesUi`, `Compare: <branch> and <current>`).
-export type LogTabKind = "log" | "update" | "history" | "compare";
+// - `compare`: two branches as two logs (`GitCompareBranchesUi`, `Compare: <branch> and <current>`);
+// - `range`: a pull request's `Show '…' in Git Log`, `<remote>/<base>..<remote>/<head>`
+//   (`GitRemoteBranchesUtil.showRemoteBranchInLog`).
+export type LogTabKind = "log" | "update" | "history" | "compare" | "range";
 
 interface KindRule {
   // The tab's name from what the request named it: a `log` tab is named after its filters.
@@ -29,6 +31,8 @@ export const LOG_TAB_KINDS: Record<LogTabKind, KindRule> = {
   history: { title: (name) => `History: ${name}`, persisted: true, reused: true },
   // `GitCompareBranchesFilesManager.openFile`, by ranges; its filters live in memory only.
   compare: { title: (name) => `Compare: ${name}`, persisted: false, reused: true },
+  // `VcsProjectLog.openLogTab` with the range filter: a log tab named after it.
+  range: { title: (name) => `${LOG}: ${name}`, persisted: false, reused: true },
 };
 
 // The file of a `history` tab, and the revision of `History Up to Here` (`null`: from the Branch

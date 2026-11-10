@@ -45,6 +45,7 @@ const SETTINGS: Settings = {
   nonModalCommit: true,
   clearInitialCommitMessage: false,
   showDropCommitDialog: true,
+  githubConnectionTimeoutMs: 5000,
 };
 
 const LISTS = {

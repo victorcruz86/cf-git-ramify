@@ -14,6 +14,7 @@
     type SelectionRequest,
     type SelectionUpdate,
   } from "../lib/api";
+  import { CANNOT_OPEN, hostingItems, OPEN_ON_GITHUB } from "../hosting/links";
   import { errorText } from "../lib/errors";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { stored, store } from "../lib/storage";
@@ -256,9 +257,10 @@
   }
 
   // `VcsSelectionHistoryDialog.Popup` (`VA:479-484`), with the `Git.SelectInGitLog` git4idea adds
-  // to it; `Git.Hosting.Open.In.Browser.Group` is left out. `MyDiffAction.update` names
-  // `Diff.ShowDiff` `Compare` (`V:163`) here, whatever the selection.
-  function popupItems(): MenuItem[] {
+  // to it and `Git.Hosting.Open.In.Browser.Group` last (`g4x:522`), for the commit of the first
+  // selected row. `MyDiffAction.update` names `Diff.ShowDiff` `Compare` (`V:163`) here, whatever the
+  // selection.
+  function popupItems(hosting: MenuItem[] = []): MenuItem[] {
     return [
       { label: "Compare", shortcut: "⌘D", disabled: !actions.compare, run: compare },
       { label: "Compare with Local", disabled: !actions.compareWithLocal, run: compareWithLocal },
@@ -276,16 +278,33 @@
       },
       // git4idea `plugin.xml:40-42`: after `Vcs.CopyRevisionNumberAction` (`vcs.history.action.gitlog`).
       { label: "Show in Git Log", disabled: !actions.showInGitLog, run: showInLog },
+      ...hosting,
     ];
   }
 
-  function contextmenu(index: number, event: MouseEvent) {
+  // This window has no balloons: a failure is its own banner.
+  const hostingFailed = (error: unknown) => (failure = `${CANNOT_OPEN}: ${errorText(error)}`);
+
+  async function hostingOfSelection(): Promise<MenuItem[]> {
+    const row = data.rows[selected[0]];
+    if (!row || row.kind !== "revision") return [];
+    return hostingItems(
+      { kind: "commit", hash: row.revision.hash },
+      "open",
+      OPEN_ON_GITHUB,
+      hostingFailed,
+    );
+  }
+
+  async function contextmenu(index: number, event: MouseEvent) {
     event.preventDefault();
     if (!selected.includes(index)) {
       selected = [index];
       anchor = index;
     }
-    menu = { x: event.clientX, y: event.clientY, items: popupItems() };
+    const { clientX: x, clientY: y } = event;
+    const hosting = await hostingOfSelection();
+    menu = { x, y, items: popupItems(hosting) };
   }
 
   function keydown(event: KeyboardEvent) {

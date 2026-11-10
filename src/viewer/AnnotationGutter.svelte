@@ -8,6 +8,7 @@
     type Annotation,
     type AnnotationTarget,
   } from "../lib/api";
+  import { hostingItems, OPEN_ON_GITHUB } from "../hosting/links";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import {
     annotationColumns,
@@ -31,9 +32,11 @@
     showDiff: (commit: AnnotatedCommit) => void;
     // `line` is the line (from 1) the popup was opened on.
     annotate: (target: AnnotationTarget, line: number) => void;
+    // `Open on GitHub` failed: the window shows it.
+    onerror?: (failure: unknown) => void;
   }
 
-  let { view, annotation, close, showDiff, annotate }: Props = $props();
+  let { view, annotation, close, showDiff, annotate, onerror }: Props = $props();
   let menu = $state.raw<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
   // `DS:13-14`: `VCS_ANNOTATIONS_LAST_COMMIT_COLOR`, bold (`AnnotationPresentation.getFontType`),
@@ -116,6 +119,27 @@
       }
       return cell;
     };
+    // `GHOpenInBrowserFromAnnotationActionGroup`: the commit of the clicked line, when it has one.
+    async function popup(line: number, x: number, y: number) {
+      const commit = cellOf(line).look.commit;
+      const hosting = commit
+        ? await hostingItems({ kind: "commit", hash: commit.hash }, "open", OPEN_ON_GITHUB, (failure) =>
+            onerror?.(failure),
+          )
+        : [];
+      menu = {
+        x,
+        y,
+        items: annotationPopup(annotation, line, options, {
+          close,
+          showDiff,
+          copy: (text) => void clipboardWrite(text).catch(() => {}),
+          annotate: (target, from) => annotate(target, from),
+          options: setAnnotationOptions,
+          hosting,
+        }),
+      };
+    }
     // The cell clicked says its line; the block of the event is the fallback.
     const lineOf = (block: BlockInfo, event?: Event) => {
       const cell = (event?.target as Element | null)?.closest?.<HTMLElement>(".cm-annotation");
@@ -138,17 +162,7 @@
           contextmenu: (_view, block, event) => {
             const line = lineOf(block, event);
             const { clientX: x, clientY: y } = event as MouseEvent;
-            menu = {
-              x,
-              y,
-              items: annotationPopup(annotation, line, options, {
-                close,
-                showDiff,
-                copy: (text) => void clipboardWrite(text).catch(() => {}),
-                annotate: (target, from) => annotate(target, from),
-                options: setAnnotationOptions,
-              }),
-            };
+            void popup(line, x, y);
             return true;
           },
         },

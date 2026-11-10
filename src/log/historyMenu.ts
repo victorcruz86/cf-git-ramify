@@ -24,6 +24,8 @@ export interface HistoryHandlers {
   showInGitLog: (commit: HistoryCommit) => void;
   revert?: (commits: HistoryCommit[]) => void;
   newTag?: (commit: HistoryCommit) => void;
+  // `Open on GitHub` (`hostingItems`): the commit of the row; none when no GitHub repository answers.
+  hosting?: MenuItem[];
 }
 
 const SEPARATOR = null;
@@ -34,8 +36,8 @@ const CANT_REVERT_MERGE = "Reverting merge commits is not allowed";
 export const showDiffLabel = (count: number) => (count > 1 ? "Compare" : "Show Diff");
 
 // `Vcs.FileHistory.ContextMenu` (`LX:233-245`) with `Git.FileHistory.ContextMenu` in
-// `VcsHistoryActionsGroup` (`X:291-299`), without `Show Diff in a New Tab or Window` (decision 8) and
-// the hosting group. `FileHistorySingleCommitAction`: one row; `Get`, `Show File at Revision` and
+// `VcsHistoryActionsGroup` (`X:291-299`), without `Show Diff in a New Tab or Window` (decision 8), and
+// with the hosting group last. `FileHistorySingleCommitAction`: one row; `Get`, `Show File at Revision` and
 // `Annotate` are off on the row that deleted the file (`FileHistoryModel.createRevision` gives
 // `NULL`).
 export function historyMenu(commits: HistoryCommit[], handlers: HistoryHandlers): MenuItem[] {
@@ -79,5 +81,7 @@ export function historyMenu(commits: HistoryCommit[], handlers: HistoryHandlers)
     },
     SEPARATOR,
     { ...onOne("New Tag…", (commit) => newTag?.(commit)), disabled: !single || !newTag },
+    // `VcsHistoryActionsGroup`, `anchor="last"` (`g4x:520`).
+    ...(handlers.hosting ?? []),
   ];
 }

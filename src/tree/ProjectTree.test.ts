@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -26,6 +26,7 @@ vi.stubGlobal(
 const handlers = new Map<string, (payload: unknown) => void>();
 // What `tree_list` gives per folder, and what `repo_status` gives.
 let disk: Record<string, TreeEntry[]> = {};
+let links: { name: string; url: string }[] = [];
 let changes: FileChange[] = [];
 // With `hold`, each `tree_list` waits until `release` lets it answer; `inFlight` counts those waiting.
 let hold = false;
@@ -96,6 +97,7 @@ beforeEach(() => {
     "[ab]": [file("[ab]/-x*?.txt"), file("[ab]/a.txt")],
   };
   changes = [change("build/", "ignored"), change("debug.log", "ignored"), change("src/a.txt", "modified")];
+  links = [];
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
@@ -113,6 +115,10 @@ beforeEach(() => {
       case "repo_status":
         return changes;
       case "viewer_open":
+        return undefined;
+      case "github_links":
+        return links;
+      case "open_url":
         return undefined;
       default:
         throw new Error(`unexpected command: ${command}`);
@@ -389,7 +395,7 @@ test("the_context_menu_has_edit_source_and_the_git_file_menu", async () => {
   );
 
   await fireEvent.contextMenu(row("debug.log"));
-  const menu = screen.getByRole("menu", { name: "Project" });
+  const menu = await screen.findByRole("menu", { name: "Project" });
   const items = [...menu.querySelectorAll('[role="menuitem"]')].map((item) => [
     item.getAttribute("aria-label"),
     (item as HTMLButtonElement).disabled,
@@ -407,7 +413,25 @@ test("the_context_menu_has_edit_source_and_the_git_file_menu", async () => {
   expect(screen.queryByRole("menu")).toBeNull();
 
   await fireEvent.contextMenu(row("src"));
-  expect(screen.getByRole("menuitem", { name: "Edit Source" }).hasAttribute("disabled")).toBe(true);
+  expect(
+    (await screen.findByRole("menuitem", { name: "Edit Source" })).hasAttribute("disabled"),
+  ).toBe(true);
+});
+
+// `RevealGroup` takes `GitHub` into `Open In` (`GB:74`), for the file at the last commit that
+// touched it; no reference, no `Open In`.
+test("the_open_in_menu_has_github_for_the_selected_entry", async () => {
+  links = [{ name: "https://github.com/o/r", url: "https://github.com/o/r/blob/abc/src/a.txt" }];
+  await mount();
+
+  await fireEvent.contextMenu(row("debug.log"));
+  await screen.findByRole("menu", { name: "Project" });
+  await fireEvent.click(screen.getByRole("menuitem", { name: "Open In" }));
+  const submenu = await screen.findByRole("menu", { name: "Open In" });
+  await fireEvent.click(within(submenu).getByRole("menuitem", { name: "GitHub" }));
+
+  expect(calls("github_links").at(-1)?.[1]).toEqual({ target: { kind: "file", path: "debug.log" } });
+  expect(calls("open_url")).toEqual([["open_url", { url: links[0].url }]]);
 });
 
 test("shift_and_cmd_click_select_several_entries", async () => {

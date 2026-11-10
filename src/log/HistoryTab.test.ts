@@ -178,6 +178,8 @@ beforeEach(async () => {
     branches_containing: () => [],
     commit_changes_of: () => [],
     task_cancel: () => undefined,
+    // No GitHub repository answers.
+    github_links: () => [],
   };
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -482,4 +484,41 @@ test("the_history_table_puts_author_and_date_before_the_commit_column", async ()
       ),
     ).toBe(true),
   );
+});
+
+// `Open on GitHub` is the last item of the menu and the last button of the toolbar
+// (`VcsHistoryActionsGroup`, `VcsHistoryActionsGroup.Toolbar`), for the commit of the row; with no
+// GitHub repository neither is there.
+test("each_menu_has_open_on_github_at_241s_place_file_history", async () => {
+  const url = `https://github.com/o/r/commit/${HASH_B}`;
+  mock({
+    github_links: () => [{ name: "https://github.com/o/r", url }],
+    open_url: () => undefined,
+  });
+  await panel();
+  await showHistory("src/a.txt");
+
+  const menu = await contextMenuOnRow(1);
+  const labels = [...menu.querySelectorAll('[role="menuitem"]')].map((item) =>
+    item.getAttribute("aria-label"),
+  );
+  expect(labels.at(-1)).toBe("Open on GitHub");
+  expect(lastArgs("github_links")).toEqual({ target: { kind: "commit", hash: HASH_B } });
+  await fireEvent.click(menuItem(menu, "Open on GitHub"));
+  await waitFor(() => expect(lastArgs("open_url")).toEqual({ url }));
+
+  const toolbar = screen.getByRole("toolbar", { name: "File History Toolbar" });
+  const buttons = within(toolbar).getAllByRole("button");
+  expect(buttons.at(-1)?.getAttribute("title")).toBe("Open on GitHub");
+});
+
+test("no_github_remote_hides_the_history_items", async () => {
+  await panel();
+  await showHistory("src/a.txt");
+
+  const menu = await contextMenuOnRow(1);
+
+  expect(within(menu).queryByRole("menuitem", { name: /^Open on GitHub/ })).toBeNull();
+  const toolbar = screen.getByRole("toolbar", { name: "File History Toolbar" });
+  expect(within(toolbar).queryByRole("button", { name: "Open on GitHub" })).toBeNull();
 });

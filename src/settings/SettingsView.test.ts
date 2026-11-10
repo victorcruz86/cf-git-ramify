@@ -33,11 +33,13 @@ const SETTINGS: Settings = {
   nonModalCommit: false,
   clearInitialCommitMessage: false,
   showDropCommitDialog: true,
+  githubConnectionTimeoutMs: 5000,
 };
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
   const all: Record<string, (args: never) => unknown> = {
     git_version: () => "2.38.0",
+    github_accounts: () => [],
     settings_save: (args) => (args as unknown as { settings: Settings }).settings,
     ...commands,
   };
@@ -551,7 +553,10 @@ test("protected_branches_belong_to_the_repository_separated_by_semicolons", asyn
   await fireEvent.click(ok());
 
   await waitFor(() => expect(calls("protected_branches_set")).toHaveLength(1));
-  expect(calls("protected_branches_set")[0][1]).toEqual({ patterns: ["release.*", "main"] });
+  expect(calls("protected_branches_set")[0][1]).toEqual({
+    patterns: ["release.*", "main"],
+    loadGithubProtection: true,
+  });
   await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
   expect(get(protectedBranches)).toEqual(["release.*", "main"]);
 });
@@ -600,8 +605,112 @@ test("a_bad_pattern_does_not_block_saving_and_leaves_no_notification", async () 
   await fireEvent.click(ok());
 
   await waitFor(() => expect(onclose).toHaveBeenCalled());
-  expect(calls("protected_branches_set")[0][1]).toEqual({ patterns: ["(", "main"] });
+  expect(calls("protected_branches_set")[0][1]).toEqual({
+    patterns: ["(", "main"],
+    loadGithubProtection: true,
+  });
   expect(get(notifications)).toEqual([]);
+});
+
+// P§4.4: GitHub's rules follow the user's text in grey, as the field's empty text, and are not saved.
+const withGithub = (repoSettings: Record<string, unknown> = {}) => ({
+  ...repoCommands,
+  repo_settings_get: () => ({
+    protectedBranches: ["main"],
+    forcePushTargets: [],
+    cleanTree: "shelve",
+    loadGithubProtection: true,
+    githubProtected: ["release\\/.*", "v1"],
+    ...repoSettings,
+  }),
+});
+
+const suffix = () => document.querySelector(".read-only-suffix")?.textContent ?? null;
+
+test("the_github_rules_follow_the_users_in_grey_and_are_not_saved", async () => {
+  mockCommands(withGithub());
+  open();
+
+  const field = (await screen.findByLabelText("Protected branches:")) as HTMLInputElement;
+  expect(field.value).toBe("main");
+  await waitFor(() => expect(suffix()).toBe(";release\\/.*;v1"));
+
+  // While the text differs from the painted one the suffix is hidden; focus loss paints it again.
+  await fireEvent.input(field, { target: { value: "main;dev" } });
+  expect(suffix()).toBeNull();
+  await fireEvent.blur(field);
+  expect(suffix()).toBe(";release\\/.*;v1");
+  expect(document.querySelector(".read-only .typed")?.textContent).toBe("main;dev");
+
+  await fireEvent.click(ok());
+  await waitFor(() => expect(calls("protected_branches_set")).toHaveLength(1));
+  expect(calls("protected_branches_set")[0][1]).toEqual({
+    patterns: ["main", "dev"],
+    loadGithubProtection: true,
+  });
+  expect(get(protectedBranches)).toEqual(["main", "dev", "release\\/.*", "v1"]);
+});
+
+test("a_blank_field_shows_the_github_rules_without_a_separator_after_focus_loss", async () => {
+  mockCommands(withGithub({ protectedBranches: [] }));
+  open();
+
+  const field = await screen.findByLabelText("Protected branches:");
+  await screen.findByText("GitHub rules are added to the local rules and synced on every fetch");
+  // `setText` paints nothing for a blank text.
+  expect(suffix()).toBeNull();
+  await fireEvent.blur(field);
+  expect(suffix()).toBe("release\\/.*;v1");
+});
+
+test("the_checkbox_is_saved_and_off_leaves_the_github_rules_out", async () => {
+  mockCommands(withGithub());
+  open();
+
+  const box = (await screen.findByRole("checkbox", {
+    name: "Load branch protection rules from GitHub",
+  })) as HTMLInputElement;
+  expect(box.checked).toBe(true);
+  expect(
+    screen.getByText("GitHub rules are added to the local rules and synced on every fetch"),
+  ).toBeTruthy();
+  await fireEvent.click(box);
+  // As in 241, the suffix stays until the page is opened again.
+  await waitFor(() => expect(suffix()).toBe(";release\\/.*;v1"));
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("protected_branches_set")).toHaveLength(1));
+  expect(calls("protected_branches_set")[0][1]).toEqual({
+    patterns: ["main"],
+    loadGithubProtection: false,
+  });
+  expect(get(protectedBranches)).toEqual(["main"]);
+});
+
+test("with_the_checkbox_off_there_is_no_read_only_text", async () => {
+  mockCommands(withGithub({ loadGithubProtection: false }));
+  open();
+
+  const box = (await screen.findByRole("checkbox", {
+    name: "Load branch protection rules from GitHub",
+  })) as HTMLInputElement;
+  expect(box.checked).toBe(false);
+  await fireEvent.blur(screen.getByLabelText("Protected branches:"));
+  expect(suffix()).toBeNull();
+});
+
+test("an_invalid_github_rule_is_reported_after_the_users", async () => {
+  mockCommands({
+    ...withGithub({ githubProtected: ["("] }),
+    protected_patterns_check: (args) => check((args as unknown as { text: string }).text),
+  });
+  open();
+
+  expect(await screen.findByText(BAD)).toBeTruthy();
+  expect(calls("protected_patterns_check").map(([, args]) => args)).toEqual([
+    { text: "main" },
+    { text: "(" },
+  ]);
 });
 
 test("without_a_repository_there_is_no_protected_row", async () => {
@@ -631,4 +740,51 @@ test("the_apply_non_conflicting_setting_is_changed_from_the_window", async () =>
   expect((calls("settings_save")[0][1] as { settings: Settings }).settings.mergeAutoApply).toBe(
     true,
   );
+});
+
+test("connection_timeout_saves_milliseconds_and_shows_seconds", async () => {
+  mockCommands({ github_accounts: () => [] });
+  open({ githubConnectionTimeoutMs: 7000 });
+  const field = screen.getByLabelText(
+    "Connection timeout:",
+  ) as HTMLInputElement;
+  expect(field.value).toBe("7");
+  expect(screen.getByText("seconds")).toBeTruthy();
+
+  await fireEvent.input(field, { target: { value: "12" } });
+  await fireEvent.click(ok());
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  expect(
+    (calls("settings_save")[0][1] as { settings: Settings }).settings
+      .githubConnectionTimeoutMs,
+  ).toBe(12000);
+});
+
+test("connection_timeout_accepts_zero_and_stays_within_zero_to_sixty", async () => {
+  mockCommands({ github_accounts: () => [] });
+  open();
+  const field = screen.getByLabelText(
+    "Connection timeout:",
+  ) as HTMLInputElement;
+  expect(field.min).toBe("0");
+  expect(field.max).toBe("60");
+
+  await fireEvent.input(field, { target: { value: "0" } });
+  await fireEvent.click(ok());
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  expect(
+    (calls("settings_save")[0][1] as { settings: Settings }).settings
+      .githubConnectionTimeoutMs,
+  ).toBe(0);
+});
+
+test("the_github_section_comes_after_the_git_sections_and_has_the_accounts_list", async () => {
+  mockCommands({ github_accounts: () => [] });
+  open();
+  const headings = screen
+    .getAllByRole("heading", { level: 3 })
+    .map((heading) => heading.textContent);
+  expect(headings[headings.length - 1]).toBe("GitHub");
+  expect(headings.indexOf("GitHub")).toBeGreaterThan(headings.indexOf("Push"));
+  expect(await screen.findByText(/No accounts added/)).toBeTruthy();
 });

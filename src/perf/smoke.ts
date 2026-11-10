@@ -316,7 +316,21 @@ export async function runSmoke(): Promise<void> {
     await step("push_tags_get", api.pushTagsGet);
     await step("push_tags_set", () => api.pushTagsSet("currentBranch"));
     await step("repo_settings_get", api.repoSettingsGet);
-    await step("protected_branches_set", () => api.protectedBranchesSet(["main", "master"]));
+    await step("protected_branches_set", () => api.protectedBranchesSet(["main", "master"], true));
+    await step("github_links", () => api.githubLinks({ kind: "file", path: "a.txt" }));
+    await step("github_generate_url", () => api.githubGenerateUrl("github.com"));
+    // No account is listed in the smoke HOME: the refusal is the operation's, not the IPC's.
+    await step("github_set_default", () => api.githubSetDefault("github.com/octocat"));
+    await step("github_forget_connection", api.githubForgetConnection);
+    await step("github_pr_search_saved", api.githubPrSearchSaved);
+    // Without a connection it is not checked out.
+    await step("github_pr_checked_out", () => api.githubPrCheckedOut(1));
+    await step("github_pr_search_save", () =>
+      api.githubPrSearchSave(
+        { text: "smoke", state: "OPEN", assignee: null, review: null, author: null, label: null },
+        true,
+      ),
+    );
     await step("force_push_target_remember", () => api.forcePushTargetRemember("origin", "main"));
 
     const remotes = await step("remote_list", api.remoteList);

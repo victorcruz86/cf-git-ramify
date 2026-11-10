@@ -208,6 +208,8 @@
     return isMerging(action) ? merging.run(action) : actions.run(action);
   };
   export const { checkout, checkoutRef, newBranch, tag, resetHead } = actions;
+  // The questions of a remote checkout that ran elsewhere: a pull request's `Checkout '…'…`.
+  export const { answerRemote } = actions;
   // The rebase of `Commit and Rebase…`, once the commit is made.
   export const { rebaseAfterCommit } = editing;
   export const { run: runUpdate, fetch, pull } = update;

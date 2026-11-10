@@ -182,6 +182,19 @@ impl TaskContext {
         self.report(text.to_string(), None);
     }
 
+    // What the task shows now: a step that shows a text of its own gives this back when it ends.
+    pub fn progress(&self) -> (String, Option<f32>) {
+        self.task
+            .progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn restore_progress(&self, (text, fraction): (String, Option<f32>)) {
+        self.report(text, fraction);
+    }
+
     pub fn check_cancelled(&self) -> Result<(), GitError> {
         let expired = self
             .task

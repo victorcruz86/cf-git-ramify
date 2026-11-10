@@ -1,39 +1,60 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import Icon from "../lib/Icon.svelte";
 
+  // The closable tabs of a tool window: the Log's, and the Pull Requests window's. `label` and
+  // `closeLabel` name the strip and the close buttons; `title` is a tab's tooltip. Without
+  // `newTab` there is no `+`; `trailing` goes after the tabs (the gear of the Pull Requests window).
   interface Props {
-    tabs: { id: number; name: string; closable: boolean }[];
+    tabs: { id: number; name: string; closable: boolean; title?: string }[];
     current: number;
-    newTab: string;
+    label?: string;
+    closeLabel?: string;
+    newTab?: string;
     onselect: (id: number) => void;
     onclose: (id: number) => void;
-    onnew: () => void;
+    onnew?: () => void;
+    trailing?: Snippet;
   }
 
-  let { tabs, current, newTab, onselect, onclose, onnew }: Props = $props();
+  let {
+    tabs,
+    current,
+    label = "Log tabs",
+    closeLabel = "Close Log Tab",
+    newTab,
+    onselect,
+    onclose,
+    onnew,
+    trailing,
+  }: Props = $props();
 </script>
 
-<div class="tabs" role="tablist" aria-label="Log tabs">
+<div class="tabs" role="tablist" aria-label={label}>
   {#each tabs as tab (tab.id)}
     <span class="tab" class:selected={tab.id === current}>
       <button
         type="button"
         role="tab"
         aria-selected={tab.id === current}
+        title={tab.title}
         onclick={() => tab.id !== current && onselect(tab.id)}
       >
         {tab.name}
       </button>
       {#if tab.closable}
-        <button type="button" class="close" aria-label="Close Log Tab" onclick={() => onclose(tab.id)}>
+        <button type="button" class="close" aria-label={closeLabel} onclick={() => onclose(tab.id)}>
           <Icon name="close" size={12} />
         </button>
       {/if}
     </span>
   {/each}
-  <button type="button" class="action" aria-label={newTab} title={newTab} onclick={onnew}>
-    <Icon name="add" />
-  </button>
+  {#if newTab}
+    <button type="button" class="action" aria-label={newTab} title={newTab} onclick={() => onnew?.()}>
+      <Icon name="add" />
+    </button>
+  {/if}
+  {@render trailing?.()}
 </div>
 
 <style>

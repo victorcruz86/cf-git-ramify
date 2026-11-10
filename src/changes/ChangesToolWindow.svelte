@@ -1,16 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import ChangesTree from "../commit/ChangesTree.svelte";
-  import { fileNodes, withoutCheck, type TreeNode } from "../commit/tree";
   import {
     diffWindowOpenRequest,
     LOCAL_REVISION,
     type ChangedFile,
-    type FileChange,
-    type FileState,
     type GetItem,
     type PatchEntry,
-    type RevisionPair,
   } from "../lib/api";
   import { errorText } from "../lib/errors";
   import Icon from "../lib/Icon.svelte";
@@ -18,17 +14,15 @@
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { notify } from "../lib/notifications";
   import { patches } from "../patch/flow";
+  import { changeRoots, fileName, pairOf, selectedFiles as filesOf } from "./files";
   import { getRevision } from "./get";
   import {
-    BASE_VERSION,
     changesTab,
     emptyChanges,
     hasLocalSide,
     refreshChanges,
     reloadBranchChanges,
     swapBranchSides,
-    YOUR_VERSION,
-    type ChangesTab,
   } from "./tab";
 
   // `DB:31`, `V:1035`, `V:298`, `DB:91`, `DB:94`.
@@ -73,26 +67,8 @@
   const local = $derived(tab && !branch ? hasLocalSide(tab) : false);
   const swapped = $derived(tab?.right === LOCAL_REVISION);
 
-  // `git diff --name-status` letters as the states the changes tree colours.
-  const STATES: Record<string, FileState> = {
-    A: "added",
-    C: "copied",
-    D: "deleted",
-    R: "renamed",
-  };
-  const stateOf = (file: ChangedFile): FileState => STATES[file.status[0]] ?? "modified";
-  const asChange = (file: ChangedFile): FileChange => ({
-    path: file.path,
-    oldPath: file.oldPath,
-    state: stateOf(file),
-    staged: false,
-    unstaged: false,
-  });
-
   const byPath = $derived(new Map((tab?.files ?? []).map((file) => [file.path, file])));
-  const roots = $derived(
-    fileNodes(SCOPE, new Set(), (tab?.files ?? []).map(asChange), byDirectory).map(withoutCheck),
-  );
+  const roots = $derived(changeRoots(SCOPE, tab?.files ?? [], byDirectory));
 
   // A new tab starts without selection or folded folders; a refresh keeps them (`KEEP_NON_EMPTY`).
   $effect(() => {
@@ -114,60 +90,8 @@
     if (active && tab) untrack(() => tree?.focus());
   });
 
-  function nodesById(nodes: TreeNode[], into = new Map<string, TreeNode>()) {
-    for (const node of nodes) {
-      into.set(node.id, node);
-      nodesById(node.children, into);
-    }
-    return into;
-  }
-
-  // `VcsTreeModelData.selected`: the files of the chosen rows, a folder giving all of its own, in
-  // the order of the tree.
-  function selectedFiles(): ChangedFile[] {
-    const nodes = nodesById(roots);
-    const paths = new Set<string>();
-    const visit = (node: TreeNode) => {
-      if (node.change) paths.add(node.change.path);
-      node.children.forEach(visit);
-    };
-    for (const id of selected) {
-      const node = nodes.get(id);
-      if (node) visit(node);
-    }
-    const files: ChangedFile[] = [];
-    const ordered = (nodes: TreeNode[]) => {
-      for (const node of nodes) {
-        const file = node.change && byPath.get(node.change.path);
-        if (file && paths.has(file.path)) files.push(file);
-        ordered(node.children);
-      }
-    };
-    ordered(roots);
-    return files;
-  }
-
-  // `ChangeDiffRequestProducer.createSimpleRequest`: the revision number of each side, `Base
-  // version` where the old file is not and `Your version` for the local file or none.
-  // The local side of Show Diff with Working Tree is on the left: a `CurrentContentRevision`, whose
-  // empty number gives the left default, `Base version`.
-  function pairOf(current: ChangesTab, file: ChangedFile): RevisionPair {
-    const kind = file.status[0];
-    const leftTitle = current.left === LOCAL_REVISION ? BASE_VERSION : current.left;
-    const rightTitle = current.right === LOCAL_REVISION ? YOUR_VERSION : current.right;
-    return {
-      left:
-        kind === "A"
-          ? { revision: null, path: file.path, title: BASE_VERSION }
-          : { revision: current.left, path: file.oldPath ?? file.path, title: leftTitle },
-      right:
-        kind === "D"
-          ? { revision: null, path: file.path, title: YOUR_VERSION }
-          : { revision: current.right, path: file.path, title: rightTitle },
-    };
-  }
-
-  const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+  // The files of the chosen rows, in the order of the tree.
+  const selectedFiles = (): ChangedFile[] => filesOf(roots, selected, byPath);
 
   // `Show Diff` (⌘D), double click and Enter: the chosen files in the diff window.
   function showDiff() {
@@ -176,7 +100,7 @@
     if (!current || files.length === 0) return;
     diffWindowOpenRequest({
       kind: "revisions",
-      files: files.map((file) => pairOf(current, file)),
+      files: files.map((file) => pairOf(current.left, current.right, file)),
       title: diffTitle(fileName(files[0].path)),
     }).catch((error) => notify({ kind: "error", title: errorText(error) }));
   }

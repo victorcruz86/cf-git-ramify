@@ -19,6 +19,7 @@
     type ViewerTarget,
   } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
+  import { CANNOT_OPEN, COPY_LINK, hostingItemsOf, hostingLinks, OPEN_IN_GITHUB } from "../hosting/links";
   import { errorText } from "../lib/errors";
   import Icon from "../lib/Icon.svelte";
   import { matchViewerShortcut } from "../lib/keymap";
@@ -26,7 +27,7 @@
   import { trackTasks } from "../lib/tasks";
   import AnnotationGutter from "./AnnotationGutter.svelte";
   import { annotatable, showCommitDiff, TabAnnotations } from "./annotations.svelte";
-  import { createViewerEditor, goToLine, replaceText, selectedLines } from "./editor";
+  import { createViewerEditor, goToLine, linkLines, replaceText, selectedLines } from "./editor";
   import {
     absentText,
     binaryText,
@@ -244,10 +245,39 @@
     }
     try {
       const { selection, state } = await fileContext();
-      menu = { x, y, label: "Editor", items: [gitSubmenu(selection, state)] };
+      const { open, copy } = await githubItems();
+      // `Copy / Paste Special` and `Open In` come before the version control group.
+      menu = {
+        x,
+        y,
+        label: "Editor",
+        items: [
+          ...(copy.length > 0 ? [{ label: "Copy / Paste Special", submenu: copy }] : []),
+          ...(open.length > 0 ? [{ label: "Open In", submenu: open }] : []),
+          gitSubmenu(selection, state),
+        ],
+      };
     } catch (error) {
       actionError = errorText(error);
     }
+  }
+
+  // `Open In ▸ GitHub` and `Copy / Paste Special ▸ Copy Link to GitHub Repository` of the active tab:
+  // its file at the last commit in HEAD that touched it, or at its own revision, with the selected
+  // lines of a text (`linkLines`).
+  async function githubItems(): Promise<{ open: MenuItem[]; copy: MenuItem[] }> {
+    const tab = tabs.find((candidate) => candidate.key === active);
+    if (!tab) return { open: [], copy: [] };
+    const view = views.get(tab.key);
+    const lines = view && tab.content?.kind === "text" ? linkLines(view) : null;
+    const target = { kind: "file", path: tab.path, lines, revision: tab.revision } as const;
+    const fail = (error: unknown) => (actionError = `${CANNOT_OPEN}: ${errorText(error)}`);
+    // One look-up (`git remote`, `git log`) for both submenus.
+    const links = await hostingLinks(target);
+    return {
+      open: hostingItemsOf(links, "open", OPEN_IN_GITHUB, fail),
+      copy: hostingItemsOf(links, "copy", COPY_LINK, fail),
+    };
   }
 
   // `Annotate with Git Blame` while off: a file at a revision (`AnnotateVcsVirtualFileAction`) or a
@@ -462,6 +492,7 @@
             close={() => annotations.close(tab.key)}
             {showDiff}
             annotate={(target, line) => annotateRevision(tab.key, target, line)}
+            onerror={(error) => (actionError = `${CANNOT_OPEN}: ${errorText(error)}`)}
           />
         {/if}
       {:else if tab.content?.kind === "binary"}

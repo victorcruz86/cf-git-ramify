@@ -91,6 +91,9 @@ export interface ContextHandlers {
   // `Create Patch...` of the chosen commits (`VcsLogCreatePatchActionProvider`), given only when
   // they have changes. Without it, it comes out disabled.
   createPatch?: () => void;
+  // `Git.Hosting.Open.In.Browser.Group` (`hostingItems`) for the first selected commit; none when no
+  // GitHub repository answers.
+  hosting?: MenuItem[];
 }
 
 const SEPARATOR = null;
@@ -443,5 +446,7 @@ export function contextMenu(
       disabled: parents.length === 0,
       run: handlers.goToParent,
     },
+    // `anchor="last"` (`g4x:519`): after the last block, with no separator of its own.
+    ...(handlers.hosting ?? []),
   ];
 }

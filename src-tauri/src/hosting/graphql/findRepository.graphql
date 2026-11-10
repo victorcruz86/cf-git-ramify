@@ -1,0 +1,35 @@
+fragment gitRefName on Ref {
+name
+}
+fragment repositoryOwnerName on RepositoryOwner {
+__typename
+...nodeInfo
+login
+}
+fragment nodeInfo on Node {
+id
+}
+fragment repository on Repository {
+...nodeInfo
+owner {
+...repositoryOwnerName
+}
+nameWithOwner
+viewerPermission
+
+mergeCommitAllowed
+squashMergeAllowed
+rebaseMergeAllowed
+
+defaultBranchRef {
+...gitRefName
+}
+isFork
+url
+sshUrl
+}
+query($repoOwner: String!, $repoName: String!) {
+repository(owner: $repoOwner, name: $repoName) {
+...repository
+}
+}

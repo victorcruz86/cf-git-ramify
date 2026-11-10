@@ -24,6 +24,22 @@ TAURI = ROOT / "src-tauri"
 NOT_RUN = {
     "clipboard_write": "would write to the real clipboard",
     "open_in_new_window": "would open another instance outside the test's HOME",
+    "github_accounts": "reads the real Keychain",
+    "github_account_details": "asks GitHub for the account and reads the real Keychain",
+    "github_login": "asks GitHub, and stores the token in the real Keychain",
+    "github_remove": "deletes from the real Keychain",
+    "open_url": "would open the real browser",
+    "github_known": "reads no token; it belongs to the Pull Requests window, which the manual list covers, and the lab has no GitHub remote for it to find",
+    "github_connect": "asks GitHub for the account and the repository, and reads the real Keychain",
+    "github_pr_page": "asks GitHub for pull requests, and reads the real Keychain",
+    "github_pr_etag": "asks GitHub for the list's ETag, and reads the real Keychain",
+    "github_pr_chooser": "asks GitHub for collaborators, assignees or labels, and reads the real Keychain",
+    "github_pr_details": "asks GitHub for a pull request, and reads the real Keychain",
+    "github_pr_status": "asks GitHub for a pull request's status, and reads the real Keychain",
+    "github_pr_commits": "asks GitHub for a pull request's commits, and reads the real Keychain",
+    "github_pr_changes": "fetches from the remote and may ask GitHub for the commits, and reads the real Keychain",
+    "github_pr_checkout": "may add a remote, fetches from it, may ask GitHub for the pull request, and reads the real Keychain",
+    "github_pr_show_in_log": "may add a remote, fetches from it, may ask GitHub for the pull request, and reads the real Keychain",
 }
 LIMIT_S = 240
 

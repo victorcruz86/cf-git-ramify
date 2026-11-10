@@ -49,6 +49,15 @@ pub fn changes_between(
     Ok(parse_name_status(&git::run(repo, &args)?))
 }
 
+// `GitHistoryUtils.getMergeBase`: `git merge-base`, none when the two have no common ancestor.
+pub fn merge_base(repo: &Path, one: &str, other: &str) -> Result<Option<String>, GitError> {
+    match git::run(repo, &["merge-base", "--end-of-options", one, other]) {
+        Ok(output) => Ok(Some(String::from_utf8_lossy(&output).trim().to_string())),
+        Err(GitError::Failed { code: Some(1), .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn parents_of(repo: &Path, hash: &str) -> Result<Vec<String>, GitError> {
     check_hash(hash)?;
     let revision = format!("{hash}^@");

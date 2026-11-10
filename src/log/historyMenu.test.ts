@@ -182,3 +182,12 @@ test("annotate opens the row's file at its revision annotated", () => {
 
   expect(actions.annotate).toHaveBeenCalledWith(row);
 });
+
+// `VcsHistoryActionsGroup`, `anchor="last"` (`g4x:520`): the last item of the menu.
+test("each_menu_has_open_on_github_at_241s_place_history", () => {
+  const hosting: MenuItem[] = [{ label: "Open on GitHub", run: vi.fn() }];
+  const items = historyMenu([commit(HASH_A)], { ...handlers(), hosting });
+
+  expect(shape(items).slice(-3)).toEqual(["—", "New Tag…", "Open on GitHub"]);
+  expect(shape(historyMenu([commit(HASH_A)], handlers()))).not.toContain("Open on GitHub");
+});

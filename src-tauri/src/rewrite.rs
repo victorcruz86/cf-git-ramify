@@ -255,7 +255,7 @@ fn is_ancestor(repo: &Repo, commit: &str, of: &str) -> Result<bool, GitError> {
 // `findProtectedRemoteBranch` with the branches that contain the commit: the protected remote, with the
 // short name (`origin/main`).
 fn protected_branch(repo: &Repo, commit: &str) -> Result<Option<String>, GitError> {
-    let patterns = settings::load_repo(repo.data).protected_branches;
+    let patterns = settings::effective_protected(repo.data);
     for (full, short) in rebase::protected_remotes(repo.path, &patterns)? {
         if is_ancestor(repo, commit, &full)? {
             return Ok(Some(short));

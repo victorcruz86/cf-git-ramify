@@ -259,3 +259,22 @@ test("show_diff_opens_the_whole_commit_on_the_annotated_file", () => {
   expect(root.selected).toBe(2);
   expect(root.files.every((pair) => pair.left.revision === null)).toBe(true);
 });
+
+// `AnnotateToggleAction`: the extension actions come after a separator that follows
+// `Annotate Previous Revision`; a line changed locally has no commit to open.
+test("each_menu_has_open_on_github_at_241s_place_annotate", () => {
+  const hosting: MenuItem[] = [{ label: "Open on GitHub", run: vi.fn() }];
+
+  const items = annotationPopup(annotation, 4, DEFAULT_OPTIONS, { ...handlers(), hosting });
+  expect(shape(items).slice(-4)).toEqual([
+    "Annotate Revision",
+    "Annotate Previous Revision",
+    "—",
+    "Open on GitHub",
+  ]);
+  expect(shape(annotationPopup(annotation, 4, DEFAULT_OPTIONS, handlers()))).not.toContain(
+    "Open on GitHub",
+  );
+  const local = annotationPopup(annotation, 2, DEFAULT_OPTIONS, { ...handlers(), hosting });
+  expect(shape(local)).not.toContain("Open on GitHub");
+});

@@ -59,6 +59,7 @@ pub fn fetch_remote(
         .on_remote(remote, || ctx.git_loud(&args))
         .ok_or(GitError::Cancelled)??;
     sync.mark_authenticated(ctx.repo(), remote);
+    sync.fetched(ctx, ctx.repo(), remote);
     let pruned = output.stderr.lines().filter_map(pruned_ref);
     Ok(pruned.map(str::to_string).collect())
 }
@@ -84,8 +85,9 @@ mod tests {
     use super::*;
     use crate::commands::RepoLocks;
     use crate::console::Console;
+    use crate::hosting::protection::testing::{entries, entry, rules, seed, GithubRemote};
     use crate::task::{Runner, TaskKind};
-    use crate::test_support::TempRepo;
+    use crate::test_support::{Reply, TempRepo};
     use std::path::Path;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -148,6 +150,27 @@ mod tests {
                 },
             );
             receive.recv_timeout(WAIT).unwrap()
+        }
+
+        fn fetch_one(&self, remote: &str) -> Result<Vec<String>, GitError> {
+            let (send, receive) = mpsc::channel();
+            let sync = self.sync.clone();
+            let remote = remote.to_string();
+            self.runner.start(
+                self.repo.path(),
+                TaskKind::Read,
+                "Fetching…".to_string(),
+                move |ctx| {
+                    send.send(fetch_remote(ctx, &sync, &remote)).unwrap();
+                    Ok(())
+                },
+            );
+            receive.recv_timeout(WAIT).unwrap()
+        }
+
+        // The rules of the remotes that point to `github` are loaded into `data` after each fetch.
+        fn loading_rules(&self, github: &GithubRemote, data: &Path) {
+            self.sync.set_after_fetch(github.hook(data));
         }
 
         fn commands(&self) -> Vec<String> {
@@ -257,5 +280,80 @@ mod tests {
             .commands()
             .iter()
             .any(|line| line.contains("--upload-pack")));
+    }
+
+    // Decision 6: each remote has its own entry, and 241 would have emptied the whole list.
+    #[test]
+    fn fetching_a_non_github_remote_clears_only_its_entry() {
+        let harness = Harness::new();
+        let github = GithubRemote::new();
+        let data = TempDir::new().unwrap();
+        harness.loading_rules(&github, data.path());
+        let url = harness.origin.path().to_str().unwrap();
+        harness.repo.git(&["remote", "add", "hub", url]);
+        github.point(harness.repo.path(), "hub", harness.origin.path());
+        seed(
+            data.path(),
+            &[
+                ("origin", &["stale"]),
+                ("hub", &[r"release\/.*"]),
+                ("gone", &["old"]),
+            ],
+        );
+
+        // `origin` is a local path: no request, its entry goes, and so does the removed remote's.
+        harness.fetch_one("origin").unwrap();
+        github.fake.finish();
+        assert!(github.fake.requests().is_empty());
+        assert_eq!(entries(data.path()), [entry("hub", &[r"release\/.*"])]);
+
+        github.fake.reply(rules(&["main"]));
+        harness.fetch_one("hub").unwrap();
+        github.fake.finish();
+        assert_eq!(entries(data.path()), [entry("hub", &["main"])]);
+    }
+
+    #[test]
+    fn a_loader_error_keeps_the_entry_and_the_fetch_still_succeeds() {
+        let harness = Harness::new();
+        let github = GithubRemote::new();
+        let data = TempDir::new().unwrap();
+        harness.loading_rules(&github, data.path());
+        github.point(harness.repo.path(), "origin", harness.origin.path());
+        seed(data.path(), &[("origin", &["main"])]);
+        harness.repo.git(&["push", "-q", "origin", "main:old"]);
+        harness.repo.git(&["fetch", "-q", "origin"]);
+        git_in(harness.origin.path(), &["branch", "-q", "-D", "old"]);
+
+        github.fake.script(vec![
+            Reply::json(
+                "POST",
+                "/api/graphql",
+                502,
+                "Bad Gateway",
+                r#"{"message":"Server Error"}"#,
+            ),
+            Reply::json(
+                "POST",
+                "/api/graphql",
+                200,
+                "OK",
+                r#"{"errors":[{"message":"Could not resolve to a Repository"}]}"#,
+            ),
+        ]);
+        let first = harness.fetch();
+        let second = harness.fetch();
+        github.fake.finish();
+
+        assert_eq!(
+            first,
+            Ok(FetchResult {
+                pruned: vec!["origin/old".to_string()],
+                failed: Vec::new(),
+            })
+        );
+        assert_eq!(second, Ok(FetchResult::default()));
+        assert_eq!(entries(data.path()), [entry("origin", &["main"])]);
+        assert!(harness.sync.is_authenticated(harness.repo.path(), "origin"));
     }
 }

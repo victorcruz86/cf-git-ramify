@@ -50,6 +50,8 @@
     numbered?: boolean;
     // The title of a titled `ListPopup`, shown above the rows.
     title?: string;
+    // `setAdText`: a line under the rows that says what they act on.
+    ad?: string;
   }
 
   let {
@@ -66,6 +68,7 @@
     onback,
     numbered = false,
     title,
+    ad,
   }: Props = $props();
 
   const MARGIN = 8;
@@ -265,6 +268,9 @@
       <div class="header" role="separator" aria-label={item.header}>{item.header}</div>
     {/if}
   {/each}
+  {#if ad}
+    <div class="ad">{ad}</div>
+  {/if}
   {#if open}
     {#key open}
       {@const parent = shown[open.index] as MenuAction}
@@ -306,6 +312,15 @@
     color: var(--text);
     white-space: nowrap;
     border-bottom: 1px solid var(--menu-separator);
+  }
+
+  .ad {
+    padding: 6px 14px 0;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    border-top: 1px solid var(--menu-separator);
   }
 
   .query {

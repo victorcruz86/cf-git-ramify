@@ -463,7 +463,14 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
     const outcome = await attempt(`Could not checkout ${branch}`, () =>
       api.checkoutRemote(branch, chosen),
     );
-    if (!outcome) return;
+    if (outcome) await answerRemote(branch, chosen, outcome);
+  }
+
+  // What a checkout of `branch` with `choice` answered, here or elsewhere (a pull request's
+  // `Checkout '…'…`): the name dialog and the local commits question, each retried with the same
+  // choice, or what is common to every checkout.
+  async function answerRemote(branch: string, choice: Partial<RemoteChoice>, outcome: RemoteCheckout) {
+    const chosen = { name: null, dropCommits: false, mode: "plain" as const, ...choice };
     if (outcome.kind === "needsName") {
       const name = await askName(branch, outcome.suggested);
       if (name) await checkoutRemote(branch, { ...chosen, name });
@@ -733,5 +740,5 @@ export function branchActions(ui: BranchUi, api: BranchApi = backend) {
     return ui.pushUpTo?.(action.hash) ?? Promise.resolve();
   }
 
-  return { run, checkout, checkoutRef, newBranch, tag, resetHead, repositoryChanged };
+  return { run, checkout, checkoutRef, answerRemote, newBranch, tag, resetHead, repositoryChanged };
 }

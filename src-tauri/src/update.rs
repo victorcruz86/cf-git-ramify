@@ -694,6 +694,7 @@ pub fn update_branch(
     ];
     ctx.git_loud(&args)?;
     sync.mark_authenticated(ctx.repo(), remote);
+    sync.fetched(ctx, ctx.repo(), remote);
     Ok(())
 }
 

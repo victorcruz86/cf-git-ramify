@@ -76,7 +76,8 @@ beforeEach(() => {
   localStorage.clear();
   annotationOptions.set(DEFAULT_OPTIONS);
   vi.mocked(invoke).mockReset();
-  vi.mocked(invoke).mockResolvedValue(undefined);
+  // No GitHub repository answers.
+  vi.mocked(invoke).mockImplementation(async (command) => (command === "github_links" ? [] : undefined));
   host = document.createElement("div");
   document.body.append(host);
   view = createViewerEditor(host, "one\ntwo\nthree\n", "src/a.txt", false);
@@ -183,4 +184,23 @@ test("unmounting takes the gutter away", async () => {
   unmount();
 
   expect(view.dom.querySelector(".cm-annotations")).toBeNull();
+});
+
+test("open_on_github_opens_the_commit_of_the_line", async () => {
+  const url = `https://github.com/o/r/commit/${NEW}`;
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "github_links" ? [{ name: "https://github.com/o/r", url }] : undefined,
+  );
+  render(AnnotationGutter, { view, annotation, ...handlers() });
+  await waitFor(() => expect(cells()).toHaveLength(4));
+
+  await fireEvent.contextMenu(cells()[2]);
+  await fireEvent.click(
+    within(await screen.findByRole("menu", { name: "Annotations" })).getByRole("menuitem", {
+      name: "Open on GitHub",
+    }),
+  );
+
+  expect(invoke).toHaveBeenCalledWith("github_links", { target: { kind: "commit", hash: NEW } });
+  expect(invoke).toHaveBeenCalledWith("open_url", { url });
 });

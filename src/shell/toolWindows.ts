@@ -4,7 +4,8 @@ import type { ActionId } from "../lib/keymap";
 // The tool windows of the stripe, in the order of the user's `window.layouts.xml`: `Project` and
 // `Commit` on the left, `Git` (`Version Control`) at the bottom. `Changes` and `Repositories`
 // are not in the layout: like `ChangesBrowserToolWindow` and `RepositoryBrowser`, they are
-// registered on the left the first time something shows in them.
+// registered on the left the first time something shows in them. `Pull Requests` is on the left
+// too, while a remote points to a GitHub repository (`GHPRToolWindowFactory`).
 export const TOOL_WINDOWS = [
   {
     id: "project",
@@ -49,6 +50,18 @@ export const TOOL_WINDOWS = [
     action: null,
     side: "left",
     order: 3,
+    registeredOnFirstUse: true,
+    hidesWhenActive: true,
+  },
+  {
+    // `toolwindow.stripe.Pull_Requests` (`GB:165`).
+    id: "pulls",
+    label: "Pull Requests",
+    icon: "pullRequests",
+    shortcut: null,
+    action: null,
+    side: "left",
+    order: 4,
     registeredOnFirstUse: true,
     hidesWhenActive: true,
   },
@@ -101,6 +114,11 @@ export const registeredToolWindows: Readable<readonly OnFirstUseWindowId[]> = re
 
 export function registerToolWindow(id: OnFirstUseWindowId): void {
   if (!get(registered).includes(id)) registered.update((ids) => [...ids, id]);
+}
+
+// A window that stops being available (the last GitHub remote removed) leaves the stripe.
+export function unregisterToolWindow(id: OnFirstUseWindowId): void {
+  if (get(registered).includes(id)) registered.update((ids) => ids.filter((other) => other !== id));
 }
 
 export function forgetToolWindows(): void {

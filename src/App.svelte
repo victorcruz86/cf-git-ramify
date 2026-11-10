@@ -98,7 +98,9 @@
   import LogPanel from "./log/LogPanel.svelte";
   import BranchDialogs from "./branches/BranchDialogs.svelte";
   import BranchesPopup from "./branches/BranchesPopup.svelte";
-  import { loadBranchState } from "./branches/state";
+  import { loadBranchState, refreshProtectedBranches } from "./branches/state";
+  import { checkDefaultAccount } from "./hosting/accounts";
+  import LoginHost from "./hosting/LoginHost.svelte";
   import MergeRebaseWidget from "./operation/MergeRebaseWidget.svelte";
   import { gitMenuEnabled, ongoingActionFor, ongoingActions } from "./operation/operation";
   import RemotesHost from "./remotes/RemotesHost.svelte";
@@ -137,6 +139,8 @@
   import ProjectTree from "./tree/ProjectTree.svelte";
   import ChangesToolWindow from "./changes/ChangesToolWindow.svelte";
   import RepositoryBrowser from "./repositories/RepositoryBrowser.svelte";
+  import PullRequestsWindow from "./pulls/PullRequestsWindow.svelte";
+  import { checkPullRequestsWindow, showPullRequestsWindow, viewPullRequestList } from "./pulls/store";
   import GetDialog from "./changes/GetDialog.svelte";
   import { openInViewer } from "./viewer/window";
   import {
@@ -174,6 +178,7 @@
     commit: "local-changes",
     changes: null,
     repositories: null,
+    pulls: null,
     git: "local-changes",
   });
   let opening = $state(false);
@@ -221,6 +226,14 @@
   // A selected tab that went away (the last stash dropped) leaves its window on the first one.
   const shown = $derived(keepSelected(windows, selected));
   const tab = $derived(windows[activeWindow] ? shown[activeWindow] : null);
+  // The Pull Requests window goes away with the last GitHub remote: if it was in front, Git comes.
+  $effect(() => {
+    if (activeWindow === "pulls" && !windows.pulls) front("git");
+  });
+  // `selectorVm` is lazy in 241: the window connects only once it has come to the front.
+  $effect(() => {
+    if (activeWindow === "pulls" && windows.pulls) showPullRequestsWindow();
+  });
   const branch = $derived(repoNow?.branch ?? null);
   const branchLabel = $derived(repoNow?.label ?? "");
   // A rebase leaves HEAD detached: `branch` comes from `head-name` and is the one being rebased, which already exists.
@@ -284,6 +297,11 @@
       void loadStashes();
       void loadShelf();
       await loadBranchState();
+      void checkDefaultAccount(
+        () => (settingsOpen = true),
+        () => info?.path === opened.path,
+      );
+      void checkPullRequestsWindow(() => info?.path === opened.path);
     } catch (failure) {
       showError(failure);
     } finally {
@@ -349,6 +367,8 @@
   let treeChanges = $state(false);
   let branchesToCompare = $state(false);
   let windowFocused = $state(document.hasFocus());
+  // Whether any window of rama has the focus (`app-activated` / `app-deactivated`).
+  let appFocused = $state(document.hasFocus());
 
   const fileMenuState = (): GitFileState => ({
     hasChanges: treeChanges,
@@ -685,6 +705,8 @@
     if (action === "Git.Stash") return () => void branchDialogs?.stashChanges();
     if (action === "Git.Unstash") return () => void branchDialogs?.unstashChanges();
     if (action === "Git.Show.Stash") return () => void showGitStash();
+    // `Github.View.Pull.Request`, only while the Pull Requests window is available.
+    if (action === "Github.View.Pull.Request") return windows.pulls ? viewPullRequestList : null;
     if (action === "Git.Configure.Remotes") return () => void remotesHost?.manage();
     if (action === "Git.OpenExcludeFile") return () => void remotesHost?.openExcludeFile();
     if ((UPDATE_ACTIONS as readonly string[]).includes(action)) {
@@ -721,10 +743,12 @@
   });
 
   function appActivated() {
+    appFocused = true;
     if (info && !modalOpen()) void onTheFly.activated();
   }
 
   function appDeactivated() {
+    appFocused = false;
     if (info) void onTheFly.deactivated();
   }
 
@@ -884,10 +908,26 @@
 
   // The Git menu turns on what belongs to the operation in progress; if it cannot, the menu stays as it was.
   // `Git.Fetch` goes off while any fetch of the app runs (`GitFetch.update`).
+  // `Github.View.Pull.Request` is there while the Pull Requests window is available
+  // (`GithubViewPullRequestsAction.update`), and its GitHub submenu with it.
   function syncMenu(state: RepoState) {
     const ids = gitMenuEnabled(state, hasConflicts);
-    gitMenuEnable(fetchRunning ? ids : [...ids, "Git.Fetch"]).catch(() => {});
+    const fetch = fetchRunning ? [] : ["Git.Fetch"];
+    const github = pullsAvailable ? ["Github.View.Pull.Request"] : [];
+    gitMenuEnable([...ids, ...fetch, ...github]).catch(() => {});
   }
+
+  const pullsAvailable = $derived(windows.pulls !== null);
+  // Whether the window was available at the last sync this effect made: the first run, with no
+  // window yet, adds nothing to what `open` syncs.
+  let menuHadPulls = false;
+  $effect(() => {
+    if (!pullsAvailable && !menuHadPulls) return;
+    menuHadPulls = pullsAvailable;
+    untrack(() => {
+      if (repoNow) syncMenu(repoNow);
+    });
+  });
 
   // `subscribe` runs the callback at once, inside the effect: untracked, so that neither `repoNow` nor
   // `hasConflicts` (read by `syncMenu`) makes the effect subscribe again.
@@ -920,6 +960,11 @@
     }
     syncMenu(status);
     void readBranchesToCompare();
+    // A fetch may have loaded GitHub's protected branch rules.
+    void refreshProtectedBranches();
+    // A remote added, removed or changed shows or hides the Pull Requests window.
+    const checked = info.path;
+    void checkPullRequestsWindow(() => info?.path === checked);
     void branchDialogs?.repositoryRefreshed();
   }
 
@@ -1067,6 +1112,18 @@
           {#if windows.repositories}
             <div class="pane" class:hidden={activeWindow !== "repositories"} role="region" aria-label="Repositories">
               <RepositoryBrowser repo={info.path} active={activeWindow === "repositories"} />
+            </div>
+          {/if}
+
+          <!-- The Pull Requests tool window: registered while a remote points to a GitHub repository
+               (`GHPRToolWindowFactory`). -->
+          {#if windows.pulls}
+            <div class="pane" class:hidden={activeWindow !== "pulls"} role="region" aria-label="Pull Requests">
+              <PullRequestsWindow
+                active={activeWindow === "pulls"}
+                focused={appFocused}
+                answers={(branch, choice, outcome) => branchDialogs?.answerRemote(branch, choice, outcome) ?? Promise.resolve()}
+              />
             </div>
           {/if}
 
@@ -1239,6 +1296,7 @@
 {/if}
 
 <AskpassDialog />
+<LoginHost />
 <MessageEditorDialog root={info?.path ?? ""} />
 
 <style>

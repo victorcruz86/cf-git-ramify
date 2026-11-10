@@ -28,6 +28,7 @@ use crate::diff::{self, ChangedFile, FileSides};
 use crate::editor::{self, Prompt};
 use crate::git::{self, GitError};
 use crate::history;
+use crate::hosting::commands::HostingState;
 use crate::hunks::{self, Hunk, HunkError, LineSelection};
 use crate::idea_import;
 use crate::log::commands::SharedLog;
@@ -90,6 +91,22 @@ impl From<GitError> for ApiError {
             GitError::Cancelled => ApiError {
                 kind: "cancelled",
                 message: "The operation was cancelled".to_string(),
+                details: None,
+            },
+            GitError::LoginField { server, message } => ApiError {
+                kind: if server { "login_server" } else { "login_token" },
+                message,
+                details: None,
+            },
+            // CollaborationToolsBundle 8.
+            GitError::MissingToken => ApiError {
+                kind: "missing_token",
+                message: "Missing access token".to_string(),
+                details: None,
+            },
+            GitError::Authentication(message) => ApiError {
+                kind: "authentication",
+                message,
                 details: None,
             },
             GitError::IndexLocked => failed(
@@ -224,6 +241,24 @@ const ONGOING_MENU: [&str; 8] = [
     "Git.ResolveConflicts",
 ];
 
+// `GitHub.MainMenu` (github-core-config.xml:111-120), a popup group added before
+// `Git.Configure.Remotes`. Of its actions rama has only `Github.View.Pull.Request` (:97-99,
+// `GithubViewPullRequestsAction`), which is visible only while the Pull Requests window is
+// available; 241 hides a popup group whose actions are all hidden. The native menu cannot hide
+// an entry: the group is taken out and put back, like Create Patch, and it starts out.
+const GITHUB_GROUP: &str = "GitHub.MainMenu";
+const VIEW_PULL_REQUESTS: &str = "Github.View.Pull.Request";
+
+fn starts_hidden(id: &str) -> bool {
+    id == GITHUB_GROUP
+}
+
+// The interface names `Github.View.Pull.Request` among the entries that apply while the window
+// is available.
+fn github_menu_shown(ids: &[String]) -> bool {
+    ids.iter().any(|id| id == VIEW_PULL_REQUESTS)
+}
+
 // `Git.MainMenu.FileActions` (`Git > Current File`), the group of `Git.FileActions`: its title and
 // items follow the selection of the focused window, which sets them with `git_menu_current_file`.
 const FILE_GROUP: &str = "Git.MainMenu.FileActions";
@@ -266,7 +301,7 @@ fn menu_items(entries: &[GitMenuEntry]) -> Vec<(&'static str, &'static str)> {
 }
 
 // `Git.MainMenu` of plugin.xml, in its order. What the app does not have yet comes in with its phase.
-const GIT_MENU: [GitMenuEntry; 30] = [
+const GIT_MENU: [GitMenuEntry; 31] = [
     Item("CheckinProject", "Commit…"),
     Item("Vcs.Push", "Push…"),
     Item("Vcs.UpdateProject", "Update Project…"),
@@ -343,6 +378,13 @@ const GIT_MENU: [GitMenuEntry; 30] = [
         ],
     ),
     Separator,
+    // `GitHub.MainMenu`, with the text `group.GitHub.MainMenu.text` (GithubBundle:5) and
+    // `pull.request.view.list` (GithubBundle:167).
+    Group(
+        GITHUB_GROUP,
+        "GitHub",
+        &[Item(VIEW_PULL_REQUESTS, "View Pull Requests")],
+    ),
     Item("Git.Configure.Remotes", "Manage Remotes…"),
     Item("Git.Clone", "Clone…"),
     Item("Git.Init", "Create Git Repository…"),
@@ -819,6 +861,9 @@ pub struct AppState {
     pub merge_ready: Mutex<bool>,
     // Whether the app has the focus, for the on-the-fly patch detection.
     pub activation: Mutex<Activation>,
+    // GitHub's client and where its tokens are. Shared with the after-fetch hook, which loads the
+    // protected branch rules.
+    pub hosting: Arc<HostingState>,
 }
 
 impl Default for AppState {
@@ -841,6 +886,7 @@ impl Default for AppState {
             activation: Mutex::default(),
             merge_leave: Mutex::default(),
             merge_ready: Mutex::default(),
+            hosting: Arc::new(HostingState::default()),
         }
     }
 }
@@ -1185,15 +1231,62 @@ fn append_entries(
                 let item = MenuItem::with_id(app, *id, *text, !starts_disabled(id), None::<&str>)?;
                 into.append(&item)?;
             }
-            Group(id, text, children) => {
-                let group = Submenu::with_id(app, *id, *text, !starts_disabled(id))?;
-                append_entries(app, &group, children)?;
-                into.append(&group)?;
-            }
+            Group(id, _, _) if starts_hidden(id) => {}
+            Group(id, text, children) => into.append(&group_of(app, id, text, children)?)?,
             Separator => into.append(&PredefinedMenuItem::separator(app)?)?,
         }
     }
     Ok(())
+}
+
+fn group_of(
+    app: &AppHandle,
+    id: &str,
+    text: &str,
+    children: &[GitMenuEntry],
+) -> tauri::Result<Submenu<Wry>> {
+    let group = Submenu::with_id(app, id, text, !starts_disabled(id))?;
+    append_entries(app, &group, children)?;
+    Ok(group)
+}
+
+// Puts the GitHub submenu in, right before `Manage Remotes…`, or takes it out.
+fn sync_github_menu(app: &AppHandle, shown: bool) -> tauri::Result<()> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let mut git = None;
+    for item in menu.items()? {
+        if let MenuItemKind::Submenu(submenu) = item {
+            if submenu.get("Git.Configure.Remotes").is_some() {
+                git = Some(submenu);
+                break;
+            }
+        }
+    }
+    let Some(git) = git else {
+        return Ok(());
+    };
+    match (shown, git.get(GITHUB_GROUP)) {
+        (false, Some(group)) => git.remove(&group),
+        (true, None) => {
+            let Some(Group(id, text, children)) = GIT_MENU
+                .iter()
+                .find(|entry| matches!(entry, Group(id, _, _) if *id == GITHUB_GROUP))
+            else {
+                return Ok(());
+            };
+            let items = git.items()?;
+            let Some(position) = items
+                .iter()
+                .position(|item| item.id().0 == "Git.Configure.Remotes")
+            else {
+                return Ok(());
+            };
+            git.insert(&group_of(app, id, text, children)?, position)
+        }
+        _ => Ok(()),
+    }
 }
 
 // Enables the Git menu entries that apply to the current state (`ids`) and disables the rest of the
@@ -1309,14 +1402,15 @@ pub fn is_git_menu_item(id: &str) -> bool {
 }
 
 // The entries of the operation in progress that apply now: the interface computes them from the repository
-// state every time it changes.
+// state every time it changes. `Github.View.Pull.Request` among them puts the GitHub submenu in.
 #[tauri::command]
 pub fn git_menu_enable(ids: Vec<String>, app: AppHandle) -> Result<(), ApiError> {
     let Some(menu) = app.menu() else {
         return Ok(());
     };
     let items = menu.items().map_err(|error| failed(error.to_string()))?;
-    set_ongoing_enabled(items, &ids).map_err(|error| failed(error.to_string()))
+    set_ongoing_enabled(items, &ids).map_err(|error| failed(error.to_string()))?;
+    sync_github_menu(&app, github_menu_shown(&ids)).map_err(|error| failed(error.to_string()))
 }
 
 // An entry of `Git > Current File` as the focused window computes it for its selection.
@@ -2589,6 +2683,9 @@ fn apply_settings(app: &AppHandle, settings: &Settings) {
     app.state::<AppState>()
         .tasks
         .set_cherry_pick_suffix(settings.cherry_pick_suffix);
+    app.state::<AppState>()
+        .hosting
+        .set_connect_timeout(settings.github_connection_timeout_ms);
 }
 
 // Before any window opens: the first command must already use the configured path.
@@ -3141,6 +3238,7 @@ mod tests {
             include_str!("commands.rs"),
             include_str!("vcs_commands.rs"),
             include_str!("get_version.rs"),
+            include_str!("hosting/commands.rs"),
         ]
         .concat();
         for name in [
@@ -3179,6 +3277,8 @@ mod tests {
             "shelf_patch_create",
             "revision_get_check",
             "revision_get",
+            "github_pr_checkout",
+            "github_pr_show_in_log",
         ] {
             let start = source.find(&format!("pub async fn {name}(")).unwrap();
             let mut lines = source[start..].lines();
@@ -4753,6 +4853,7 @@ mod tests {
                 "Compare with Branch…",
                 "Show History",
                 "Show History for Selection…",
+                "View Pull Requests",
                 "Manage Remotes…",
                 "Clone…",
                 "Create Git Repository…",
@@ -4822,6 +4923,7 @@ mod tests {
                         "Show History for Selection…"
                     ]
                 ),
+                (GITHUB_GROUP, "GitHub", vec!["View Pull Requests"]),
             ]
         );
         assert!(!starts_disabled(LOCAL_CHANGES_GROUP));
@@ -4841,7 +4943,8 @@ mod tests {
         let file = position(FILE_GROUP).unwrap();
         assert_eq!(position(LOCAL_CHANGES_GROUP), Some(file - 1));
         assert!(matches!(GIT_MENU[file + 1], Separator));
-        assert_eq!(position("Git.Configure.Remotes"), Some(file + 2));
+        assert_eq!(position(GITHUB_GROUP), Some(file + 2));
+        assert_eq!(position("Git.Configure.Remotes"), Some(file + 3));
         assert_eq!(
             position("Vcs.Show.Log"),
             Some(position(PATCH_GROUP).unwrap() - 1)
@@ -4970,6 +5073,41 @@ mod tests {
             assert!(is_git_menu_item(id), "{id}");
         }
         assert!(driven_by_state("Git.Rebase.Skip"));
+    }
+
+    // `GitHub.MainMenu`, added before `Git.Configure.Remotes` (github-core-config.xml:111-120), with
+    // `Github.View.Pull.Request` (:97-99), the only one of its actions rama has. The action is
+    // visible only while the Pull Requests window is available (`GithubViewPullRequestsAction.update`),
+    // and the group goes with it: the submenu starts out of the menu and is put in while the
+    // interface names the action among the ones that apply.
+    #[test]
+    fn view_pull_requests_is_in_a_github_submenu_shown_only_with_the_window() {
+        let group = GIT_MENU
+            .iter()
+            .find_map(|entry| match entry {
+                Group(id, text, children) if *id == GITHUB_GROUP => {
+                    Some((*text, menu_items(children)))
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            group,
+            ("GitHub", vec![(VIEW_PULL_REQUESTS, "View Pull Requests")])
+        );
+        assert_eq!(VIEW_PULL_REQUESTS, "Github.View.Pull.Request");
+        assert!(is_git_menu_item(VIEW_PULL_REQUESTS));
+        assert!(!is_git_menu_item(GITHUB_GROUP));
+        assert!(starts_hidden(GITHUB_GROUP));
+        assert!(!starts_hidden(FILE_GROUP));
+        assert!(!starts_disabled(VIEW_PULL_REQUESTS));
+        assert_eq!(action_window(VIEW_PULL_REQUESTS, true), MAIN_WINDOW);
+
+        let ids =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|id| id.to_string()).collect() };
+        assert!(github_menu_shown(&ids(&["Git.Merge", VIEW_PULL_REQUESTS])));
+        assert!(!github_menu_shown(&ids(&["Git.Merge", "Git.Fetch"])));
+        assert!(!github_menu_shown(&ids(&[GITHUB_GROUP])));
     }
 
     #[test]

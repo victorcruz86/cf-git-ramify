@@ -270,15 +270,6 @@ fn commit_of(repo: &Path, name: &str) -> Result<Option<String>, GitError> {
     }
 }
 
-// `GitHistoryUtils.getMergeBase`: without it, the titles are the usual ones.
-fn merge_base(repo: &Path, one: &str, other: &str) -> Result<Option<String>, GitError> {
-    match git::run(repo, &["merge-base", one, other]) {
-        Ok(output) => Ok(Some(String::from_utf8_lossy(&output).trim().to_string())),
-        Err(GitError::Failed { code: Some(1), .. }) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
 // `resolveBranchName`: the local branch that points there if there is only one; without local branches, the remote one.
 fn branch_at(repo: &Path, hash: &str) -> Result<Option<String>, GitError> {
     for prefix in [LOCAL, REMOTE] {
@@ -510,7 +501,7 @@ impl Flow {
         };
         match self.operation {
             Some(Operation::Merging) => {
-                let Some(base) = merge_base(repo, &self.head, &other.hash)? else {
+                let Some(base) = diff::merge_base(repo, &self.head, &other.hash)? else {
                     return Ok(defaults);
                 };
                 Ok(titled(
@@ -523,7 +514,7 @@ impl Flow {
                 let Some(applied) = &self.rebase_head else {
                     return Ok(defaults);
                 };
-                let Some(base) = merge_base(repo, applied, &other.hash)? else {
+                let Some(base) = diff::merge_base(repo, applied, &other.hash)? else {
                     return Ok(defaults);
                 };
                 let right = match &other.branch {
@@ -537,7 +528,7 @@ impl Flow {
                 ))
             }
             Some(Operation::CherryPicking) => {
-                let Some(base) = merge_base(repo, &other.hash, &self.head)? else {
+                let Some(base) = diff::merge_base(repo, &other.hash, &self.head)? else {
                     return Ok(defaults);
                 };
                 Ok(titled(

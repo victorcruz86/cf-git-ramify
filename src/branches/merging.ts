@@ -32,6 +32,7 @@ import { rebaseStoppedNotification } from "../operation/operation";
 import { isProtectedBranch } from "../push/force";
 import type { BranchChoice, DialogRequest } from "./actions";
 import type { BranchNames } from "./refName";
+import { effectiveProtected } from "./state";
 
 // `merge.operation.name` and `rebase.operation.name`, for the warnings about what does not come back.
 const MERGE = "merge";
@@ -120,7 +121,7 @@ const result = async <T>(id: Promise<number>) => taskResult<T>(await id);
 
 const backend: MergingApi = {
   state: repoState,
-  protectedBranches: async () => (await repoSettingsGet()).protectedBranches,
+  protectedBranches: async () => effectiveProtected(await repoSettingsGet()),
   merge: (branch, kind, smart, head) => result(branchMerge(branch, kind, smart, head)),
   commitMerge,
   rebase: (onto, branch, head) => result(branchRebase(onto, branch, head)),

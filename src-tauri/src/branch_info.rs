@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -556,6 +556,10 @@ fn schedule_loop(wakes: Receiver<Wake>, visible: impl Fn() -> bool, mut check: i
     }
 }
 
+// What runs inside a fetch's task once git has fetched a remote successfully
+// (`GitFetchHandler.afterSuccessfulFetch`): the task, the repository and the remote.
+pub type AfterFetch = Arc<dyn Fn(&TaskContext, &Path, &str) + Send + std::marker::Sync>;
+
 // The background check and the last thing it saw.
 #[derive(Default)]
 pub struct BranchSync {
@@ -563,6 +567,9 @@ pub struct BranchSync {
     seen: Mutex<Option<(PathBuf, ToFetch)>>,
     // `myAuthSuccessMap`: only valid in this session.
     authenticated: Mutex<HashSet<(PathBuf, String)>>,
+    // Set once by the app's setup, and by the tests that need it. Without it a fetch does nothing
+    // more.
+    after_fetch: Mutex<Option<AfterFetch>>,
 }
 
 impl BranchSync {
@@ -598,6 +605,26 @@ impl BranchSync {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert((repo.to_path_buf(), remote.to_string()));
+    }
+
+    pub fn set_after_fetch(&self, hook: AfterFetch) {
+        *self
+            .after_fetch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
+    }
+
+    // Called by every fetch that succeeded, after git, still inside its task. The hook runs
+    // without the lock: a slow one does not hold up the others.
+    pub fn fetched(&self, ctx: &TaskContext, repo: &Path, remote: &str) {
+        let hook = self
+            .after_fetch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            hook(ctx, repo, remote);
+        }
     }
 
     pub(crate) fn is_authenticated(&self, repo: &Path, remote: &str) -> bool {

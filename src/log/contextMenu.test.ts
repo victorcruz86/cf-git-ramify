@@ -544,3 +544,13 @@ test("a_protected_remote_branch_is_not_deleted_from_the_menu", () => {
   expect(find(find(items, "Branch 'origin/main'").submenu ?? [], "Delete").disabled).toBe(true);
   expect(find(find(items, "Branch 'origin/other'").submenu ?? [], "Delete").disabled).toBe(false);
 });
+
+// `Git.Hosting.Open.In.Browser.Group` is `anchor="last"` in `Vcs.Log.ContextMenu` (`g4x:519`): after
+// `Go to Parent Commit`, with no separator of its own. Without a GitHub repository it is not there.
+test("each_menu_has_open_on_github_at_241s_place_log", () => {
+  const hosting: MenuItem[] = [{ label: "Open on GitHub", run: vi.fn() }];
+  const items = contextMenu(selection([]), ON_MAIN, handlers({ hosting }));
+
+  expect(labels(items).slice(-3)).toEqual(["Go to Child Commit", "Go to Parent Commit", "Open on GitHub"]);
+  expect(labels(contextMenu(selection([]), ON_MAIN, handlers()))).not.toContain("Open on GitHub");
+});

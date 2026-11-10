@@ -61,6 +61,18 @@ export function selectedLines(view: EditorView): LineRange {
   return { startLine: doc.lineAt(from).number, endLine: doc.lineAt(to).number };
 }
 
+// The lines of a GitHub link, 0-based (`HostedGitRepositoryReferenceUtil`): the line of the selection's
+// start and of its end, with the end one line up when it sits exactly at the start of its line. 241's
+// quirk is kept: with no selection and the caret at column 0 of line k the end is k-1, so the URL
+// ends `#Lk-L(k-1)`; with the caret mid-line it is `#Lk`.
+export function linkLines(view: EditorView): [number, number] {
+  const { from, to } = view.state.selection.main;
+  const { doc } = view.state;
+  const first = doc.lineAt(from).number - 1;
+  const end = doc.lineAt(to);
+  return [first, to === end.from ? end.number - 2 : end.number - 1];
+}
+
 // `OpenFileDescriptor` with a line: the caret at its start, the line in the middle of the view.
 // A line past the end goes to the last one.
 export function goToLine(view: EditorView, line: number) {

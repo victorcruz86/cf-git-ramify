@@ -995,6 +995,198 @@ Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
                                           git4idea: GitDefaultMergeDialogCustomizer; GitBundle
                                           (texts)
 
+Ported code: GitHub
+-------------------
+
+Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
+
+  src-tauri/src/hosting/server.rs         plugins/github: GithubServerPath (from, toUrl,
+                                          toApiUrl, toGraphQLUrl, toString, equals,
+                                          isGithubDotCom), GithubLoginPanel (server checks);
+                                          GithubBundle (texts)
+  src-tauri/src/hosting/mapping.rs        git4idea: GitHostingUrlUtil (removeProtocolPrefix,
+                                          getUriFromRemoteUrl, match); plugins/github:
+                                          GithubUrlUtil (getUserAndRepositoryFromRemoteUrl),
+                                          GHRepositoryCoordinates, GHRepositoryPath,
+                                          GHGitRepositoryMapping, GHHostedRepositoriesManager;
+                                          the host and path rules of java.net.URI
+  src-tauri/src/hosting/http.rs           plugins/github: GithubApiRequestExecutor
+                                          (checkResponseCode, checkServerVersion),
+                                          GithubApiRequest (GQLQuery, JsonPage),
+                                          GithubErrorMessage, GHEServerVersionChecker,
+                                          GHGQLError, GHGQLPagesLoader, GithubApiContentHelper;
+                                          platform/collaboration-tools: LinkHttpHeaderValue,
+                                          GraphQLRequestPagination; platform/ide-core:
+                                          HttpRequests (redirects); GithubBundle and
+                                          IdeCoreBundle (texts)
+  src-tauri/src/hosting/accounts.rs       plugins/github: GHAccountManager,
+                                          GHAccountsDetailsProvider, GHTokenCredentialsUi
+                                          (acquireLogin, handleError), GHSecurityUtil
+                                          (buildNewTokenUrl, DEFAULT_SCOPES); GithubBundle and
+                                          CollaborationToolsBundle (texts)
+  src-tauri/src/hosting/links.rs          plugins/github: GHOpenInBrowserActionGroup; git4idea:
+                                          HostedGitRepositoryReferenceUtil,
+                                          HostedGitRepositoryReferenceActionGroup,
+                                          GitHistoryUtils (getCurrentRevision); platform/util:
+                                          URLUtil (encodePath); GitBundle (texts)
+  src-tauri/src/hosting/commands.rs       plugins/github: GithubLoginPanel (the order of the
+                                          checks), GHTokenCredentialsUi, GHAccountsDetailsProvider;
+                                          GithubBundle (texts)
+  src-tauri/src/hosting/protection.rs     plugins/github: GHProtectedBranchRulesLoader,
+                                          SimpleGHGQLPagesLoader, GHGQLRequests
+                                          (getProtectionRules); platform/util: PatternUtil
+                                          (convertToRegex), StringUtil (split); GithubBundle
+                                          (texts)
+  src-tauri/src/hosting/graphql/getProtectionRules.graphql
+                                          plugins/github: graphql/query/getProtectionRules.graphql
+                                          of vcs-github.jar, with the nodeInfo fragment and the
+                                          pageInfo fragment of app.jar inlined as
+                                          CachingGraphQLQueryLoader sends them (copied text)
+  src-tauri/src/hosting/pulls/mod.rs      plugins/github: GHPRToolWindowViewModel
+                                          (selectedUrlAndAccount), GHPRDataContextRepository
+                                          (getContextAsync), GithubAccountInformationProvider,
+                                          GHRepository (path), GHUIUtil
+                                          (getRepositoryDisplayName); GithubBundle and
+                                          CollaborationToolsBundle (texts)
+  src-tauri/src/hosting/graphql/findRepository.graphql
+                                          plugins/github: graphql/query/findRepository.graphql
+                                          of vcs-github.jar, with the gitRefName,
+                                          repositoryOwnerName, nodeInfo and repository fragments
+                                          inlined as CachingGraphQLQueryLoader sends them (copied
+                                          text)
+  src/pulls/PullRequestsWindow.svelte, src/pulls/Selector.svelte, src/pulls/store.ts
+                                          git4idea: RepositoryAndAccountSelectorComponentFactory,
+                                          RepositoryAndAccountSelectorViewModelBase;
+                                          plugins/github: GHRepositoryAndAccountSelectorComponent-
+                                          Factory, GHRepositoryAndAccountSelectorViewModel,
+                                          GHSelectorErrorStatusPresenter, GHPRToolWindowViewModel
+                                          (singleRepoAndAccountState, canResetRemoteOrAccount);
+                                          platform/collaboration-tools:
+                                          ReviewToolwindowTabsManager, AccountSelectorComponent-
+                                          Factory, SimpleComboboxWithActionsFactory; GithubBundle
+                                          and CollaborationToolsBundle (texts)
+  src-tauri/src/hosting/pulls/list.rs     plugins/github: GHPRListSearchValue (toQuery),
+                                          GHPRListLoader (buildQuery, pageSize), GHPRSearchQuery,
+                                          GithubApiSearchQueryBuilder, GHPullRequestShort,
+                                          GHPRListETagUpdateChecker, GithubApiRequests
+                                          (Collaborators, Assignees, Labels, getListETag),
+                                          GHPRRepositoryDataServiceImpl, GHHtmlErrorPanel
+                                          (getLoadingErrorText); platform/collaboration-tools:
+                                          PersistingReviewListSearchHistoryModel; GithubBundle
+                                          (texts)
+  src-tauri/src/hosting/pulls/reviewers.rs
+                                          plugins/github: GHReviewersUtils
+                                          (getReviewsByReviewers), GHUser, GHTeam,
+                                          GHPullRequestRequestedReviewer
+  src-tauri/src/hosting/graphql/issueSearch.graphql
+                                          plugins/github: graphql/query/issueSearch.graphql of
+                                          vcs-github.jar, with the pullRequestInfoShort,
+                                          nodeInfo, actorInfo, userInfo, labelInfo, teamInfo,
+                                          pullRequestReviewerInfo, pullRequestReview, reactions,
+                                          reaction fragments and the pageInfo fragment of app.jar
+                                          inlined as CachingGraphQLQueryLoader sends them (copied
+                                          text)
+  src/pulls/List.svelte, src/pulls/search.ts, src/pulls/poll.ts
+                                          plugins/github: GHPRListPanelFactory,
+                                          GHPRListPanelController, GHPRListComponentFactory,
+                                          GHPRSearchPanelFactory, GHPRSearchPanelViewModel,
+                                          GHPRListSearchValue, GHPRListETagUpdateChecker,
+                                          GHApiLoadingErrorHandler, GHUIUtil
+                                          (getPullRequestStateText);
+                                          platform/collaboration-tools:
+                                          ReviewListSearchPanelFactory,
+                                          ReviewListSearchPanelViewModelBase,
+                                          ReviewListCellRenderer, ReviewListComponentFactory,
+                                          ReviewListUtil; platform/util/ui:
+                                          BoundedRangeModelThresholdListener; GithubBundle and
+                                          CollaborationToolsBundle (texts)
+  src-tauri/src/hosting/pulls/details.rs  plugins/github: GHGQLRequests.PullRequest (findOne,
+                                          mergeabilityData, commits), GHPRDetailsServiceImpl,
+                                          GHPRStateServiceImpl, GHPRMergeabilityStateBuilder,
+                                          GHPRChangesServiceImpl (buildCommitsTree),
+                                          GHPRChangesDataProviderImpl (loadCommitsFromApi),
+                                          GHSchemaPreview, GHPullRequest, GHRefUpdateRule;
+                                          platform/collaboration-tools: CodeReviewCIJob
+  src-tauri/src/hosting/pulls/changes.rs  plugins/github: GHPRChangesDataProviderImpl,
+                                          GHPRChangesServiceImpl; git4idea: GitFetchSupportImpl,
+                                          GitImpl (fetch), GitBranchComparisonResultImpl
+  src-tauri/src/hosting/graphql/findPullRequest.graphql
+                                          plugins/github: graphql/query/findPullRequest.graphql
+                                          of vcs-github.jar, with the pullRequestInfo,
+                                          pullRequestInfoShort, repository, refUpdateRule and
+                                          the other fragments it uses inlined as
+                                          CachingGraphQLQueryLoader sends them (copied text)
+  src-tauri/src/hosting/graphql/findPullRequestMergeability.graphql
+                                          plugins/github:
+                                          graphql/query/findPullRequestMergeability.graphql of
+                                          vcs-github.jar, with the pullRequestMergeability,
+                                          checkRun, checkSuite, commitStatusContext and the other
+                                          fragments it uses inlined as CachingGraphQLQueryLoader
+                                          sends them (copied text)
+  src-tauri/src/hosting/graphql/pullRequestCommits.graphql
+                                          plugins/github: graphql/query/pullRequestCommits.graphql
+                                          of vcs-github.jar, with the commit, commitShort,
+                                          gitActorInfo and the other fragments it uses inlined as
+                                          CachingGraphQLQueryLoader sends them (copied text)
+  src/pulls/Details.svelte, src/pulls/details.ts
+                                          plugins/github: GHPRDetailsComponentFactory,
+                                          GHPRDetailsViewModel, GHPRStatusChecksComponentFactory,
+                                          GHPRBranchesViewModel, GHPRViewComponentFactory,
+                                          GHPRInfoViewModel, GHPRDiffVirtualFile, ghx (the
+                                          details and changes popups);
+                                          platform/collaboration-tools:
+                                          CodeReviewDetailsTitleComponentFactory,
+                                          CodeReviewDetailsCommitsComponentFactory,
+                                          CodeReviewDetailsCommitInfoComponentFactory,
+                                          CodeReviewDetailsStatusComponentFactory,
+                                          ReviewDetailsUIUtil, CommitRenderer; GithubBundle and
+                                          CollaborationToolsBundle (texts)
+  src/changes/files.ts                    platform/vcs-impl: ChangeDiffRequestProducer
+                                          (getRevisionTitle), VcsTreeModelData (selected)
+  src-tauri/src/hosting/pulls/checkout.rs git4idea: GitRemoteBranchesUtil (findRemote,
+                                          findOrCreateRemote, shouldAddHttpRemote,
+                                          findNameForRemote, checkoutRemoteBranch,
+                                          isRemoteBranchCheckedOut), GitFetchSupportImpl (fetch);
+                                          plugins/github: GHPRBranchesViewModel
+  src/pulls/branch.ts                     plugins/github: GHPRBranchesViewModel;
+                                          platform/collaboration-tools:
+                                          CodeReviewDetailsBranchComponentFactory; git4idea:
+                                          GitRemoteBranchesUtil (notifyRemoteError,
+                                          showRemoteBranchInLog); CollaborationToolsBundle and
+                                          GitBundle (texts)
+  src/lib/icons/filter.svg                platform/icons/src/expui/general/filter_dark.svg
+  src/lib/icons/comment.svg               platform/collaboration-tools/resources/icons/expui/
+                                          comment_dark.svg
+  src/lib/icons/nonMergeable.svg          platform/collaboration-tools/resources/icons/review/
+                                          nonMergeable.svg
+  src/settings/SettingsView.svelte (Load branch protection rules from GitHub)
+                                          git4idea: GitVcsPanel (protectedBranchesRow,
+                                          ExpandableTextFieldWithReadOnlyText),
+                                          GitSharedSettings; GitBundle (texts)
+  src/hosting/LoginDialog.svelte, src/hosting/LoginHost.svelte
+                                          plugins/github: GHLoginDialog (Token), GithubLoginPanel,
+                                          GHTokenCredentialsUi, GHSecurityUtil (DEFAULT_SCOPES);
+                                          GithubBundle, CollaborationToolsBundle and GitBundle
+                                          (texts)
+  src/hosting/AccountsList.svelte, src/hosting/accounts.ts
+                                          platform/collaboration-tools: AccountsPanelFactory;
+                                          plugins/github: GithubSettingsConfigurable,
+                                          GHLoginDialog, GHAccountsDetailsProvider; GithubBundle
+                                          and CollaborationToolsBundle (texts)
+  src/settings/SettingsView.svelte (GitHub section, Connection timeout)
+                                          plugins/github: GithubSettingsConfigurable; GithubBundle
+                                          (texts)
+  src/hosting/links.ts, src/viewer/editor.ts (linkLines)
+                                          git4idea: HostedGitRepositoryReferenceActionGroup,
+                                          HostedGitRepositoryReferenceUtil (the line range);
+                                          plugins/github: GHOpenInBrowserActionGroup,
+                                          GHCopyLinkActionGroup, GHOpenInBrowserFromAnnotation-
+                                          ActionGroup, github-core-config.xml (the places);
+                                          GithubBundle (texts)
+  src/shell/toolWindows.ts (Pull Requests)
+                                          plugins/github: GHPRToolWindowFactory,
+                                          github-core-config.xml (the tool window)
+
 Test data: src-tauri/src/log/testdata/
 --------------------------------------
 

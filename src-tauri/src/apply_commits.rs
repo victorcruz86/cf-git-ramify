@@ -121,7 +121,7 @@ fn protected_for(repo: &Repo, kind: Kind, suffix: bool) -> Result<Vec<(String, S
     if kind != Kind::CherryPick || !suffix {
         return Ok(Vec::new());
     }
-    let patterns = settings::load_repo(repo.data).protected_branches;
+    let patterns = settings::effective_protected(repo.data);
     rebase::protected_remotes(repo.path, &patterns)
 }
 
@@ -298,7 +298,7 @@ pub fn commit_after_conflicts(repo: &Repo, kind: Kind, hash: &str) -> Result<Fin
     if crate::commit::has_unmerged(repo.path)? {
         return Err(GitError::Io(crate::commit::UNMERGED_PATHS.to_string()));
     }
-    let patterns = settings::load_repo(repo.data).protected_branches;
+    let patterns = settings::effective_protected(repo.data);
     let message = message_of(
         repo.path,
         kind,
@@ -330,7 +330,7 @@ pub fn proposed_message(
     let Some(hash) = head_hash(path, kind)? else {
         return Ok(None);
     };
-    let patterns = settings::load_repo(data).protected_branches;
+    let patterns = settings::effective_protected(data);
     message_of(path, kind, &hash, suffix, &patterns).map(Some)
 }
 

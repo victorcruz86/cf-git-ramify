@@ -1,7 +1,12 @@
+use std::collections::VecDeque;
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{mpsc, Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use tempfile::TempDir;
@@ -97,8 +102,18 @@ pub fn in_task<T: Send + 'static>(
     repo: &Path,
     work: impl FnOnce(&TaskContext) -> T + Send + 'static,
 ) -> T {
+    in_task_as(runner, repo, TaskKind::Write, work)
+}
+
+// The same with another kind: a task that takes the write lock only for pieces of its work.
+pub fn in_task_as<T: Send + 'static>(
+    runner: &Runner,
+    repo: &Path,
+    kind: TaskKind,
+    work: impl FnOnce(&TaskContext) -> T + Send + 'static,
+) -> T {
     let (send, receive) = mpsc::channel();
-    runner.start(repo, TaskKind::Write, "test".to_string(), move |ctx| {
+    runner.start(repo, kind, "test".to_string(), move |ctx| {
         send.send(work(ctx)).unwrap();
         Ok(())
     });
@@ -339,4 +354,252 @@ impl RepoHarness {
         self.git(&["checkout", "-q", "main"]);
         self.repo.commit("a.txt", b"main\n", "main");
     }
+}
+
+// One answer of the fake GitHub: what request it expects (method and path with query) and what
+// it sends back.
+pub struct Reply {
+    pub method: String,
+    pub target: String,
+    pub status: u16,
+    pub reason: String,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+impl Reply {
+    pub fn new(
+        method: &str,
+        target: &str,
+        status: u16,
+        reason: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> Self {
+        Self {
+            method: method.to_string(),
+            target: target.to_string(),
+            status,
+            reason: reason.to_string(),
+            headers: headers
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            body: body.to_string(),
+        }
+    }
+
+    // A JSON body, with the content type GitHub sends.
+    pub fn json(method: &str, target: &str, status: u16, reason: &str, body: &str) -> Self {
+        Self::new(
+            method,
+            target,
+            status,
+            reason,
+            &[("Content-Type", "application/json; charset=utf-8")],
+            body,
+        )
+    }
+}
+
+// A request the fake GitHub received.
+#[derive(Debug, Clone)]
+pub struct Recorded {
+    pub method: String,
+    pub target: String,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+impl Recorded {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        crate::hosting::http::header(&self.headers, name)
+    }
+}
+
+#[derive(Default)]
+struct FakeState {
+    script: VecDeque<Reply>,
+    requests: Vec<Recorded>,
+    unexpected: Vec<String>,
+}
+
+// GitHub on `127.0.0.1:0`, for the tests: a thread answers the queued replies in order, one per
+// connection, and records every request. A request that is not the next one queued is answered
+// with a 500. Both that and a queued reply nobody asked for fail the test when the fake is
+// dropped, or earlier at `finish`.
+pub struct FakeGitHub {
+    address: SocketAddr,
+    state: Arc<Mutex<FakeState>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl FakeGitHub {
+    pub fn new() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let state = state.clone();
+            let stop = stop.clone();
+            thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Ok(stream) = stream {
+                        fake_answer(stream, &state);
+                    }
+                }
+            })
+        };
+        Self {
+            address,
+            state,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    // `http://127.0.0.1:<port>`, with no slash at the end.
+    pub fn url(&self) -> String {
+        format!("http://{}", self.address)
+    }
+
+    pub fn reply(&self, reply: Reply) -> &Self {
+        self.state.lock().unwrap().script.push_back(reply);
+        self
+    }
+
+    pub fn script(&self, replies: Vec<Reply>) -> &Self {
+        for reply in replies {
+            self.reply(reply);
+        }
+        self
+    }
+
+    pub fn requests(&self) -> Vec<Recorded> {
+        self.state.lock().unwrap().requests.clone()
+    }
+
+    // Fails unless every queued reply was asked for and nothing else was.
+    pub fn finish(&self) {
+        if let Some(problem) = self.problem() {
+            panic!("{problem}");
+        }
+    }
+
+    // Takes what went wrong, so that `Drop` does not report it a second time.
+    fn problem(&self) -> Option<String> {
+        let mut state = self.state.lock().unwrap();
+        let unexpected = std::mem::take(&mut state.unexpected);
+        let left: Vec<String> = state
+            .script
+            .drain(..)
+            .map(|reply| format!("{} {}", reply.method, reply.target))
+            .collect();
+        match (unexpected.is_empty(), left.is_empty()) {
+            (true, true) => None,
+            _ => Some(format!(
+                "the fake GitHub got unexpected requests {unexpected:?} and was never asked for {left:?}"
+            )),
+        }
+    }
+}
+
+impl Drop for FakeGitHub {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wakes the thread up from `accept`.
+        let _ = TcpStream::connect(self.address);
+        if let Some(worker) = self.thread.take() {
+            let _ = worker.join();
+        }
+        if let Some(problem) = self.problem() {
+            if !thread::panicking() {
+                panic!("{problem}");
+            }
+        }
+    }
+}
+
+fn fake_answer(stream: TcpStream, state: &Mutex<FakeState>) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+        // The wake-up connection of `Drop`, or a client that gave up.
+        return;
+    }
+    let mut parts = line.trim_end().splitn(3, ' ');
+    let method = parts.next().unwrap_or_default().to_string();
+    let target = parts.next().unwrap_or_default().to_string();
+    let mut headers = Vec::new();
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header).unwrap_or(0) == 0 {
+            break;
+        }
+        let header = header.trim_end();
+        if header.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':') {
+            headers.push((name.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    let length = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut body = vec![0; length];
+    if reader.read_exact(&mut body).is_err() {
+        return;
+    }
+    let recorded = Recorded {
+        method,
+        target,
+        headers,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    };
+
+    let reply = {
+        let mut state = state.lock().unwrap();
+        let next = state.script.pop_front();
+        let reply = match next {
+            Some(reply) if reply.method == recorded.method && reply.target == recorded.target => {
+                reply
+            }
+            other => {
+                let expected = other
+                    .map(|reply| format!("{} {}", reply.method, reply.target))
+                    .unwrap_or_else(|| "nothing".to_string());
+                state.unexpected.push(format!(
+                    "{} {} (expected {expected})",
+                    recorded.method, recorded.target
+                ));
+                Reply::new("", "", 500, "Unexpected", &[], "unexpected request")
+            }
+        };
+        state.requests.push(recorded);
+        reply
+    };
+
+    let mut answer = format!("HTTP/1.1 {} {}\r\n", reply.status, reply.reason);
+    for (name, value) in &reply.headers {
+        answer.push_str(&format!("{name}: {value}\r\n"));
+    }
+    answer.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        reply.body.len()
+    ));
+    answer.push_str(&reply.body);
+    let mut stream = reader.into_inner();
+    let _ = stream.write_all(answer.as_bytes());
+    let _ = stream.flush();
 }

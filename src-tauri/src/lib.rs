@@ -18,6 +18,7 @@ pub mod fetch;
 pub mod get_version;
 pub mod git;
 pub mod history;
+pub mod hosting;
 pub mod hunks;
 pub mod idea_import;
 pub mod log;
@@ -34,6 +35,7 @@ pub mod rebase;
 pub mod remotes;
 pub mod rewrite;
 pub mod rollback;
+pub mod secrets;
 pub mod settings;
 pub mod shelf;
 pub mod snapshots;
@@ -77,6 +79,7 @@ pub fn run() {
             commands::start_askpass(app.handle());
             commands::start_editor(app.handle());
             vcs_commands::start_remote_check(app.handle());
+            hosting::commands::start_protection_loader(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -342,6 +345,29 @@ pub fn run() {
             commands::console_lines,
             commands::perf_enabled,
             commands::perf_report,
+            hosting::commands::github_accounts,
+            hosting::commands::github_account_details,
+            hosting::commands::github_login,
+            hosting::commands::github_remove,
+            hosting::commands::github_set_default,
+            hosting::commands::github_generate_url,
+            hosting::commands::open_url,
+            hosting::commands::github_links,
+            hosting::commands::github_known,
+            hosting::commands::github_connect,
+            hosting::commands::github_forget_connection,
+            hosting::commands::github_pr_page,
+            hosting::commands::github_pr_etag,
+            hosting::commands::github_pr_chooser,
+            hosting::commands::github_pr_search_saved,
+            hosting::commands::github_pr_search_save,
+            hosting::commands::github_pr_details,
+            hosting::commands::github_pr_status,
+            hosting::commands::github_pr_commits,
+            hosting::commands::github_pr_changes,
+            hosting::commands::github_pr_checkout,
+            hosting::commands::github_pr_show_in_log,
+            hosting::commands::github_pr_checked_out,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::Focused(true) = event {

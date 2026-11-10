@@ -390,6 +390,34 @@ describe("checkout of a remote branch", () => {
     });
   });
 
+  test("an_answer_from_elsewhere_keeps_its_suggested_name", async () => {
+    // A pull request's checkout: the name it suggests rides along every retry.
+    const checkoutRemote = vi.fn(async () => DONE);
+    const dialogs = ui({ localCommits: "drop", newBranch: { name: "mine", checkout: true, overwrite: false } });
+    const actions = branchActions(dialogs, api({ checkoutRemote: checkoutRemote as never }));
+    const choice = { suggested: "fork/x" };
+
+    await actions.answerRemote("forker/x", choice, { kind: "localHasCommits", local: "fork/x" });
+    expect(checkoutRemote).toHaveBeenLastCalledWith("forker/x", {
+      name: null,
+      suggested: "fork/x",
+      dropCommits: true,
+      mode: "plain",
+    });
+
+    await actions.answerRemote("forker/x", choice, { kind: "needsName", suggested: "fork/x" });
+    expect(dialogs.asked.at(-1)).toMatchObject({ kind: "newBranch", title: "Checkout forker/x", initialName: "fork/x" });
+    expect(checkoutRemote).toHaveBeenLastCalledWith("forker/x", {
+      name: "mine",
+      suggested: "fork/x",
+      dropCommits: false,
+      mode: "plain",
+    });
+
+    await actions.answerRemote("forker/x", choice, { kind: "done" });
+    expect(last().title).toBe("Checked out forker/x");
+  });
+
   test("problem_retries_with_the_chosen_mode", async () => {
     const checkoutRemote = vi
       .fn()

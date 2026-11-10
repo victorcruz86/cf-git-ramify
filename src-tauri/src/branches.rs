@@ -176,6 +176,9 @@ pub struct DeletedTag {
 pub struct RemoteOptions<'a> {
     // The one the user gave when asked: if it exists it is overwritten, like `-B`.
     pub name: Option<&'a str>,
+    // The name to offer instead of the remote branch's own, with the same questions
+    // (`checkoutRemoteBranch(…, suggestedName)`): a pull request's `fork/<branch>`.
+    pub suggested: Option<&'a str>,
     pub drop_commits: bool,
     pub mode: CheckoutMode,
 }
@@ -184,6 +187,7 @@ impl Default for RemoteOptions<'_> {
     fn default() -> Self {
         Self {
             name: None,
+            suggested: None,
             drop_commits: false,
             mode: CheckoutMode::Plain,
         }
@@ -503,10 +507,23 @@ pub fn checkout_remote(
         };
         return Ok(switch_to(repo, &branch(flag, name), options.mode)?.into());
     }
-    let Some((_, suggested)) = split_remote(repo.path, remote_branch)? else {
-        return Ok(RemoteCheckout::NeedsName {
-            suggested: remote_branch.to_string(),
-        });
+    let suggested = match options.suggested {
+        // `GitBranchPopupActions.checkoutRemoteBranch`: a name that is the remote branch's,
+        // ignoring case, is asked for.
+        Some(suggested) if suggested.eq_ignore_ascii_case(remote_branch) => {
+            return Ok(RemoteCheckout::NeedsName {
+                suggested: suggested.to_string(),
+            });
+        }
+        Some(suggested) => suggested.to_string(),
+        None => match split_remote(repo.path, remote_branch)? {
+            Some((_, suggested)) => suggested,
+            None => {
+                return Ok(RemoteCheckout::NeedsName {
+                    suggested: remote_branch.to_string(),
+                })
+            }
+        },
     };
     if suggested == HEAD {
         return Ok(RemoteCheckout::NeedsName { suggested });
@@ -664,9 +681,8 @@ pub fn delete_remote(
 ) -> Result<DeletedRemote, GitError> {
     check_argument(remote, "The remote")?;
     check_branch(repo.ctx, branch)?;
-    let protected = settings::try_load_repo(repo.data)
-        .map_err(|error| GitError::Io(error.to_string()))?
-        .protected_branches;
+    let protected = settings::try_effective_protected(repo.data)
+        .map_err(|error| GitError::Io(error.to_string()))?;
     if push::is_protected(&protected, branch) {
         return Err(GitError::Io(format!("Branch {branch} is protected")));
     }
@@ -1501,6 +1517,42 @@ mod tests {
             "{:?}",
             harness.commands()
         );
+    }
+
+    #[test]
+    fn checkout_remote_with_a_suggested_name_offers_it_with_the_same_questions() {
+        let (harness, _bare) = cloned();
+        harness.git(&["fetch", "-q", "origin"]);
+        let suggested = |name: &'static str| {
+            harness.run(move |repo| {
+                let options = RemoteOptions {
+                    suggested: Some(name),
+                    ..RemoteOptions::default()
+                };
+                checkout_remote(repo, "origin/x", options)
+            })
+        };
+
+        // The remote branch's own name, ignoring case, is asked for.
+        assert_eq!(
+            suggested("Origin/X"),
+            Ok(RemoteCheckout::NeedsName {
+                suggested: "Origin/X".to_string()
+            })
+        );
+        assert_eq!(suggested("fork/x"), Ok(RemoteCheckout::Done));
+        assert_eq!(harness.current(), "fork/x");
+        assert!(harness.ran("checkout -b fork/x origin/x --"));
+
+        harness.git(&["checkout", "-q", "main"]);
+        harness.git(&["branch", "-q", "--track", "taken", "origin/main"]);
+        assert_eq!(
+            suggested("taken"),
+            Ok(RemoteCheckout::NeedsName {
+                suggested: "taken".to_string()
+            })
+        );
+        assert_eq!(harness.current(), "main");
     }
 
     #[test]
