@@ -12,15 +12,15 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rama_lib::askpass::{ClientEnv, PromptKind, Server};
-use rama_lib::commands::RepoLocks;
-use rama_lib::console::Console;
-use rama_lib::task::{GitOutput, Runner, TaskEvent, TaskId, TaskKind, TaskState};
+use ramify_lib::askpass::{ClientEnv, PromptKind, Server};
+use ramify_lib::commands::RepoLocks;
+use ramify_lib::console::Console;
+use ramify_lib::task::{GitOutput, Runner, TaskEvent, TaskId, TaskKind, TaskState};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(20);
 const SECRET: &str = "secret-that-must-not-leak";
-const CLIENT: &str = env!("CARGO_BIN_EXE_rama");
+const CLIENT: &str = env!("CARGO_BIN_EXE_ramify");
 
 struct Fixture {
     server: Arc<Server>,
@@ -210,9 +210,9 @@ impl Remote {
             origin.path(),
             &[
                 "-c",
-                "user.name=rama",
+                "user.name=Ramify",
                 "-c",
-                "user.email=rama@example.com",
+                "user.email=Ramify@example.com",
                 "commit",
                 "-q",
                 "--allow-empty",
@@ -432,7 +432,7 @@ fn http_requiring_auth() -> (String, Receiver<String>) {
             }
             let _ = stream.write_all(
                 b"HTTP/1.1 401 Unauthorized\r\n\
-                  WWW-Authenticate: Basic realm=\"rama\"\r\n\
+                  WWW-Authenticate: Basic realm=\"Ramify\"\r\n\
                   Content-Length: 0\r\n\
                   Connection: close\r\n\r\n",
             );

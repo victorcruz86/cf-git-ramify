@@ -8,7 +8,7 @@ import { pushFlow, type PushApi, type PushUi } from "./model";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const INFO: PushInfo = {
-  repository: "rama",
+  repository: "ramify",
   branch: "feature",
   head: "a".repeat(40),
   remotes: ["origin"],

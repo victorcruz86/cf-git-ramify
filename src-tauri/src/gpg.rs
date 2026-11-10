@@ -1,5 +1,5 @@
 // gpg as 241's `GitGpgConfigUtils` uses it: the secret keys that can sign, and the repository's
-// signing config. git signs by itself from that config; rama only runs gpg to list the keys.
+// signing config. git signs by itself from that config; Ramify only runs gpg to list the keys.
 use std::env;
 use std::ffi::OsStr;
 use std::io;
@@ -12,7 +12,7 @@ use crate::branches;
 use crate::git::{self, GitError};
 use crate::task::TaskContext;
 
-// Decision 3: where gpg is looked for after `PATH`, and the folders every git that rama starts
+// Decision 3: where gpg is looked for after `PATH`, and the folders every git that Ramify starts
 // gets at the end of its `PATH`.
 pub const FOLDERS: [&str; 3] = [
     "/opt/homebrew/bin",
@@ -28,7 +28,7 @@ const LIST_ARGS: [&str; 5] = [
     "--batch",
     "--no-tty",
 ];
-// Decision 4, rama's own text: a GPG key ID in `user.signingkey` breaks every SSH-signed commit.
+// Decision 4, Ramify's own text: a GPG key ID in `user.signingkey` breaks every SSH-signed commit.
 const SSH_FORMAT: &str =
     "Commits are signed with SSH (gpg.format=ssh). Change gpg.format to use a GPG key.";
 // `ENOENT`: what a program that is not there gives.
@@ -52,7 +52,7 @@ pub struct SigningConfig {
 }
 
 // Decision 3: the repository's `gpg.program`, else `gpg` on `PATH`, else the folders. Always an
-// absolute path: rama never runs a program by name. `--path` expands `~` as git does when it reads
+// absolute path: Ramify never runs a program by name. `--path` expands `~` as git does when it reads
 // `gpg.program` to sign. A config git cannot read is an error, never a quiet fallback.
 pub fn program(repo: &Path) -> Result<Option<PathBuf>, GitError> {
     let configured = value(&quiet(repo), &["--path", "gpg.program"])?;
@@ -487,7 +487,7 @@ sec:u:255:22:EEEE111122223333:1700000000:::u:::S:::+:::23::0:
         let home = PathBuf::from(std::env::var_os("HOME").unwrap());
         assert_eq!(program(repo.path()).unwrap(), Some(home.join("bin/gpg")));
 
-        // git cannot read it: rama does not guess another gpg.
+        // git cannot read it: Ramify does not guess another gpg.
         let file = repo.path().join(".git/config");
         let mut text = fs::read_to_string(&file).unwrap();
         text.push_str("[broken\n");

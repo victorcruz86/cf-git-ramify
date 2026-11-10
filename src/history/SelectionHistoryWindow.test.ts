@@ -258,7 +258,7 @@ describe("changes_only_keeps_revisions_whose_block_differs", () => {
       "22222222",
       "33333333",
     ]);
-    expect(localStorage.getItem("rama.selectionHistory.changesOnly")).toBe("false");
+    expect(localStorage.getItem("ramify.selectionHistory.changesOnly")).toBe("false");
   });
 });
 

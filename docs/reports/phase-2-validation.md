@@ -67,10 +67,10 @@ To repeat the measurement with the machine at idle:
 
 ```bash
 export PATH=$HOME/.nvm/versions/node/v22.23.4/bin:$PATH
-echo "// measurement" >> ~/rama-medida/git/builtin/commit.c
-python3 scripts/measure.py --app src-tauri/target/release/rama \
-  --repo ~/rama-medida/git --out docs/reports/phase-2-consumption.json --runs 5
-git -C ~/rama-medida/git checkout -- builtin/commit.c
+echo "// measurement" >> ~/ramify-measure/git/builtin/commit.c
+python3 scripts/measure.py --app src-tauri/target/release/ramify \
+  --repo ~/ramify-measure/git --out docs/reports/phase-2-consumption.json --runs 5
+git -C ~/ramify-measure/git checkout -- builtin/commit.c
 ```
 
 ### Measurement of the debt (2026-11-02)
@@ -89,7 +89,7 @@ Data: `validation-consumption-locked.json`. Median of 5 runs in release with `gi
 
 ### Measurement with the visible window (2026-11-02)
 
-Data: `validation-consumption-visible.json`. Same method as the main series of phase 2 (`measure.py`, `git/git`, `builtin/commit.c` modified and open in the diff window), on the laptop's screen (Retina, 3456×2234) and without the external monitor. Each run waited until the Mac had gone 3 minutes without keyboard or mouse and with the load below 15. A run with input halfway, or in which rama was not in front at the start and at the end of the CPU sample, was thrown away; there was one. Two builds were alternated: that of `4881753`, which is the current one, and an uncommitted variant, with `drawSelection({ cursorBlinkRate: 0 })`. Four valid runs of each; the load, from 7.7 to 14.7.
+Data: `validation-consumption-visible.json`. Same method as the main series of phase 2 (`measure.py`, `git/git`, `builtin/commit.c` modified and open in the diff window), on the laptop's screen (Retina, 3456×2234) and without the external monitor. Each run waited until the Mac had gone 3 minutes without keyboard or mouse and with the load below 15. A run with input halfway, or in which Ramify was not in front at the start and at the end of the CPU sample, was thrown away; there was one. Two builds were alternated: that of `4881753`, which is the current one, and an uncommitted variant, with `drawSelection({ cursorBlinkRate: 0 })`. Four valid runs of each; the load, from 7.7 to 14.7.
 
 | Measurement | Phase 2 | Current | Without CodeMirror blinking |
 |---|---|---|---|
@@ -100,10 +100,10 @@ Data: `validation-consumption-visible.json`. Same method as the main series of p
 | Frames over 50 ms in the scroll | 0 | 0 (p95 of 18.5 ms) | 0 |
 
 - **The first paint meets the goal (less than 1 s) in this series.** I do not know why in phase 2 it took 2.5 s. There the extra time passed before the page existed (section 1), and I have not been able to reproduce it. Nothing in the startup was changed.
-- **CPU: the cause is the text cursor while the editor has focus.** A stack sample (`sample`) of the diff page, with the variant without blinking, puts the drawing time in `WebCore::OpacityCaretAnimator::updateAnimationProperties`, which is WebKit's native cursor. According to WebKit's code (`FrameSelection::updateAppearance`, `OpacityCaretAnimator.cpp`), WebKit animates that cursor whenever there is a cursor in an editable field with focus and the window active. It animates it even though CodeMirror has made it transparent: 10 opacity steps per second, and each one repaints and travels to the rama process and to the GPU. By process, with the variant: diff page 1.3 %, rama 1.3 %, GPU 0.6 %, main page 0 %. CodeMirror's own blinking adds about 0.8 points.
+- **CPU: the cause is the text cursor while the editor has focus.** A stack sample (`sample`) of the diff page, with the variant without blinking, puts the drawing time in `WebCore::OpacityCaretAnimator::updateAnimationProperties`, which is WebKit's native cursor. According to WebKit's code (`FrameSelection::updateAppearance`, `OpacityCaretAnimator.cpp`), WebKit animates that cursor whenever there is a cursor in an editable field with focus and the window active. It animates it even though CodeMirror has made it transparent: 10 opacity steps per second, and each one repaints and travels to the Ramify process and to the GPU. By process, with the variant: diff page 1.3 %, Ramify 1.3 %, GPU 0.6 %, main page 0 %. CodeMirror's own blinking adds about 0.8 points.
 - **With the diff window open but not active, the CPU drops to between 0.1 and 0.2 %.** It was measured with the main one in front, in an earlier round without the input check; take it as an indication. The cost exists only while you look at the diff with the editor focused. IntelliJ, with the IDE at rest, used 5 to 14 % in phase 0 (`phase-0-intellij.json`).
 - **How to stop the native cursor:** WebKit only stops it with the system accessibility setting that prefers a cursor without blinking, and that setting is not touched. Removing CodeMirror's blinking saves 0.8 points, but leaves a fixed cursor where IntelliJ makes it blink. It is pending a decision.
-- **Memory:** it goes up because of WebKit (GPU 141 MB, the two pages 71 and 79 MB); the rama process stays at about 60 MB. It is probably the Retina screen: at scale 2, the drawing buffers have four times as many pixels. I do not know on which screen the phase 2 series was made, so it is not demonstrated.
+- **Memory:** it goes up because of WebKit (GPU 141 MB, the two pages 71 and 79 MB); the Ramify process stays at about 60 MB. It is probably the Retina screen: at scale 2, the drawing buffers have four times as many pixels. I do not know on which screen the phase 2 series was made, so it is not demonstrated.
 - **Ruled out:** CodeMirror is not loaded at startup. `theme-*.js` is `src/diff/theme.ts` and only the diff window requests it. The main one loads `index`, `App` and `run`, about 338 KB.
 - **Not done:** compare the row height with IntelliJ screenshots. It needs screenshots of yours.
 
@@ -159,14 +159,14 @@ How to build and open the app:
 ```bash
 export PATH=$HOME/.nvm/versions/node/v22.23.4/bin:$PATH
 pnpm tauri build --bundles app
-open -n src-tauri/target/release/bundle/macos/rama.app --args /path/to/a/repository
+open -n src-tauri/target/release/bundle/macos/Ramify.app --args /path/to/a/repository
 ```
 
-The `.app` is already built at `src-tauri/target/release/bundle/macos/rama.app` (7.2 MiB, ad hoc signature). With a double click in Finder it opens without a repository: type the path in the bar.
+The `.app` is already built at `src-tauri/target/release/bundle/macos/Ramify.app` (7.2 MiB, ad hoc signature). With a double click in Finder it opens without a repository: type the path in the bar.
 
 ### Real IPC of the new commands
 
-**Updated on 2026-11-01:** `scripts/smoke_ipc.py` runs the commands through the real IPC, in WebKit and in release, against a throwaway repository and with its own `HOME`: 125 of 127 commands in 136 steps, 0 IPC failures (`validation-ipc.json`). The 2 operation errors are expected: `branch_rebase_abort` with no rebase in progress and `init_repository` with a folder that does not exist. Not run, on purpose: `clipboard_write` and `open_in_new_window`. The pass is built separately with `VITE_RAMA_SMOKE`, and that code does not enter `rama.app`. What it does not cover: the arguments are written by the script, not by the dialogs; the real credential questions (`askpass_answer` was only called with an id that does not exist); and the network. That is why the boxes below are still open, although you should no longer find `command … not found` or argument errors.
+**Updated on 2026-11-01:** `scripts/smoke_ipc.py` runs the commands through the real IPC, in WebKit and in release, against a throwaway repository and with its own `HOME`: 125 of 127 commands in 136 steps, 0 IPC failures (`validation-ipc.json`). The 2 operation errors are expected: `branch_rebase_abort` with no rebase in progress and `init_repository` with a folder that does not exist. Not run, on purpose: `clipboard_write` and `open_in_new_window`. The pass is built separately with `VITE_RAMIFY_SMOKE`, and that code does not enter `Ramify.app`. What it does not cover: the arguments are written by the script, not by the dialogs; the real credential questions (`askpass_answer` was only called with an id that does not exist); and the network. That is why the boxes below are still open, although you should no longer find `command … not found` or argument errors.
 
 What follows is the original text of the list. None of the 78 commands new since phase 1 was tested through Tauri's IPC; the tests call the Rust functions and simulate `invoke` in the interface. It is only known that `log_open` and `log_rows`, and those of phase 1 on the measurement's path, work through the real IPC, because the measurement uses them. A failure here would be one of registration in `lib.rs`, of argument names in camelCase, or of serialization. For each row, check that the action does something and that the console or a notification does not show `command … not found` or an argument error.
 
@@ -180,7 +180,7 @@ What follows is the original text of the list. None of the 78 commands new since
 
 ### Log pass with synthetic events (2026-11-01)
 
-Done by Claude in release `rama.app` on the throwaway lab, with System Events keys and CoreGraphics mouse. The log table is a canvas with no accessibility tree, so the selection is read in the detail panel. No screenshots. **The boxes below are still open:** it is not a physical keyboard or a real repository, and the graph has not been seen.
+Done by Claude in release `Ramify.app` on the throwaway lab, with System Events keys and CoreGraphics mouse. The log table is a canvas with no accessibility tree, so the selection is read in the detail panel. No screenshots. **The boxes below are still open:** it is not a physical keyboard or a real repository, and the graph has not been seen.
 
 | Point | Result |
 |---|---|
@@ -238,8 +238,8 @@ With real credentials. Use a branch of yours, not `main`.
 
 ### Windows and startup
 
-- [ ] `open -n …/rama.app --args /path`: opens a new window even if the app is already open, with that repository. It is what `Git > Clone…` does with an open repository, and `Create Git Repository…` from another folder.
-- [ ] Double click on `rama.app` from Finder. It is an ad hoc signature: if macOS blocks it, "Open Anyway" (System Settings > Privacy & Security).
+- [ ] `open -n …/Ramify.app --args /path`: opens a new window even if the app is already open, with that repository. It is what `Git > Clone…` does with an open repository, and `Create Git Repository…` from another folder.
+- [ ] Double click on `Ramify.app` from Finder. It is an ad hoc signature: if macOS blocks it, "Open Anyway" (System Settings > Privacy & Security).
 - [ ] A hook (`pre-commit`, `pre-push`) that uses `node` or `pnpm` works opened from Finder. Without the terminal's `PATH` it may not find them (already noted in phase 1).
 - [ ] Two windows with different repositories at the same time: Update in one does not affect the other. The refreshes (`repo-changed`) are emitted to all windows (minor pending item of Task 3): check that they do not get in the way.
 - [ ] `Open .git/info/exclude` opens it with the system text editor.
@@ -256,7 +256,7 @@ With real credentials. Use a branch of yours, not `main`.
 
 ### Operations pass with synthetic events (2026-11-01)
 
-Done by Claude in release `rama.app` on the throwaway lab, with its local bare remote, and checked with git after each step. **The boxes above are still open for what is missing.**
+Done by Claude in release `Ramify.app` on the throwaway lab, with its local bare remote, and checked with git after each step. **The boxes above are still open for what is missing.**
 
 | Scenario | Result |
 |---|---|
@@ -289,8 +289,8 @@ Not tested: Reset Mixed in the log, Smart Checkout with staging on, Update with 
 Close IntelliJ and open it from a terminal so that it inherits the variables:
 
 ```bash
-export RAMA_GIT_REAL=$(command -v git)
-export RAMA_GIT_LOG=~/intellij-commands-phase-2.log
+export RAMIFY_GIT_REAL=$(command -v git)
+export RAMIFY_GIT_LOG=~/intellij-commands-phase-2.log
 "/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea"
 ```
 

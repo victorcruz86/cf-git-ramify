@@ -114,13 +114,13 @@ const inRepository = (state: FileState | null) =>
 // `CommonCheckinFilesAction.Manager.isActionEnabled` (a folder, or a file with a status other than
 // ignored) and `ScheduleForAdditionWithIgnoredFilesConfirmationAction.isEnabled` (an unversioned
 // file, a folder that is not ignored, or a file `GitAdd.isStatusForAddition` takes) come to the
-// same rule here: rama has no confirmation for adding ignored files, so those are left out.
+// same rule here: Ramify has no confirmation for adding ignored files, so those are left out.
 // Cost: an ignored file cannot be added from this menu (241 asks, then runs `git add -f`); it takes
 // `git add -f` in a terminal.
 const changedOrFolder = (target: FileTarget) =>
   target.dir ? target.state !== "ignored" : target.state !== null && target.state !== "ignored";
 
-// The repository's own folder, the root row of the tree. rama compares folders below it only: the
+// The repository's own folder, the root row of the tree. Ramify compares folders below it only: the
 // comparisons take a path inside the repository. Cost: Compare with Revision... and Compare with
 // Branch… of the whole repository are not offered here (241 has them on the project root): the user
 // compares a top-level folder at a time instead.

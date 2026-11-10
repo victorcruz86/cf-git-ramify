@@ -2,7 +2,7 @@
 use std::env;
 use std::fs;
 
-use rama_lib::commit;
+use ramify_lib::commit;
 use tempfile::TempDir;
 
 #[test]

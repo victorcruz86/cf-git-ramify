@@ -14,7 +14,7 @@
 //   are kept raw on read; git applies them. Nothing here encodes or decodes base85 or zlib.
 // - 4: the context-diff format is not read (`*** ` patches are refused).
 // - 6: one encoding, UTF-8, and `\n` everywhere.
-// - 11: the `<+>` lines follow rama's reading of IntelliJ's code.
+// - 11: the `<+>` lines follow Ramify's reading of IntelliJ's code.
 //
 // Lines of a patch and of the files are bytes: what is not UTF-8 goes through untouched. Names,
 // version ids and the message are text.
@@ -176,7 +176,7 @@ pub enum PatchError {
     Syntax { line: usize, message: String },
     Git(GitError),
     // An entry built as binary for which git printed a text diff (a repository attribute that wins
-    // over rama's): the entry is refused rather than written as text, which would change its bytes.
+    // over Ramify's): the entry is refused rather than written as text, which would change its bytes.
     BinaryAsText { path: String },
 }
 

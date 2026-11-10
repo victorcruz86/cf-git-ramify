@@ -27,13 +27,13 @@ use crate::askpass::{
     SOCKET_FOLDER_RANDOM_CHARS, SOCKET_NAME, TOKEN_BYTES,
 };
 
-const SOCKET_VARIABLE: &str = "RAMA_EDITOR_SOCKET";
-const TOKEN_VARIABLE: &str = "RAMA_EDITOR_TOKEN";
-const SOCKET_FOLDER_PREFIX: &str = "rama-editor-";
+const SOCKET_VARIABLE: &str = "RAMIFY_EDITOR_SOCKET";
+const TOKEN_VARIABLE: &str = "RAMIFY_EDITOR_TOKEN";
+const SOCKET_FOLDER_PREFIX: &str = "ramify-editor-";
 const TOKEN_CHARS: usize = TOKEN_BYTES * 2;
 // Git launches the same binary as askpass and as editor, and a task's environment carries the
 // variables of both: this flag, which goes before the file, says which of the two it is.
-const CLIENT_FLAG: &str = "--rama-editor";
+const CLIENT_FLAG: &str = "--ramify-editor";
 const TODO_FILE: &str = "git-rebase-todo";
 // `GitUtil.COMMENT_CHAR`: neither the user nor a template uses it, so whatever starts with it is
 // git's help and nothing else.
@@ -645,8 +645,8 @@ mod tests {
     #[test]
     fn posix_quotes_protect_spaces_and_single_quotes() {
         assert_eq!(
-            posix_quote(Path::new("/Apps/my branch/rama")),
-            OsString::from("'/Apps/my branch/rama'")
+            posix_quote(Path::new("/Apps/my branch/ramify")),
+            OsString::from("'/Apps/my branch/ramify'")
         );
         assert_eq!(posix_quote(Path::new("/a'b")), OsString::from("'/a'\\''b'"));
     }

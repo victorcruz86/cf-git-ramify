@@ -8,22 +8,22 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rama_lib::branch_info::BranchSync;
-use rama_lib::branches::Repo;
-use rama_lib::commands::RepoLocks;
-use rama_lib::console::Console;
-use rama_lib::editor::{
+use ramify_lib::branch_info::BranchSync;
+use ramify_lib::branches::Repo;
+use ramify_lib::commands::RepoLocks;
+use ramify_lib::console::Console;
+use ramify_lib::editor::{
     Ask, EditKind, EditorHandler, Form, Prompt, Request, Server, Trivial, REBASE_CONFIG,
 };
-use rama_lib::git::GitError;
-use rama_lib::pull;
-use rama_lib::rebase::{self, Outcome as Rebase};
-use rama_lib::task::{GitOutput, Runner, TaskContext, TaskId, TaskKind};
-use rama_lib::update::Outcome;
+use ramify_lib::git::GitError;
+use ramify_lib::pull;
+use ramify_lib::rebase::{self, Outcome as Rebase};
+use ramify_lib::task::{GitOutput, Runner, TaskContext, TaskId, TaskKind};
+use ramify_lib::update::Outcome;
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(30);
-const CLIENT: &str = env!("CARGO_BIN_EXE_rama");
+const CLIENT: &str = env!("CARGO_BIN_EXE_ramify");
 
 fn git_in(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -255,7 +255,7 @@ impl Fixture {
         let registration = self.server.register(handler, git_dir);
         let mut command = Command::new(CLIENT);
         registration.apply(&mut command);
-        command.arg("--rama-editor").arg(file);
+        command.arg("--ramify-editor").arg(file);
         // The registration lives as long as the test's command lives.
         std::mem::forget(registration);
         command
@@ -428,7 +428,7 @@ fn foreign_token_is_rejected() {
     let mut command = fixture.client(handler.clone(), repo.git_dir(), &file);
 
     let output = command
-        .env("RAMA_EDITOR_TOKEN", "0".repeat(64))
+        .env("RAMIFY_EDITOR_TOKEN", "0".repeat(64))
         .output()
         .unwrap();
 
@@ -907,10 +907,10 @@ fn an_edit_leaves_the_rebase_stopped_for_editing() {
 // without asking the window.
 mod rewrite {
     use super::*;
-    use rama_lib::preserve::RestoreOutcome;
-    use rama_lib::rewrite::{self, Rewritten};
-    use rama_lib::settings::{self, CleanTree};
-    use rama_lib::shelf;
+    use ramify_lib::preserve::RestoreOutcome;
+    use ramify_lib::rewrite::{self, Rewritten};
+    use ramify_lib::settings::{self, CleanTree};
+    use ramify_lib::shelf;
 
     // `base`, `A`, `B`, `C` and `D`, each with its own file. Returns their hashes.
     fn five() -> (Scratch, Vec<String>) {
@@ -1265,9 +1265,9 @@ mod rewrite {
     }
 
     // Interactively Rebase from Here… from the log.
-    use rama_lib::rebase::Rebased;
-    use rama_lib::rewrite::{NewMessage, Plan};
-    use rama_lib::todo::{Action, Entry};
+    use ramify_lib::rebase::Rebased;
+    use ramify_lib::rewrite::{NewMessage, Plan};
+    use ramify_lib::todo::{Action, Entry};
 
     fn interactive_in(
         fixture: &Fixture,
@@ -1387,7 +1387,7 @@ mod rewrite {
         let result = interactive_in(&fixture, &repo, &hashes[2], Some(plan))
             .recv_timeout(WAIT)
             .unwrap()
-            .map_err(rama_lib::commands::ApiError::from)
+            .map_err(ramify_lib::commands::ApiError::from)
             .map_err(|error| error.message);
 
         assert_eq!(
@@ -1631,7 +1631,7 @@ mod rewrite {
 // Commit and Rebase… for Fixup… and Squash Into…: `rebase --interactive` without autosquash flags.
 mod autosquash {
     use super::*;
-    use rama_lib::rewrite;
+    use ramify_lib::rewrite;
 
     // `base`, `A`, `B` and a `fixup! A` on top. Returns the hash of `A`.
     fn with_fixup() -> (Scratch, String) {

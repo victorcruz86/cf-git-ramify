@@ -25,7 +25,7 @@ const MANIFEST_FILE: &str = "manifest.json";
 const FILES_DIR: &str = "files";
 const STAGED_DIR: &str = "staged";
 const PARTIAL_SUFFIX: &str = ".partial";
-const RESTORE_TEMP_SUFFIX: &str = ".rama-restore";
+const RESTORE_TEMP_SUFFIX: &str = ".ramify-restore";
 const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
 
 pub type SnapshotId = String;

@@ -152,7 +152,7 @@ impl AsRead {
     }
 }
 
-// rama's own: what was written while it was shelved is not rolled back.
+// Ramify's own: what was written while it was shelved is not rolled back.
 pub(crate) fn changed_while_shelving(paths: &BTreeSet<String>) -> String {
     let names: Vec<String> = paths.iter().map(|path| format!("\"{path}\"")).collect();
     let (verb, left) = match paths.len() {
@@ -276,7 +276,7 @@ fn changelist_groups(repo: &Path, data: &Path, staging: bool) -> Result<Vec<Grou
 // only in the stage is in the copy of `keep_index_only`.
 //
 // Without HEAD IntelliJ runs `reset --hard`, which also takes what was staged after the check.
-// rama only takes the checked paths out of the stage and off the disk: they are all new.
+// Ramify only takes the checked paths out of the stage and off the disk: they are all new.
 fn roll_back(ctx: &TaskContext, repo: &Path, paths: &[String]) -> Result<(), GitError> {
     let head = git::head_exists(repo)?;
     let command: &[&str] = match head {
@@ -301,7 +301,7 @@ fn roll_back(ctx: &TaskContext, repo: &Path, paths: &[String]) -> Result<(), Git
     Ok(())
 }
 
-// rama's own: the rollback after shelving failed, and the changes are in both places.
+// Ramify's own: the rollback after shelving failed, and the changes are in both places.
 fn kept_in_shelf(lists: &[SavedList]) -> String {
     let names: Vec<String> = lists
         .iter()
@@ -1032,7 +1032,7 @@ mod tests {
         assert_eq!(again.changed(repo.path(), &paths).unwrap(), BTreeSet::new());
     }
 
-    // rama's own: without HEAD only the checked paths go back (IntelliJ resets the whole tree).
+    // Ramify's own: without HEAD only the checked paths go back (IntelliJ resets the whole tree).
     #[test]
     fn without_head_only_the_checked_paths_go_back() {
         let repo = TempRepo::new();

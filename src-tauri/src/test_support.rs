@@ -55,7 +55,7 @@ pub fn git_command() -> Command {
 pub fn isolated_places() -> (&'static Path, &'static Path) {
     static PLACES: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
     let (file, xdg) = PLACES.get_or_init(|| {
-        let dir = std::env::temp_dir().join("rama-tests-git");
+        let dir = std::env::temp_dir().join("ramify-tests-git");
         let xdg = dir.join("empty-xdg-config");
         fs::create_dir_all(&xdg).unwrap();
         let file = dir.join("empty-global-config");

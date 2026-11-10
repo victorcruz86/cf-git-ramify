@@ -87,7 +87,7 @@ test("ds_store_and_dot_git_are_hidden_but_ignored_files_are_shown_coloured", () 
 });
 
 test("rows_follow_the_expanded_and_loaded_folders", () => {
-  const rows = visibleRows("rama", listed, new Set([ROOT, "src", "src/lib", "missing"]));
+  const rows = visibleRows("ramify", listed, new Set([ROOT, "src", "src/lib", "missing"]));
 
   expect(rows.map((row) => [row.entry.path, row.depth])).toEqual([
     [ROOT, 0],
@@ -99,12 +99,12 @@ test("rows_follow_the_expanded_and_loaded_folders", () => {
     [".gitignore", 1],
     ["debug.log", 1],
   ]);
-  expect(rows[0].entry).toEqual({ name: "rama", path: ROOT, dir: true });
+  expect(rows[0].entry).toEqual({ name: "ramify", path: ROOT, dir: true });
   // An expanded folder that is not loaded yet shows nothing below it.
-  expect(visibleRows("rama", new Map(), new Set([ROOT])).map((row) => row.entry.path)).toEqual([
+  expect(visibleRows("ramify", new Map(), new Set([ROOT])).map((row) => row.entry.path)).toEqual([
     ROOT,
   ]);
-  expect(visibleRows("rama", listed, new Set()).map((row) => row.entry.path)).toEqual([ROOT]);
+  expect(visibleRows("ramify", listed, new Set()).map((row) => row.entry.path)).toEqual([ROOT]);
 });
 
 test("a_change_on_disk_recolours_and_relists_open_folders", () => {
@@ -128,7 +128,7 @@ test("collapse_all_keeps_the_root_open_and_moves_the_lead_to_its_top_level_folde
 });
 
 test("speed_search_marks_the_matching_names", () => {
-  const rows = visibleRows("rama", listed, new Set([ROOT, "src", "src/lib"]));
+  const rows = visibleRows("ramify", listed, new Set([ROOT, "src", "src/lib"]));
 
   expect(matchingRows(rows, "a").map((row) => row.entry.path)).toEqual([ROOT, "src/a.txt"]);
   expect(matchingRows(rows, "lib").map((row) => row.entry.path)).toEqual(["src/lib"]);
@@ -152,7 +152,7 @@ test("the_selection_is_given_as_repository_paths_and_as_file_targets", () => {
     { path: "build/", oldPath: null, state: "ignored", staged: false, unstaged: false },
   ]);
   const entries: TreeEntry[] = [
-    { name: "rama", path: ROOT, dir: true },
+    { name: "ramify", path: ROOT, dir: true },
     { name: "a.txt", path: "src/a.txt", dir: false, binary: false },
     { name: "out", path: "build/out", dir: true, binary: false },
     // Rust says which types are binary: the Git file menu does not annotate it.

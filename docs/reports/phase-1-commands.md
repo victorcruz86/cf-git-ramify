@@ -1,4 +1,4 @@
-# Commands of a commit: rama versus IntelliJ
+# Commands of a commit: Ramify versus IntelliJ
 
 Comparison of the flow of `src-tauri/src/commit.rs` with `commitRepository` and `commitUsingIndex` of `GitCheckinEnvironment.java`, `GitRepositoryCommitter.kt` and `GitIndexUtil.java`, in the tag `idea/232.10072.27` (2023.2.3).
 
@@ -20,12 +20,12 @@ Partial commit with an excluded stage, in a throwaway repository created by the 
 trace=$(mktemp -d)
 mkdir "$trace/bin"
 ln -s "$PWD/scripts/git-wrapper.sh" "$trace/bin/git"
-(cd src-tauri && RAMA_GIT_REAL=$(command -v git) RAMA_GIT_LOG="$trace/commands.log" \
+(cd src-tauri && RAMIFY_GIT_REAL=$(command -v git) RAMIFY_GIT_LOG="$trace/commands.log" \
   PATH="$trace/bin:$PATH" cargo test traza_de_commit -- --ignored)
 cat "$trace/commands.log"
 ```
 
-## Commands recorded for rama
+## Commands recorded for Ramify
 
 Real output with git 2.38.0, without the `%q` escapes and with the temporary folder abbreviated. The prefix of the index commands is explained in points 12 and 14; `--literal-pathspecs` makes a path like `:(exclude)a.txt` literal.
 
@@ -43,7 +43,7 @@ git -c core.precomposeunicode=false update-index --add --cacheinfo 100644,01e79c
 git --literal-pathspecs -c core.precomposeunicode=false reset HEAD -- borrado-excluido.txt excluido.txt
 git --literal-pathspecs -c core.precomposeunicode=false rm --cached --quiet -f --ignore-unmatch -- borrado.txt
 git --literal-pathspecs add --ignore-errors -f -- completo.txt
-git -c i18n.commitEncoding=UTF-8 commit -F /var/folders/.../T/rama-commit-jWvwMG --signoff --
+git -c i18n.commitEncoding=UTF-8 commit -F /var/folders/.../T/ramify-commit-jWvwMG --signoff --
 git --literal-pathspecs -c core.precomposeunicode=false update-index --force-remove -- borrado-excluido.txt
 git -c core.precomposeunicode=false update-index --add --cacheinfo 100644,e4913bea7055a208a5645d07819e6827873480ee,excluido.txt
 git rev-parse HEAD
@@ -68,12 +68,12 @@ git add <forced> -- excluido.txt                                     restoreExcl
 
 ## Differences
 
-| # | Point | IntelliJ | rama | Does the result change? | Decision |
+| # | Point | IntelliJ | Ramify | Does the result change? | Decision |
 |---|---|---|---|---|---|
-| 1 | Restoring what was excluded | `git add`: the content **on disk** goes back to the stage | `update-index --cacheinfo` with the saved blob | Yes. With `excluido.txt` different in stage and on disk, IntelliJ loses the stage version | rama is kept: it is the task's requirement |
-| 2 | If the commit fails | Restores what was excluded; what was selected stays in stage | Also restores what was selected, with the previous blob | Yes, only on failures | rama is kept: the stage stays as it was |
-| 3 | Excluded with status `AD` | Detects it with the unstaged diff and does not restore it | That diff is not needed: `--cacheinfo` does not look at the disk | Yes. IntelliJ loses the stage entry; rama keeps it | rama is kept |
-| 4 | Failure while restoring | Only a warning in the log (`LOG.warn`) | `Restore` error with paths, mode and hash | Yes, only on that failure | rama is kept |
+| 1 | Restoring what was excluded | `git add`: the content **on disk** goes back to the stage | `update-index --cacheinfo` with the saved blob | Yes. With `excluido.txt` different in stage and on disk, IntelliJ loses the stage version | Ramify is kept: it is the task's requirement |
+| 2 | If the commit fails | Restores what was excluded; what was selected stays in stage | Also restores what was selected, with the previous blob | Yes, only on failures | Ramify is kept: the stage stays as it was |
+| 3 | Excluded with status `AD` | Detects it with the unstaged diff and does not restore it | That diff is not needed: `--cacheinfo` does not look at the disk | Yes. IntelliJ loses the stage entry; Ramify keeps it | Ramify is kept |
+| 4 | Failure while restoring | Only a warning in the log (`LOG.warn`) | `Restore` error with paths, mode and hash | Yes, only on that failure | Ramify is kept |
 | 5 | Prior reading | Only `ls-files` of the partial paths | `ls-files -s` and `diff --diff-filter=A` of all the affected paths, before touching anything | No | It is what allows points 1 and 2 |
 | 6 | Partial and reading of the stage | Partial first | Reads first; writes the partial after. The partial paths belong to the selection, so what is excluded does not change | No | Kept |
 | 7 | `update-index` of the partial | Without `--add` | With `--add` | Only with new files, which IntelliJ does not treat as partial | Kept: it is what the plan asks for |
@@ -84,7 +84,7 @@ git add <forced> -- excluido.txt                                     restoreExcl
 | 12 | `reset` | `reset -- <paths>` | `reset HEAD -- <paths>` and, without commits, `rm --cached --quiet -f` | No: see below | Task decision |
 | 13 | Message encoding | Writes the file in `i18n.commitEncoding` | Always UTF-8, and `-c i18n.commitEncoding=UTF-8` in the commit | Yes without that `-c`: the commit was annotated as Latin-1 with UTF-8 bytes. With it, the text is correct, but the object goes in UTF-8 | Corrected, with a test |
 | 14 | NFD names | No handling in these files | `-c core.precomposeunicode=false` in the index commands and in `add` of what is versioned | Yes: without it, `reset` did not remove an NFD entry from the stage and `add` created a second NFC entry next to the NFD one, in both cases exiting with 0 | Corrected, with tests. What is new continues with normal `add`: its name comes from the disk |
-| 15 | Selected `git add -N` | Does not restore it | Becomes an intent to add again if the commit fails | Yes, only on failures | rama is kept |
+| 15 | Selected `git add -N` | Does not restore it | Becomes an intent to add again if the commit fails | Yes, only on failures | Ramify is kept |
 | 16 | Excluded case-only rename | `git mv -f` when restoring | `--force-remove` and `--cacheinfo` | No | Kept: it does not touch the disk |
 | 17 | Classification of the failure | Gpg and no changes | Plus `Hook` with its output | It does not change the repository | Requested by the task |
 | 18 | Hook output | Goes through stderr: git redirects it | Same, and stdout and stderr are both kept just in case | No | Kept |

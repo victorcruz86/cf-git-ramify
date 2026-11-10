@@ -1,15 +1,15 @@
 [package]
-name = "rama"
+name = "ramify"
 version = "0.0.1"
 edition = "2021"
 rust-version = "1.99"
 
 [lib]
-name = "rama_lib"
+name = "ramify_lib"
 crate-type = ["rlib"]
 
 [[bin]]
-name = "rama"
+name = "ramify"
 path = "src/main.rs"
 
 [build-dependencies]

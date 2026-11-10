@@ -23,7 +23,7 @@ export function repositoryTabTitle(root: string, hash: string): string {
 
 // `GitBrowseRepoAtRevisionAction` and `RepositoryBrowser.showRepositoryBrowser`: the window is
 // registered on first use, and comes to the front. A tab of the same root and revision is reused as
-// it is; rama has one repository per window, so another revision replaces the tab (decision 5).
+// it is; Ramify has one repository per window, so another revision replaces the tab (decision 5).
 export function showRepositoryAtRevision(hash: string): void {
   if (get(store)?.hash !== hash) store.set({ id: ++lastId, hash });
   registerToolWindow("repositories");

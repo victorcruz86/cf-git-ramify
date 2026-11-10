@@ -1,10 +1,17 @@
-# rama
+# Ramify
 
-Lightweight Git client for macOS, built with Tauri. It copies the Git features of IntelliJ IDEA 2023.2.3 and always uses the real `git` binary.
+Lightweight Git client for macOS, built with Tauri. It copies the Git support of IntelliJ IDEA Community Edition 2024.1 (phases 1 to 3 copied 2023.2.3) and always uses the real `git` binary. It was called rama until 2026-11-10; on its first start Ramify copies rama's data folder and its webview storage (the interface settings), and on first use its GitHub token in the Keychain (`src-tauri/src/migration.rs`). The originals are never moved or deleted.
 
-So far it has the Commit view with changelists, partial commit by lines, the diff window and the staging area mode (phase 1), and, in phase 2, the log with its graph, filters, details and context menu, the branches popup and panel, branch, tag and reset operations, fetch, Update Project and Pull, the push dialog with force push and protected branches, remotes, clone and init, and, in phase 3, conflicts (the Conflicts dialog and the three-pane merge window), Merge and Rebase with their dialogs and the branches popup actions, continue, skip and abort, cherry-pick and revert, Edit Commit Message, Drop, Squash, Undo Commit, Fixup and Squash Into, interactive rebase and the three-pane comparison of HEAD, staged and local. Credentials: git's own (credential helper and ssh), with a dialog of its own when git asks for them. What is missing (stash, shelf, history and comparisons in phase 4) and what differs from IntelliJ is in `docs/parity-matrix.md` and in the reports in `docs/reports/`: `phase-1-validation.md`, `phase-2-validation.md`, `phase-2-commands.md`, `phase-2-decisions.md`, `phase-3-validation.md`, `phase-3-commands.md` and `phase-3-decisions.md`.
+What it does, by phase:
 
-Phases 2 and 3 are not considered finished: the user finishes them when using them on their real repositories. The manual checklists are in `docs/reports/phase-2-validation.md` and `docs/reports/phase-3-validation.md`.
+- **Phase 1:** the Commit view with changelists, partial commit by lines, the diff window and the staging area mode.
+- **Phase 2:** the log with its graph, filters, details and context menu; the branches popup and panel; branch, tag and reset operations; fetch, Update Project and Pull; the push dialog with force push and protected branches; remotes, clone and init.
+- **Phase 3:** conflicts (the Conflicts dialog and the three-pane merge window); Merge and Rebase; continue, skip and abort; cherry-pick and revert; Edit Commit Message, Drop, Squash, Undo Commit, Fixup and Squash Into; interactive rebase.
+- **Phase 4:** the modal commit dialog; patches, stash and shelf, with the import of IntelliJ's shelf; annotate, file history, the selection history and comparisons; GitHub accounts, protected branches and the Pull Requests tool window; commit signing, linked worktrees and submodules.
+
+Credentials are git's own (credential helper and ssh), with a dialog of its own when git asks for them; GitHub tokens live only in the Keychain. What is missing and what differs from IntelliJ is in `docs/parity-matrix.md` and in the reports in `docs/reports/` (`phase-1-validation.md` to `phase-4-validation.md`, plus the commands and decisions of each phase).
+
+No phase is considered finished until the user has used it on their real repositories. The manual checklists are in section 5 of each part of `docs/reports/phase-4-validation.md` and in the earlier validation reports.
 
 ## Requirements
 
@@ -21,7 +28,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-That last command has never been run in the validation of phases 1, 2 and 3: what was tested is the app built in release.
+That last command has never been run in the validation of the phases: what was tested is the app built in release.
 
 To build the app:
 
@@ -29,24 +36,24 @@ To build the app:
 pnpm tauri build --bundles app
 ```
 
-The result is left in `src-tauri/target/release/bundle/macos/rama.app`. It carries only a local (ad hoc) signature, not Apple's distribution one. Built on this Mac it should open without more ado. If you copy it from another machine or download it, macOS will say it cannot verify it: go to System Settings > Privacy & Security and click "Open Anyway".
+The result is left in `src-tauri/target/release/bundle/macos/Ramify.app`. It carries only a local (ad hoc) signature, not Apple's distribution one. Built on this Mac it should open without more ado. If you copy it from another machine or download it, macOS will say it cannot verify it: go to System Settings > Privacy & Security and click "Open Anyway".
 
 ## Opening a repository
 
 ```bash
-open -n src-tauri/target/release/bundle/macos/rama.app --args /path/to/the/repository
+open -n src-tauri/target/release/bundle/macos/Ramify.app --args /path/to/the/repository
 ```
 
 `-n` opens a new window even if the app is already running, and it is what `Git > Clone…` uses to open the cloned repository in another window. It can also be opened with a double click from Finder, typing the path in the bar.
 
 ## License and attribution
 
-`src-tauri/src/log/` is a Rust port of code from IntelliJ IDEA Community Edition (tag `idea/232.10072.27`, Apache License 2.0); `src/log/` (among others, `draw.ts`, `graphColor.ts` and `labels.ts`), `src/branches/model.ts`, `src/branches/refName.ts` and `src/lib/speedSearch.ts` are TypeScript ports of the same code, and `src-tauri/src/log/testdata/` contains test data from that same repository. The attribution, the changes and the origin files are in `NOTICE`, and the license text in `LICENSE-APACHE`.
+Parts of Ramify are ports of code from IntelliJ IDEA Community Edition (Apache License 2.0): phases 1 to 3 from tag `idea/232.10072.27`, phase 4 from tag `idea/241.14494.240`. Among them, `src-tauri/src/log/` is a Rust port; `src/log/` (among others, `draw.ts`, `graphColor.ts` and `labels.ts`), `src/branches/model.ts`, `src/branches/refName.ts` and `src/lib/speedSearch.ts` are TypeScript ports of the same code, and `src-tauri/src/log/testdata/` contains test data from that same repository. The attribution, the changes and the origin files are in `NOTICE`, and the license text in `LICENSE-APACHE`.
 
 ## Tests
 
 ```bash
 pnpm test
 (cd src-tauri && cargo test)
-(cd scripts && python3 -m unittest test_extract_actions test_measure)
+python3 -I -m unittest discover -s scripts
 ```

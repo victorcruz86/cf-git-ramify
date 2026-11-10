@@ -21,7 +21,7 @@ vi.stubGlobal(
   },
 );
 
-const ROOT = "/Users/me/rama";
+const ROOT = "/Users/me/ramify";
 const FIRST = "a1b2c3d4".repeat(5);
 const SECOND = "e5f6a7b8".repeat(5);
 
@@ -101,7 +101,7 @@ test("a_second_revision_replaces_the_tab", async () => {
   expect(get(registeredToolWindows)).toContain("repositories");
   expect(activated).toEqual(["repositories"]);
   // `B:1367`, and the root folder itself is not a row (`FileTreeModel` with one root, not shown).
-  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["rama at a1b2c3d4"]);
+  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["ramify at a1b2c3d4"]);
   expect(names()).toEqual(["src", "README.md"]);
   expect(listed()).toEqual([{ revision: FIRST, dir: "" }]);
   // No toolbar.
@@ -119,7 +119,7 @@ test("a_second_revision_replaces_the_tab", async () => {
 
   showRepositoryAtRevision(SECOND);
   await waitFor(() => expect(names()).toEqual(["docs", "new.txt"]));
-  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["rama at e5f6a7b8"]);
+  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["ramify at e5f6a7b8"]);
   expect(get(repositoryTab)?.id).not.toBe(tab?.id);
   expect(listed().slice(2)).toEqual([{ revision: SECOND, dir: "" }]);
   expect(activated).toEqual(["repositories", "repositories", "repositories"]);
@@ -280,7 +280,7 @@ test("compare_with_local_opens_the_diff", async () => {
 
 test("speed_search_finds_a_row_and_arrows_move_the_selection", async () => {
   await mount();
-  expect(title()).toBe("rama at a1b2c3d4");
+  expect(title()).toBe("ramify at a1b2c3d4");
 
   await key("r");
   await key("e");

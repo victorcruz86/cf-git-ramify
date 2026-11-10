@@ -801,7 +801,7 @@
     }
   }
 
-  // `jumpToNearestCommit` of a history tab. 241 does it silently; rama says it with `L:165-168` when
+  // `jumpToNearestCommit` of a history tab. 241 does it silently; Ramify says it with `L:165-168` when
   // the commit is not in the history.
   async function jumpTo(id: number, hash: string) {
     const tab = tabOf(id);

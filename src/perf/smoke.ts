@@ -17,8 +17,8 @@ import { errorText } from "../lib/errors";
 import { taskResult, trackTasks } from "../lib/tasks";
 
 // Sends the commands through the real Tauri IPC, in WebKit and in release, against a disposable
-// repository. It only enters the build with VITE_RAMA_SMOKE: see scripts/smoke_ipc.py. It changes the
-// real repository, and therefore refuses to run outside a rama-smoke folder.
+// repository. It only enters the build with VITE_RAMIFY_SMOKE: see scripts/smoke_ipc.py. It changes the
+// real repository, and therefore refuses to run outside a ramify-smoke folder.
 
 const STEP_LIMIT_MS = 60_000;
 const PREVIEW = 400;
@@ -31,7 +31,7 @@ export interface SmokeStep {
   detail: string;
 }
 
-export const smokeRepoAllowed = (path: string | null) => !!path && /\/rama-smoke[^/]*\//.test(path);
+export const smokeRepoAllowed = (path: string | null) => !!path && /\/ramify-smoke[^/]*\//.test(path);
 
 // What Tauri or serde say when the two sides do not understand each other: the rest are errors of the
 // operation, which here do not invalidate the command.

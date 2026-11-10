@@ -17,7 +17,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-31-intellij-git-client-design.md`, and the phase 4 overview `docs/superpowers/plans/2026-11-03-phase-4-overview.md`: its Global Constraints and Decisions are part of this plan.
 - Starting point: `docs/reports/phase-4-reference-change.md` sections 2 to 4 and 6.
-- Research (not in the repository): `.superpowers/phase-4/research-part-2.md`, items 1 to 20, and `.superpowers/phase-4/research-soft-wraps.md`. Each task names the items it implements. The implementer reads those items first: they hold the exact texts, the `241:` citations and the current rama lines.
+- Research (not in the repository): `.superpowers/phase-4/research-part-2.md`, items 1 to 20, and `.superpowers/phase-4/research-soft-wraps.md`. Each task names the items it implements. The implementer reads those items first: they hold the exact texts, the `241:` citations and the current Ramify lines.
 
 **Reference:** tag `idea/241.14494.240`. Paths are relative to `intellij-community`:
 - `G/` = `plugins/git4idea/src/git4idea/`;
@@ -28,7 +28,7 @@ Bundles: `GB:` = GitBundle, `VB:` = VcsBundle, `LB:` = VcsLogBundle, `AB:` = Act
 **Branch:** `phase-4`, after part 1 (`8a99d59`).
 
 **Commands** (the user asked to keep the machine load low; suites never run at the same time):
-- TS: `PATH=$HOME/.cache/rama-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH pnpm exec vitest run --maxWorkers=2 <files>` and `pnpm exec tsc --noEmit -p .`
+- TS: `PATH=$HOME/.cache/ramify-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH pnpm exec vitest run --maxWorkers=2 <files>` and `pnpm exec tsc --noEmit -p .`
 - Rust: `PATH=$HOME/.cargo/bin:$PATH CARGO_BUILD_JOBS=4 cargo test --manifest-path src-tauri/Cargo.toml --lib <filter> -- --test-threads=4`
 - Python: `python3 -I -m unittest discover -s scripts`
 
@@ -36,14 +36,14 @@ Bundles: `GB:` = GitBundle, `VB:` = VcsBundle, `LB:` = VcsLogBundle, `AB:` = Act
 
 They add to those of the overview. The user approves them with this plan. Each has its cost if it is wrong.
 
-1. **`Rebasing Published Commit` asks before saving the changes.** 241 saves the local changes first, then asks, and Cancel leaves them in the stash with `Local changes were not restored`. rama asks before saving, as it already does for `Rebasing Merge Commits`, so Cancel leaves the working tree untouched. The texts, buttons and default button are 241's. `Pull…` is not affected, as in 241, where `Pull…` runs `git pull` directly. Cost: the order differs from IntelliJ, and the user sees no "not restored" card after Cancel.
-2. **The unstash conflict card follows 241's text and drops rama's stash message line.** It gets the `Resolve conflicts…` action now. `View saved changes…` comes in part 3, with the Stash tab (overview decision 10), on this card and on `Local changes were not restored`. Cost: until part 3 the card does not name the stash; `git stash list` shows it.
-3. **Protected branch patterns are validated while typing, and the notification on save goes away.** The error text is 241's (`GB:700`). Its cause comes from the Rust `regex` crate, which is the dialect rama already matches with, so it is not Java's text. Save is not blocked, as far as 241 can be read. Cost: the cause reads differently from IntelliJ's.
-4. **`INTELLIJ_GIT_EXECUTABLE=true` is set for every git command,** as 241 does. Its only readers are the user's own hooks. A hook written to behave differently under IntelliJ will behave the same way under rama, which is what someone replacing IntelliJ wants. Cost: a hook that identifies "IntelliJ" by this variable takes rama for IntelliJ.
-5. **Fetch is disabled while any fetch of the app runs:** an explicit Fetch, an Update or a Pull. 241 disables it only while a fetch request is open, and rama's Update does its fetch inside one Rust command. rama keeps Fetch disabled for the whole Update. There is no description text, because the native menu cannot show it. Cost: during the merge or rebase phase of an Update, Fetch stays disabled for a few more seconds.
+1. **`Rebasing Published Commit` asks before saving the changes.** 241 saves the local changes first, then asks, and Cancel leaves them in the stash with `Local changes were not restored`. Ramify asks before saving, as it already does for `Rebasing Merge Commits`, so Cancel leaves the working tree untouched. The texts, buttons and default button are 241's. `Pull…` is not affected, as in 241, where `Pull…` runs `git pull` directly. Cost: the order differs from IntelliJ, and the user sees no "not restored" card after Cancel.
+2. **The unstash conflict card follows 241's text and drops Ramify's stash message line.** It gets the `Resolve conflicts…` action now. `View saved changes…` comes in part 3, with the Stash tab (overview decision 10), on this card and on `Local changes were not restored`. Cost: until part 3 the card does not name the stash; `git stash list` shows it.
+3. **Protected branch patterns are validated while typing, and the notification on save goes away.** The error text is 241's (`GB:700`). Its cause comes from the Rust `regex` crate, which is the dialect Ramify already matches with, so it is not Java's text. Save is not blocked, as far as 241 can be read. Cost: the cause reads differently from IntelliJ's.
+4. **`INTELLIJ_GIT_EXECUTABLE=true` is set for every git command,** as 241 does. Its only readers are the user's own hooks. A hook written to behave differently under IntelliJ will behave the same way under Ramify, which is what someone replacing IntelliJ wants. Cost: a hook that identifies "IntelliJ" by this variable takes Ramify for IntelliJ.
+5. **Fetch is disabled while any fetch of the app runs:** an explicit Fetch, an Update or a Pull. 241 disables it only while a fetch request is open, and Ramify's Update does its fetch inside one Rust command. Ramify keeps Fetch disabled for the whole Update. There is no description text, because the native menu cannot show it. Cost: during the merge or rebase phase of an Update, Fetch stays disabled for a few more seconds.
 6. **`Add to VCS` runs `git add --ignore-errors -A -- <paths>`, as 241 does.** The files land in the active changelist, and in the dialog they are included in the commit. The commit pipeline must commit another changelist without the added file. Task 9 pins that with a test. Cost: if the pipeline mishandles it, the task fails review instead of shipping.
-7. **The merge and rebase widget is a row of icon buttons after the branch widget** in rama's main toolbar, with 241's tooltips and colours. rama's toolbar copies the New UI, which is where 241 has the widget. Icons are drawn for rama and listed in `NOTICE` if they come from IntelliJ's jar. Cost: none expected.
-8. **The branches popup takes the New UI minimum size, 375×300.** rama copies the New UI. The classic UI's 300×200 is not used. Cost: none.
+7. **The merge and rebase widget is a row of icon buttons after the branch widget** in Ramify's main toolbar, with 241's tooltips and colours. Ramify's toolbar copies the New UI, which is where 241 has the widget. Icons are drawn for Ramify and listed in `NOTICE` if they come from IntelliJ's jar. Cost: none expected.
+8. **The branches popup takes the New UI minimum size, 375×300.** Ramify copies the New UI. The classic UI's 300×200 is not used. Cost: none.
 9. **Soft wrap is stored per diff place, as in 241:** `Default` (the diff window), `CommitDialog` (the dialog's `Diff` panel), `ChangesView` (the Local Changes preview) and `Merge` (the merge window). `Align Changes Highlighting` stays one shared value, as in 241. The toggle is `Soft-Wrap`:
    - in the `Settings` gear of the diff window, before `Align Changes Highlighting`;
    - in the right-click menu of the line-number gutter of every diff and merge pane, as in 241's gutter popup.
@@ -53,7 +53,7 @@ They add to those of the overview. The user approves them with this plan. Each h
    - the other places are off, which is IntelliJ's default, because the user's values for them were not read.
 
    Cost: if the user had wraps on in the other places, they turn them on once per place.
-10. **Wrapping details that rama does not copy:**
+10. **Wrapping details that Ramify does not copy:**
     - no sticky line number when the top of the view is inside a wrapped line;
     - no forced wrap of lines over 100000 characters;
     - wrapped rows start at column 0, as CodeMirror does.
@@ -62,7 +62,7 @@ They add to those of the overview. The user approves them with this plan. Each h
 11. **Rows that stay out of this part, with their reason in the matrix:**
     - `Git.Stage.Configure` and `Git.Stage.ToggleCommitAll`: non-modal staging only, not this user's mode;
     - `Git.Stage.Stash.Files`: needs the stash of part 3;
-    - `Vcs.Log.OpenAnotherTabInEditor`, `Vcs.Diff.EnableDisableCombinedDiff` and `Vcs.Diff.ToggleSearchInChanges`: rama has no editor tabs and no search in the diff.
+    - `Vcs.Log.OpenAnotherTabInEditor`, `Vcs.Diff.EnableDisableCombinedDiff` and `Vcs.Diff.ToggleSearchInChanges`: Ramify has no editor tabs and no search in the diff.
 
     Cost: those rows stay pending or not applicable.
 
@@ -114,7 +114,7 @@ Not in this task:
 - [ ] **Step 4: Change the documents.** Rewrite the "unlike IntelliJ" wording of the credential helper as research item 19 lists it: IntelliJ's own default is off, and the user's IntelliJ has it on. In `docs/parity-matrix.md`:
   - `HTTP login dialog` and `Vcs.Diff.IncludeWholeChangedLinesIntoCommit` are `done` with the test or reason of research items 14 and 15;
   - the `LocalChangesView.ShowOnDoubleClick.*` rows leave the table if part 1 left them (research item 16);
-  - `merge.operation.merged.to` is done, because rama's notifications are plain text.
+  - `merge.operation.merged.to` is done, because Ramify's notifications are plain text.
 - [ ] **Step 5: Check that they pass.** TS, tsc and Rust on the touched files. Expected: PASS. Then `git grep -n "Couldn't" src src-tauri/src` returns only texts that 241 still has.
 - [ ] **Step 6: Commit.** `git commit -m "fix: copied texts follow IntelliJ 2024.1"`
 
@@ -284,7 +284,7 @@ Research items 8 and 9. Reference: `G/branch/GitMergeOperation.java:84,228`, `G/
     - With a current branch, the target is `<remote>/<current>`.
     - On detached HEAD, the target is a new `detached` branch.
 - [ ] **Step 2: Check that they fail.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Read `UniqueNameGenerator.generateUniqueName` in 241 (fetch it with `fetch_ic.py` if it is missing), and make rama's `unique_detached` (`src-tauri/src/push.rs`) number the same way. Remove the `Push failed to start` notification of this path.
+- [ ] **Step 3: Implement.** Read `UniqueNameGenerator.generateUniqueName` in 241 (fetch it with `fetch_ic.py` if it is missing), and make Ramify's `unique_detached` (`src-tauri/src/push.rs`) number the same way. Remove the `Push failed to start` notification of this path.
 - [ ] **Step 4: Check that they pass.** Expected: PASS. Update the row in `phase-3-commands.md` to the new command.
 - [ ] **Step 5: Commit.** `git commit -m "fix: merge the full ref from the popup and push up to any commit"`
 

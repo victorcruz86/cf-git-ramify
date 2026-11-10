@@ -355,7 +355,7 @@ describe("actions", () => {
       local: vi.fn(async () => text("local\n")),
     };
     const flow = stashFlow(ui, api);
-    flow.repositoryChanged({ path: "/work/rama" });
+    flow.repositoryChanged({ path: "/work/ramify" });
     return { flow, api, asked };
   }
 

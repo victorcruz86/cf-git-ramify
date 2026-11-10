@@ -370,7 +370,7 @@ pub(crate) fn stage_selection(
 
 // `git commit -F` needs a real file. It is deleted when dropped, also if the commit fails.
 fn message_file(message: &str) -> io::Result<NamedTempFile> {
-    let mut file = tempfile::Builder::new().prefix("rama-commit-").tempfile()?;
+    let mut file = tempfile::Builder::new().prefix("ramify-commit-").tempfile()?;
     file.write_all(message.as_bytes())?;
     file.flush()?;
     Ok(file)
@@ -2656,7 +2656,7 @@ mod tests {
         write(&repo, "excluded.txt", b"on disk\n");
         repo.git(&["rm", "-q", "deleted-excluded.txt"]);
         fs::remove_file(repo.path().join("deleted.txt")).unwrap();
-        let log = std::env::var_os("RAMA_GIT_LOG").unwrap();
+        let log = std::env::var_os("RAMIFY_GIT_LOG").unwrap();
         fs::write(&log, "").unwrap();
 
         commit(
@@ -3504,8 +3504,8 @@ mod tests {
         assert!(!recover(repo.path(), dir.path()).unwrap().pending);
     }
 
-    const ORPHAN_REPO: &str = "RAMA_TEST_REPO";
-    const ORPHAN_DIR: &str = "RAMA_TEST_DIR";
+    const ORPHAN_REPO: &str = "RAMIFY_TEST_REPO";
+    const ORPHAN_DIR: &str = "RAMIFY_TEST_DIR";
 
     // It is launched by `recover_with_a_live_commit_touches_nothing` in another process, which it then kills.
     #[test]
@@ -3674,7 +3674,7 @@ mod tests {
         log
     }
 
-    // Decision 1: git signs by itself from `commit.gpgSign`, as in 241; rama never passes `-S`.
+    // Decision 1: git signs by itself from `commit.gpgSign`, as in 241; Ramify never passes `-S`.
     #[test]
     fn signing_comes_from_the_config_and_its_key() {
         let repo = TempRepo::new();
@@ -3702,7 +3702,7 @@ mod tests {
 
         assert!(repo.git(&["cat-file", "commit", "HEAD"]).contains("gpgsig "));
 
-        // Nothing rama passes signs. With the config off and every option on, a recording gpg is
+        // Nothing Ramify passes signs. With the config off and every option on, a recording gpg is
         // never called and the commit is unsigned: a `-S` or `--gpg-sign` would make git run it.
         let tools = TempDir::new().unwrap();
         repo.git(&["config", "--unset", "gpg.format"]);

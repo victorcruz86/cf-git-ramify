@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Creates the test repository for the manual validation, with its local bare remote.
 
-    python3 scripts/validation_lab.py ~/rama-validacion
+    python3 scripts/validation_lab.py ~/ramify-validation
 
 Leaves `repo` (what is opened in the app), `remote.git` and `other`, a second clone to simulate
 another person. Running it again deletes the folder and starts from scratch, but only if this script created it.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from smoke_ipc import lab
 
-MARK = ".rama-validacion"
+MARK = ".ramify-validation"
 
 
 def main():

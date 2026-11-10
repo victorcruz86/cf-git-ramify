@@ -59,7 +59,7 @@ const last = (): Shown => shown()[shown().length - 1];
 const titles = () => shown().map(({ title }) => title);
 const labels = (notification: Shown | undefined) =>
   notification?.actions?.map(({ label }) => label);
-const opened = (path = "/work/rama") => ({ path }) as RepoInfo;
+const opened = (path = "/work/ramify") => ({ path }) as RepoInfo;
 const click = (notification: Shown, label: string) =>
   notification.actions?.find((action) => action.label === label)?.run();
 
@@ -162,12 +162,12 @@ describe("abort", () => {
   test("the_rebase_says_which_repository", async () => {
     const dialogs = ui();
     const flow = operationFlow(dialogs, api());
-    flow.repositoryChanged(opened("/work/rama"));
+    flow.repositoryChanged(opened("/work/ramify"));
 
     await flow.abortOperation("rebasing");
 
     expect(dialogs.asked).toEqual([
-      { kind: "confirm", title: "Abort Rebase", message: "Abort rebase in rama?", ok: "Abort" },
+      { kind: "confirm", title: "Abort Rebase", message: "Abort rebase in ramify?", ok: "Abort" },
     ]);
     expect(last().title).toBe("Abort rebase succeeded");
   });

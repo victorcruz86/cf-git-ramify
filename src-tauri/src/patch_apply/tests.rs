@@ -166,13 +166,13 @@ fn status_and_follows_intellij() {
     assert_eq!(ApplyStatus::and(None, None), None);
 }
 
-// The cases `ApplyPatchTest` runs that rama does not apply as IntelliJ, with the reason and
-// what rama does instead.
+// The cases `ApplyPatchTest` runs that Ramify does not apply as IntelliJ, with the reason and
+// what Ramify does instead.
 enum Skipped {
     // Decision 4: the context-diff format is not read.
     ContextDiff,
     // Decision 4: IntelliJ's `GenericPatchApplier` splits the hunk and finds one block
-    // already applied and the other applicable (PARTIAL). rama tries whole hunks only, finds
+    // already applied and the other applicable (PARTIAL). Ramify tries whole hunks only, finds
     // neither, and with no base the file fails and is left as it was.
     GenericFuzz,
 }

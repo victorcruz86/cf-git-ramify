@@ -13,23 +13,23 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rama_lib::apply_commits::{self, Kind, Selection};
-use rama_lib::branches::Repo;
-use rama_lib::commands::RepoLocks;
-use rama_lib::commit;
-use rama_lib::conflicts::{self, Side};
-use rama_lib::console::Console;
-use rama_lib::editor::Server;
-use rama_lib::merge;
-use rama_lib::operation::{self, Operation};
-use rama_lib::rebase::{self, RebaseParams};
-use rama_lib::rewrite::{self, NewMessage, Plan};
-use rama_lib::task::{Runner, TaskContext, TaskKind};
-use rama_lib::todo::{Action, Entry};
+use ramify_lib::apply_commits::{self, Kind, Selection};
+use ramify_lib::branches::Repo;
+use ramify_lib::commands::RepoLocks;
+use ramify_lib::commit;
+use ramify_lib::conflicts::{self, Side};
+use ramify_lib::console::Console;
+use ramify_lib::editor::Server;
+use ramify_lib::merge;
+use ramify_lib::operation::{self, Operation};
+use ramify_lib::rebase::{self, RebaseParams};
+use ramify_lib::rewrite::{self, NewMessage, Plan};
+use ramify_lib::task::{Runner, TaskContext, TaskKind};
+use ramify_lib::todo::{Action, Entry};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(60);
-const CLIENT: &str = env!("CARGO_BIN_EXE_rama");
+const CLIENT: &str = env!("CARGO_BIN_EXE_ramify");
 
 fn git_in(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -172,20 +172,20 @@ struct Trace {
 
 impl Trace {
     fn new() -> Self {
-        let log = std::env::var_os("RAMA_GIT_LOG").expect("RAMA_GIT_LOG is missing");
+        let log = std::env::var_os("RAMIFY_GIT_LOG").expect("RAMIFY_GIT_LOG is missing");
         fs::write(&log, "").unwrap();
-        std::env::remove_var("RAMA_GIT_LOG");
+        std::env::remove_var("RAMIFY_GIT_LOG");
         Self { log }
     }
 
     fn section(&self, title: &str) {
         let mut file = fs::OpenOptions::new().append(true).open(&self.log).unwrap();
         writeln!(file, "## {title}").unwrap();
-        std::env::set_var("RAMA_GIT_LOG", &self.log);
+        std::env::set_var("RAMIFY_GIT_LOG", &self.log);
     }
 
     fn silence(&self) {
-        std::env::remove_var("RAMA_GIT_LOG");
+        std::env::remove_var("RAMIFY_GIT_LOG");
     }
 
     fn of<T: Send + 'static>(

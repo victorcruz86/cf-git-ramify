@@ -7,7 +7,7 @@ import { RESTORED } from "../patch/flow";
 // The texts of a failed add, here and in `ChangesView.AddUnversioned` (`ChangesPanel.svelte`).
 export const ADD_FAILED = "Failed to add files";
 export const ADD_PROBLEMS = "The following problems have occurred when adding the files:";
-// rama's own, as the other copies of what was only in the stage say it.
+// Ramify's own, as the other copies of what was only in the stage say it.
 export const STAGE_COPY_SAVED = "A snapshot was saved of what existed only in the stage.";
 
 // `Git.Add` of the Git file menu (`GitFileUtils.addPaths`: `git add --ignore-errors -A`): a folder

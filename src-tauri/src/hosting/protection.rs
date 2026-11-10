@@ -1,6 +1,6 @@
 // The protected branch rules loaded from GitHub after each fetch. Ports GHProtectedBranchRulesLoader
 // (plugins/github, extensions/GHProtectedBranchRulesLoader.kt) and PatternUtil.convertToRegex
-// (platform/util) at idea/241.14494.240. rama's own choice is decision 6 of the part 5 plan: the
+// (platform/util) at idea/241.14494.240. Ramify's own choice is decision 6 of the part 5 plan: the
 // rules are kept per remote in `<repo data>/github-protection.json`, and a fetch of a remote
 // replaces only that remote's entry.
 

@@ -28,7 +28,7 @@ export const TOOL_WINDOWS = [
     side: "left",
     order: 1,
     registeredOnFirstUse: false,
-    // Phase 1's rule, kept: the Commit and Git windows are never hidden, rama has no empty area.
+    // Phase 1's rule, kept: the Commit and Git windows are never hidden, Ramify has no empty area.
     hidesWhenActive: false,
   },
   {

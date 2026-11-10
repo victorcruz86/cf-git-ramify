@@ -25,7 +25,7 @@ const OCTOCAT: AccountView = {
 };
 
 const GENERATE =
-  "https://github.com/settings/tokens/new?description=rama%20GitHub%20integration%20plugin&scopes=repo%2Cgist%2Cread%3Aorg%2Cworkflow%2Cread%3Auser%2Cuser%3Aemail";
+  "https://github.com/settings/tokens/new?description=Ramify%20GitHub%20integration%20plugin&scopes=repo%2Cgist%2Cread%3Aorg%2Cworkflow%2Cread%3Auser%2Cuser%3Aemail";
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
   vi.mocked(invoke).mockImplementation(async (command, args) => {

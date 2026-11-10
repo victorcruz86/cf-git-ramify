@@ -58,7 +58,7 @@
     onanswer,
   }: Props = $props();
 
-  // `patch.apply.cannot.read.patch` (V:392) and rama's own refusal of a folder outside the repository.
+  // `patch.apply.cannot.read.patch` (V:392) and Ramify's own refusal of a folder outside the repository.
   const cannotRead = (name: string, reason: string) => `Cannot read patch ${name}: ${reason}`;
   const OUTSIDE = "The folder must be inside the repository";
   // `MergingUpdateQueue("ApplyPatchDifferentiatedDialog", 500, …)`.
@@ -213,7 +213,7 @@
     lead = row.id;
   }
 
-  // rama's own: the shelved version is written over what HEAD brought, after the copy.
+  // Ramify's own: the shelved version is written over what HEAD brought, after the copy.
   function overwriteRow(file: PlannedFile) {
     overwriting = new Set([...overwriting, file.path]);
     plan = withOverwrites(plan, overwriting);

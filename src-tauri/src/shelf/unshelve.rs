@@ -24,7 +24,7 @@ use crate::storage;
 // back. The text files take theirs in `patch_apply`.
 const UNSHELVE_REASON: &str = "Unshelve";
 
-// rama's own: why a binary file was not put back.
+// Ramify's own: why a binary file was not put back.
 fn binary_changed(path: &str) -> String {
     format!("\"{path}\" changed on disk while it was shelved: it was not unshelved")
 }
@@ -194,7 +194,7 @@ pub(crate) fn binary_shown(binary: &ShelvedBinary) -> String {
 }
 
 // Whether a binary file whose before file HEAD changed since the list was made may be written
-// over: the Unshelve dialog's per-row `Overwrite` (rama's own; IntelliJ writes the shelved version
+// over: the Unshelve dialog's per-row `Overwrite` (Ramify's own; IntelliJ writes the shelved version
 // without asking).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HeadChanged {

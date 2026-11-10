@@ -45,11 +45,11 @@ afterEach(cleanup);
 describe("StashDialog", () => {
   test("the_stash_dialog_texts_and_keep_index", async () => {
     const onanswer = vi.fn();
-    render(StashDialog, { root: "/work/rama", branch: "main", onanswer });
+    render(StashDialog, { root: "/work/ramify", branch: "main", onanswer });
 
     const dialog = screen.getByRole("dialog", { name: "Stash" });
     expect(within(dialog).getByText("Git Root:")).toBeTruthy();
-    expect(within(dialog).getByText("/work/rama")).toBeTruthy();
+    expect(within(dialog).getByText("/work/ramify")).toBeTruthy();
     expect(within(dialog).getByText("Current Branch:")).toBeTruthy();
     expect(within(dialog).getByText("main")).toBeTruthy();
     const message = within(dialog).getByLabelText("Message:") as HTMLInputElement;
@@ -67,7 +67,7 @@ describe("StashDialog", () => {
 
   test("cancel_answers_nothing", async () => {
     const onanswer = vi.fn();
-    render(StashDialog, { root: "/work/rama", branch: "main", onanswer });
+    render(StashDialog, { root: "/work/ramify", branch: "main", onanswer });
 
     await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -106,13 +106,13 @@ describe("UnstashAsDialog", () => {
   function open() {
     const onanswer = vi.fn();
     render(UnstashAsDialog, {
-      root: "rama",
+      root: "ramify",
       branch: "main",
       entry: entry(0, "my work"),
       names: NAMES,
       onanswer,
     });
-    return { onanswer, dialog: screen.getByRole("dialog", { name: "Unstash Changes in rama" }) };
+    return { onanswer, dialog: screen.getByRole("dialog", { name: "Unstash Changes in ramify" }) };
   }
 
   test("unstash_changes_in_root_with_the_rows_and_the_ok_texts", async () => {
@@ -184,7 +184,7 @@ describe("UnstashDialog", () => {
       ),
       unstash: vi.fn(async () => true),
     };
-    render(UnstashDialog, { root: "/work/rama", branch: "main", names: NAMES, ...actions, onanswer });
+    render(UnstashDialog, { root: "/work/ramify", branch: "main", names: NAMES, ...actions, onanswer });
     return { onanswer, actions, dialog: screen.getByRole("dialog", { name: "Unstash Changes" }) };
   }
 
@@ -369,7 +369,7 @@ describe("stashFlow", () => {
       local: vi.fn(async () => ({ kind: "text" as const, content: "local\n" })),
     };
     const flow = stashFlow(ui, api);
-    flow.repositoryChanged({ path: "/work/rama" });
+    flow.repositoryChanged({ path: "/work/ramify" });
     return { flow, api, ui, asked, completed };
   }
 
@@ -380,7 +380,7 @@ describe("stashFlow", () => {
 
     await flow.stashChanges();
 
-    expect(asked[0]).toEqual({ kind: "stash", root: "/work/rama", branch: "main" });
+    expect(asked[0]).toEqual({ kind: "stash", root: "/work/ramify", branch: "main" });
     expect(api.save).toHaveBeenCalledWith("work", true);
     const card = shown().find(({ title }) => title === "Files stashed successfully");
     expect(card?.actions?.map(({ label }) => label)).toEqual(["View Git stashes"]);
@@ -395,7 +395,7 @@ describe("stashFlow", () => {
 
     await flow.stashChanges();
 
-    expect(titles()).toEqual(["Failed to stash 'rama'"]);
+    expect(titles()).toEqual(["Failed to stash 'ramify'"]);
     expect(shown()[0].body).toContain("fatal: nope");
   });
 
@@ -426,7 +426,7 @@ describe("stashFlow", () => {
 
     await flow.unstashAs(entry(0, "my work"));
 
-    expect(asked[0]).toMatchObject({ kind: "unstashAs", root: "rama", branch: "main" });
+    expect(asked[0]).toMatchObject({ kind: "unstashAs", root: "ramify", branch: "main" });
     expect(api.unstash).toHaveBeenCalledWith(entry(0, "my work").sha, false, false, "rescued", HEAD);
   });
 
@@ -568,18 +568,18 @@ describe("stashFiles", () => {
     localStorage.clear();
     const push = vi.fn(async () => {});
 
-    await stashFiles("/work/rama", ["a.txt"], true, push);
+    await stashFiles("/work/ramify", ["a.txt"], true, push);
 
     expect(push).toHaveBeenCalledWith(["a.txt"]);
     expect(titles()).toEqual([
       "Files stashed successfully",
-      "Staging area in 'rama' contains modifications to other files that were saved to the stash",
+      "Staging area in 'ramify' contains modifications to other files that were saved to the stash",
     ]);
     const warning = shown()[1];
     warning.actions?.[0].run();
     shown().forEach(({ id }) => dismiss(id));
 
-    await stashFiles("/work/rama", ["a.txt"], true, push);
+    await stashFiles("/work/ramify", ["a.txt"], true, push);
 
     expect(titles()).toEqual(["Files stashed successfully"]);
   });
@@ -589,7 +589,7 @@ describe("stashFiles", () => {
       throw { kind: "git", message: "fatal: bad" };
     });
 
-    await stashFiles("/work/rama", ["a.txt"], false, push);
+    await stashFiles("/work/ramify", ["a.txt"], false, push);
 
     expect(titles()).toEqual(["Failed to Stash Files"]);
   });

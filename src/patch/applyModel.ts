@@ -17,7 +17,7 @@ import type {
 // patch may not touch.
 export const isValid = (file: PlannedFile) => file.status !== "missing" && file.status !== "invalid";
 
-// rama's own per-row `Overwrite` of the Unshelve dialog: a binary file that HEAD changed since it
+// Ramify's own per-row `Overwrite` of the Unshelve dialog: a binary file that HEAD changed since it
 // was shelved, once chosen, is applicable and goes in the answer's `overwrite`.
 export function withOverwrites(plan: ApplyPlan, paths: Set<string>): ApplyPlan {
   if (!plan.files.some((file) => file.overwritable && paths.has(file.path))) return plan;
@@ -210,7 +210,7 @@ export function mapBase(mapping: PathMapping, files: PlannedFile[], base: string
 }
 
 // `Select missing base` with a file: its folder as the base and only the file name left of the
-// patch's path, as `NewBaseSelector(false)` does (rama does not rename the patch's file to the one
+// patch's path, as `NewBaseSelector(false)` does (Ramify does not rename the patch's file to the one
 // chosen).
 export function missingBase(mapping: PathMapping, file: PlannedFile, base: string): PathMapping {
   return withFiles(mapping, [file], () => ({ strip: file.maxStrip, base }));

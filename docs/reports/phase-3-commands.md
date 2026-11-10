@@ -1,4 +1,4 @@
-# Phase 3 commands: rama versus IntelliJ
+# Phase 3 commands: Ramify versus IntelliJ
 
 Comparison of what the app launches in merge (with and without conflict), Smart Merge, rebase (with continue, skip and abort), interactive rebase, cherry-pick, revert, Cherry-Pick and Revert Selected Changes, undo commit, reword, drop and squash, and conflict resolution (Accept Yours, Accept Theirs and Apply), with what the plan says (`docs/superpowers/plans/2026-11-02-phase-3-conflicts-and-rewriting.md`, Tasks 2, 3, 6, 8, 9, 10, 11, 12, 13 and 14) and IntelliJ's code at tag `idea/232.10072.27` (2023.2.3): `GitImpl.java`, `GitFileUtils.java`, `GitMergeUtil.java`, `GitMergeProvider.java`, `GitStashChangesSaver.java`, `GitRewordOperation.kt`, `GitUncommitAction.java`, `GitRevertOperation.kt`, `GitCherryPicker.java` and `GitCommitEditingOperation.kt`.
 
@@ -16,7 +16,7 @@ The preparation of each scenario (commits, branches, the earlier conflict) is no
 trace=$(mktemp -d)
 mkdir "$trace/bin"
 ln -s "$PWD/scripts/git-wrapper.sh" "$trace/bin/git"
-(cd src-tauri && RAMA_GIT_REAL=$(command -v git) RAMA_GIT_LOG="$trace/commands.log" \
+(cd src-tauri && RAMIFY_GIT_REAL=$(command -v git) RAMIFY_GIT_LOG="$trace/commands.log" \
   PATH="$trace/bin:$PATH" cargo test --test phase_3_trace -- --ignored)
 cat "$trace/commands.log"
 ```
@@ -246,7 +246,7 @@ git reset --soft 1e0bb30 --
 ### reword of the last commit (amend)
 
 ```text
-git commit --amend -F <.git>/rama-reword-Dt4Idb --only --no-verify
+git commit --amend -F <.git>/ramify-reword-Dt4Idb --only --no-verify
 ```
 
 11 state reads are omitted (see above).
@@ -317,22 +317,22 @@ git apply [-R] [--3way]                                         plan, decision 8
 
 ## Differences
 
-| # | Point | IntelliJ | rama | Does the result change? | Decision |
+| # | Point | IntelliJ | Ramify | Does the result change? | Decision |
 |---|---|---|---|---|---|
 | 1 | Merge without options | `git merge <branch>` | `git merge side` | No | Matches |
-| 2 | Merge with options (`--no-ff`, `--squash`, `-m`…) | The branch first and the options after it | The options in the order of the dialog (with `-m` and its text right after it) and the branch last. The trace only records the merge without options; the order is fixed by the tests of `merge.rs` (`merge_with_each_option_launches_the_intellij_command`) | No: git accepts both forms | rama is kept (Task 8) |
-| 3 | Before and after a merge | No earlier reads that appear in the reference | `ls-files --unmerged`, `rev-parse --git-path rebase-*|MERGE_HEAD`, `merge-base`, and afterwards the count (`rev-list --count <start>..<end>`, `diff --name-only --diff-filter=ADMRUX --no-renames <before>..HEAD`), like row 4 of phase 2 | It does not change the repository | rama is kept |
+| 2 | Merge with options (`--no-ff`, `--squash`, `-m`…) | The branch first and the options after it | The options in the order of the dialog (with `-m` and its text right after it) and the branch last. The trace only records the merge without options; the order is fixed by the tests of `merge.rs` (`merge_with_each_option_launches_the_intellij_command`) | No: git accepts both forms | Ramify is kept (Task 8) |
+| 3 | Before and after a merge | No earlier reads that appear in the reference | `ls-files --unmerged`, `rev-parse --git-path rebase-*|MERGE_HEAD`, `merge-base`, and afterwards the count (`rev-list --count <start>..<end>`, `diff --name-only --diff-filter=ADMRUX --no-renames <before>..HEAD`), like row 4 of phase 2 | It does not change the repository | Ramify is kept |
 | 4 | Committing the merge after resolving | `git commit -F MERGE_MSG --` with the repository's encoding | `git -c i18n.commitEncoding=UTF-8 commit -F MERGE_MSG --` | Yes with a repository that is not UTF-8: the message is decoded and written as UTF-8 | Minor pending item of Task 7 |
 | 5 | Accept Yours / Accept Theirs | `checkout --ours|--theirs -- <path>` and `add --ignore-errors -A -f -- <path>` (or `rm`) | The same two, with `--literal-pathspecs -c core.precomposeunicode=false` in front. In a rebase the side is inverted (`in_rebase_sides_and_columns_are_swapped`); the trace only covers the merge | No | Matches. The earlier copy of the file (decision 5) is not a git command |
-| 6 | Apply of the merge window | `add --ignore-errors -A -f -- <path>` (`conflictResolvedForFile`) | `add -f -- <path>`, after writing the file with an atomic rename | No: the file always exists, and `-A` only changes something when the file is no longer there | rama is kept |
-| 7 | Smart Merge | `stash save "Uncommitted changes before Merge at <date>"`, `merge`, `stash pop` (by default, Shelve) | The same, with Stash fixed (decision 1). The `pop` is `stash pop stash@{n}` of the entry that the app saved, after `stash list --format=%H` (row 5 of phase 2). Before it, a copy of what is only in the stage (row 8 of phase 2) | Yes if someone saves a stash by hand in between | Decision 1; rama is kept |
-| 8 | Rebase (Rebase… dialog, without conflict) | `git -c core.commentChar=\001 rebase [flags] <base> [<branch>]` | The same: `rebase main` and, with a branch, `rebase main side`. Before: `status --porcelain --untracked-files=no` to decide whether to save, and `ls-files -z -v` and `ls-tree -r -z` to copy the ignored files that the rebase would overwrite | It does not change the repository | rama is kept. The options go in a fixed order, not in the chosen one (minor pending item of Task 8) |
+| 6 | Apply of the merge window | `add --ignore-errors -A -f -- <path>` (`conflictResolvedForFile`) | `add -f -- <path>`, after writing the file with an atomic rename | No: the file always exists, and `-A` only changes something when the file is no longer there | Ramify is kept |
+| 7 | Smart Merge | `stash save "Uncommitted changes before Merge at <date>"`, `merge`, `stash pop` (by default, Shelve) | The same, with Stash fixed (decision 1). The `pop` is `stash pop stash@{n}` of the entry that the app saved, after `stash list --format=%H` (row 5 of phase 2). Before it, a copy of what is only in the stage (row 8 of phase 2) | Yes if someone saves a stash by hand in between | Decision 1; Ramify is kept |
+| 8 | Rebase (Rebase… dialog, without conflict) | `git -c core.commentChar=\001 rebase [flags] <base> [<branch>]` | The same: `rebase main` and, with a branch, `rebase main side`. Before: `status --porcelain --untracked-files=no` to decide whether to save, and `ls-files -z -v` and `ls-tree -r -z` to copy the ignored files that the rebase would overwrite | It does not change the repository | Ramify is kept. The options go in a fixed order, not in the chosen one (minor pending item of Task 8) |
 | 9 | Continue, Skip and Abort | `rebase --continue` and `--skip` with `core.commentChar=\001` and with the editor; `rebase --abort` with neither | The same in all three. Before `--abort` it copies the file against `rebase-merge/orig-head` (reads of `diff --cached`, `ls-files -s`) | No | Matches |
 | 10 | Interactive rebase from the log | `rebase --interactive <full parent>`, without `--no-autosquash` (`AutoSquashOption.DEFAULT`) | The same. The list is answered by the dialog's plan (`using log` mode, decision 10) and the reword messages arrive through the message editor | No | Matches. Before: `log --topo-order … HEAD ^<hash>^@` to generate the entries, which IntelliJ reads with its log |
-| 11 | Reword, Drop and Squash from the log | Reword of the last one with `commit --amend -F <file> --only --no-verify`; the rest with `rebase --interactive --no-autosquash <parent>` | The same in both forms. The message file lives in `.git/rama-reword-*` (IntelliJ: a temporary system file) | No | Matches |
+| 11 | Reword, Drop and Squash from the log | Reword of the last one with `commit --amend -F <file> --only --no-verify`; the rest with `rebase --interactive --no-autosquash <parent>` | The same in both forms. The message file lives in `.git/ramify-reword-*` (IntelliJ: a temporary system file) | No | Matches |
 | 12 | Undo commit | `reset --soft <parent>` through `GitResetOperation` | `reset --soft <parent> --`, with the `--` added and without `--hard` or `--mixed` | No | Matches |
-| 13 | Cherry-pick | `cherry-pick [-x] [-n] <hash>`; `-x` if the commit is published and the `cherry picked from` setting is on | `cherry-pick <hash>`, without `-n`, and with `-x` in the same case (`apply_one`). The trace only records the case without `-x`. After resolving conflicts it commits with `commit -m <proposed message>`, which adds the suffix to the text by hand | Not in the normal case | rama is kept (Task 10) |
-| 14 | Revert | `revert <hash> [--no-commit]` | `revert --no-edit <hash>` | No: `--no-edit` keeps git from opening an editor | rama is kept |
+| 13 | Cherry-pick | `cherry-pick [-x] [-n] <hash>`; `-x` if the commit is published and the `cherry picked from` setting is on | `cherry-pick <hash>`, without `-n`, and with `-x` in the same case (`apply_one`). The trace only records the case without `-x`. After resolving conflicts it commits with `commit -m <proposed message>`, which adds the suffix to the text by hand | Not in the normal case | Ramify is kept (Task 10) |
+| 14 | Revert | `revert <hash> [--no-commit]` | `revert --no-edit <hash>` | No: `--no-edit` keeps git from opening an editor | Ramify is kept |
 | 15 | Cherry-Pick and Revert Selected Changes | A patch of its own applied with `PatchApplier` | `git diff --binary --full-index --no-renames … <base> <hash> -- <paths>` and `git apply [-R]`; if it does not go in, it is repeated with `--3way` (decision 8). The trace only covers the first attempt | Yes in how a patch that goes in halfway is resolved | Decision 8 |
 | 16 | Conflict during `cherry-pick` | git leaves `CHERRY_PICK_HEAD`; IntelliJ removes it to commit with `commit --only` | It keeps it and commits with `commit -m <message>`, after checking with `diff --cached --quiet` | Yes: git keeps the author and the date of the original commit | Ruling of Task 10 |
 | 17 | Prefix `-c core.quotepath=false -c log.showSignature=false` | In all | In the task's commands; the reads of `git.rs` (`rev-parse`, `symbolic-ref`, `ls-files`, `status`…) and several of phase 3 (`log --no-walk`, `diff-tree`, `for-each-ref`) do not carry it | No: they use `-z`, a fixed format or do not read the log. `picked_of` does read a `git show` with signatures (minor pending item of Task 3) | Minor pending item |
@@ -354,8 +354,8 @@ git apply [-R] [--3way]                                         plan, decision 8
 With IntelliJ closed and opened from a terminal that inherits the variables, and `scripts/git-wrapper.sh` as the Git path in its settings, do the same operations and compare the log with the section above:
 
 ```bash
-export RAMA_GIT_REAL=$(command -v git)
-export RAMA_GIT_LOG=~/intellij-commands-phase-3.log
+export RAMIFY_GIT_REAL=$(command -v git)
+export RAMIFY_GIT_LOG=~/intellij-commands-phase-3.log
 "/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea"
 ```
 

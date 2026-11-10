@@ -2,7 +2,7 @@
   // `CommitOptionsPanel` of the Commit Changes dialog: the `Git` group (`GitCommitOptionsUi`) and
   // `Commit Checks`, which holds only `Run Git hooks` and only when the repository has hooks
   // (decision 8, `GitSkipHooksCommitHandlerFactory`). `Create extra commit with file movements` needs
-  // a movement provider, which rama does not have.
+  // a movement provider, which Ramify does not have.
   interface Props {
     author: string;
     amend: boolean;

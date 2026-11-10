@@ -217,7 +217,7 @@
   }
 
   // The accounts of the repository's server, by login, then the login that always adds one
-  // (`forceNew`). rama has no OAuth (decision 14): github.com offers only the token.
+  // (`forceNew`). Ramify has no OAuth (decision 14): github.com offers only the token.
   function chooseAccount(event: MouseEvent) {
     const target = mapping;
     if (!target) return;

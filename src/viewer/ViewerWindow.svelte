@@ -229,7 +229,7 @@
 
   // The gutter popup of `EditorGutterPopupMenu`: `Annotate with Git Blame` (`Close Annotations`
   // while they are shown), then `Soft-Wrap`; the annotations' own gutter has its popup. In the
-  // text, the editor popup with what rama has of it: `Git ▸` (`VcsGroup` → `Git.ContextMenu`).
+  // text, the editor popup with what Ramify has of it: `Git ▸` (`VcsGroup` → `Git.ContextMenu`).
   async function contextmenu(event: MouseEvent) {
     event.preventDefault();
     const [x, y] = [event.clientX, event.clientY];

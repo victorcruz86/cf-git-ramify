@@ -88,8 +88,8 @@ export function formatFileSize(size: number): string {
 export const previewText = (size: number, shown: number) =>
   `The file is too large (${formatFileSize(size)}). Showing a read-only preview of the first ${formatFileSize(shown)}.`;
 
-// Over the limit, `binary.file.too.large` (`IB:1968`); under it, rama's own text, since IntelliJ
-// would open an image or archive editor that rama does not have.
+// Over the limit, `binary.file.too.large` (`IB:1968`); under it, Ramify's own text, since IntelliJ
+// would open an image or archive editor that Ramify does not have.
 export function binaryText(path: string, size: number, tooLarge: boolean): string {
   if (tooLarge) {
     return `Binary file ${fileName(path)} is too large (${formatFileSize(size)})`;
@@ -97,7 +97,7 @@ export function binaryText(path: string, size: number, tooLarge: boolean): strin
   return `${fileName(path)} is a binary file (${formatFileSize(size)}).`;
 }
 
-// rama's own text: Edit Source skips such a file, so it is one deleted after its tab opened.
+// Ramify's own text: Edit Source skips such a file, so it is one deleted after its tab opened.
 export function absentText({ revision }: FileRef): string {
   if (revision === null) return "The file is no longer on disk.";
   return `The file does not exist in ${revision.slice(0, SHORT_HASH)}.`;

@@ -2389,7 +2389,7 @@ const UNSHELVING: &str = "Unshelving Changes…";
 const LOOKING_FOR_PATCHES: &str = "Looking for Patch Files…";
 const IMPORTING_PATCHES: &str = "Import Patches into Shelf…";
 const IMPORTING_TO_SHELF: &str = "Import Patch to Shelf";
-// rama's own (decision 5 of the overview).
+// Ramify's own (decision 5 of the overview).
 const IMPORTING_IDEA_SHELF: &str = "Import from .idea";
 const SWITCHED_BEFORE_SHELF: &str =
     "Another repository was opened: the shelf of the previous one was not changed";

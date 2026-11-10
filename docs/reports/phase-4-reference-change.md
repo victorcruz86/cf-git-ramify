@@ -6,17 +6,17 @@ Date: 2026-11-03. Before: IntelliJ IDEA CE 2023.2.3, tag `idea/232.10072.27`. Af
 
 Method. Reading only: nothing was built, run or tested. The two tags were read from the partial copies in `.superpowers/ref-idea-232/ic/` and `.superpowers/ref-idea-241/ic/`, completed for this review with the `fetch_ic.py` scripts (Git settings, branch, push, update, merge, rebase, checkin, commands, branches popup, log UI, diff settings, merge viewer, commit mode). The message bundles were compared key by key, and every old value that changed or disappeared was searched in `src/` and `src-tauri/src/` with `git grep -F` (fragments of 10 characters or more, plus a hand-picked list of shorter ones). The action files (`plugin.xml`, `VcsActions.xml`, `vcs-log.xml`, `dvcs.xml`) were compared by structure: groups, their children in order, separators, `add-to-group` and `keyboard-shortcut`. The macOS keymaps of 232 come from the tag (`platform/platform-resources/src/keymaps/`) and those of 241 from the installed `app-client.jar`. The user's 2024.1 settings are the ones the controller read and gave in the brief; this review did not open `~/Library/Application Support/JetBrains`.
 
-IntelliJ paths are relative to the root of `intellij-community`; `241:` and `232:` say which tag. Line numbers of rama are those of branch `phase-4` on 2026-11-03.
+IntelliJ paths are relative to the root of `intellij-community`; `241:` and `232:` say which tag. Line numbers of Ramify are those of branch `phase-4` on 2026-11-03.
 
 Impact, by the 2024.1 usage counts of `actionSummary.xml`: **high** for an action used thousands of times or for every commit; **medium** for hundreds of uses; **low** for tens, for actions not in the counts, or for a difference that rarely shows. Fix size: **S** one constant, label or function and its test; **M** one component or flow and its tests; **L** several components, the keyboard routing and the matrix.
 
 ## Summary
 
-1. **Commit mode (high, L).** The user commits with the modal Commit Changes dialog and the Local Changes tab, in 2023.2 and in 2024.1 alike. rama built the non-modal Commit tool window with a staging alternative, which this user has never seen in IntelliJ (section 1).
-2. **Soft wraps in the diff (medium to high, M).** The user has them on in 2024.1 (Diff.ShowDiff 14453, ChangesBrowser ShowDiff 6124). rama's diff does not wrap.
+1. **Commit mode (high, L).** The user commits with the modal Commit Changes dialog and the Local Changes tab, in 2023.2 and in 2024.1 alike. Ramify built the non-modal Commit tool window with a staging alternative, which this user has never seen in IntelliJ (section 1).
+2. **Soft wraps in the diff (medium to high, M).** The user has them on in 2024.1 (Diff.ShowDiff 14453, ChangesBrowser ShowDiff 6124). Ramify's diff does not wrap.
 3. **Branches popup search (medium, S to M).** In 241 the search field says `Search for branches and actions`, the top actions are filtered too, and the gear has `Show Actions in Search Results`. The minimum width is 375 instead of 350. GitCheckoutAction (3753) goes through this popup.
 4. **Two new commit checks on by default (medium, M):** files over 50 MB and file names that are not valid on Windows. They run on every commit and rarely fire.
-5. **Drop Commits asks for confirmation (low, S).** The default is on in 241, and rama drops without asking, as 232 did.
+5. **Drop Commits asks for confirmation (low, S).** The default is on in 241, and Ramify drops without asking, as 232 did.
 6. **New dialog options (low, S each):** `--allow-unrelated-histories` in Merge, `--update-refs` in Rebase, and a `Cancel Reword` confirmation in the interactive rebase dialog.
 7. **Update with rebase asks `Rebasing Published Commit` (low, S).** It also applies to Update Selected (423 uses). `Push All up to Here` now also works without a local branch (low, S).
 8. **Merge and rebase toolbar widget (low, M).** While a merge, rebase, cherry-pick or revert is in progress, the main toolbar shows Resolve, Continue and Abort.
@@ -39,13 +39,13 @@ Impact, by the 2024.1 usage counts of `actionSummary.xml`: **high** for an actio
 
 The modal mode is therefore not a change between 232 and 241. It was the user's mode in both versions, and phase 0 did not record it (matrix section 1 lists theme, keymap, log columns and `openInNewWindow` only). Since 241 flipped the default to non-modal, the user's explicit `false` is a deliberate choice.
 
-### What rama built
+### What Ramify built
 
 The app starts on a `Commit` tab (⌘0) with the change tree with checkboxes, the toolbar and the message panel below it, and a separate `Log` tab (⌘9) (`src/App.svelte:59, 412-444`; `src/commit/CommitView.svelte:1316, 1451`; `src/commit/ChangesTree.svelte:317`). ⌘K moves the focus to the message (`src/lib/keymap.ts:31`; matrix row `ChangesView.ToggleCommitUi`: "The app only has the non-modal interface"). The staging view replaces the changelists when `stagingArea` is on (`src/commit/StagingView.svelte`; `src-tauri/src/settings.rs:41, 73`; `src/settings/SettingsView.svelte:169-174`). There is no `Use non-modal commit interface` setting (VcsBundle `settings.commit.without.dialog`).
 
 ### What the user would see differently on day one
 
-| Difference | IntelliJ 2024.1 with the user's settings | rama | Impact | Size |
+| Difference | IntelliJ 2024.1 with the user's settings | Ramify | Impact | Size |
 |---|---|---|---|---|
 | Where the changes live | `Local Changes` tab of the `Version Control` tool window, together with Log and Console (⌘9) | Its own `Commit` tab (⌘0), with Log in another tab | high | L |
 | ⌘0 | The Commit tool window does not exist, so ⌘0 does nothing | Shows the Commit tab (`src/lib/keymap.ts:35`) | low | S |
@@ -56,7 +56,7 @@ The app starts on a `Commit` tab (⌘0) with the change tree with checkboxes, th
 | Amend (⌃⌥M) and Commit and Push (⌥⌘K) | Inside the dialog | In the tab (`keymap.ts:32`; `CommitView.svelte:1199`) | medium | M |
 | Fixup…, Squash Into…, Commit File | Open the `Commit Changes` dialog with the message or the file preset (241:`plugins/git4idea/src/git4idea/rebase/GitAutoSquashCommitAction.kt:36`) | Fill the Commit tab | low | M |
 | Double click on a file in Local Changes | Opens the source, because `SHOW_DIFF_ON_DOUBLE_CLICK` defaults to false in the modal tab (241:`…/changes/actions/ShowOnDoubleClickToggleAction.kt:18`; `VcsApplicationSettings.java:39`). The value in the user's `vcs.xml` was not given | Opens the diff | low (⌘D: 14453) | S |
-| Staging area | Saved as on, greyed out and inactive. The Staging view and `Git.Stage.*` are never shown | A checkbox that can be enabled and defaults to off. If the user's `true` were copied, rama would switch to a Staging view that IntelliJ never shows them | medium | S |
+| Staging area | Saved as on, greyed out and inactive. The Staging view and `Git.Stage.*` are never shown | A checkbox that can be enabled and defaults to off. If the user's `true` were copied, Ramify would switch to a Staging view that IntelliJ never shows them | medium | S |
 | Add to VCS ⌥⌘A (292) | With changelists, adds the unversioned files to the active changelist | Does nothing with changelists (matrix row `ChangesView.AddUnversioned`, partial). This gap already existed, and the modal mode makes it more visible | medium | M |
 
 ### What a switch would cost (not decided)
@@ -73,9 +73,9 @@ The alternative of keeping only non-modal is also a choice: it would mean the us
 
 ## 2. Texts
 
-Bundles compared (232 → 241): `GitBundle` 65 values changed, 18 removed and 87 added; `VcsBundle` 14, 10 and 28; `VcsLogBundle` 5, 2 and 10; `DiffBundle` 1, 2 and 16; `ActionsBundle` 16, 48 and 97, none of them Git; `DvcsBundle` 1, 0 and 0; `UIBundle` 2, 6 and 8; `CollaborationToolsBundle` 3, 9 and 53. Most changes are `Couldn't` → `Could not`, `However` → `However,`, `git` → `Git`, and HTML links turned into notification actions. The ones rama uses:
+Bundles compared (232 → 241): `GitBundle` 65 values changed, 18 removed and 87 added; `VcsBundle` 14, 10 and 28; `VcsLogBundle` 5, 2 and 10; `DiffBundle` 1, 2 and 16; `ActionsBundle` 16, 48 and 97, none of them Git; `DvcsBundle` 1, 0 and 0; `UIBundle` 2, 6 and 8; `CollaborationToolsBundle` 3, 9 and 53. Most changes are `Couldn't` → `Could not`, `However` → `However,`, `git` → `Git`, and HTML links turned into notification actions. The ones Ramify uses:
 
-| Key (bundle) | 232 | 241 | rama | Impact | Size |
+| Key (bundle) | 232 | 241 | Ramify | Impact | Size |
 |---|---|---|---|---|---|
 | `rebase.log.drop.action.failure.title` (Git) | `Couldn't Drop Commits` | `Could not Drop Commits` | `src/log/editing.ts:211` | low | S |
 | `rebase.log.drop.success.notification.title` (Git) | `{0,choice,1#Commit\|2#Commits} Dropped` | `Dropped {0} {0,choice,1#commit\|2#commits}` | `src/log/editing.ts:212` | low | S |
@@ -94,7 +94,7 @@ Bundles compared (232 → 241): `GitBundle` 65 values changed, 18 removed and 87
 | `delete.remote.branch.operation.couldn.t.find.remote.by.name` (Git) | `Couldn't find remote by name: {0}` | `Could not find remote by name: {0}` | `src-tauri/src/vcs_commands.rs:921` | low | S |
 | `branch.ui.handler.unmerged.files.error.notification` → `….notification.text` (Git) | `You have to <a>resolve</a> all merge conflicts before {1}.<br/>After resolving conflicts you also probably would want to commit your files to the current branch.` | `You need to resolve all merge conflicts before {0}.<br/>After resolving conflicts do not forget to commit your files to the current branch before switching to another branch.`, with the action `Resolve conflicts…` (`….resolve.conflicts.action.text`) | `src/branches/merging.ts:45` (text), `:321` (action `Resolve…`) | low | S |
 | `push.upto.here.not.supported.notification.title` / `.message` (Git) | `Push failed to start` / `'Push All up to Here' is supported for commit contained in a local branch only` | Removed (behaviour in section 4) | `src/push/model.ts:482-483` | low | S |
-| `stash.unstash.unresolved.conflict.warning.notification.message` (Git) | `… saved to <a>stash</a>.<br/>Unstash is not complete, you have unresolved merges in your working tree<br/><a>Resolve</a> conflicts and drop the stash.` | The same without links, plus the actions `Resolve conflicts…` and `View saved changes…` | `src/branches/actions.ts:238` (rama's own wording, which matches neither) | low | S |
+| `stash.unstash.unresolved.conflict.warning.notification.message` (Git) | `… saved to <a>stash</a>.<br/>Unstash is not complete, you have unresolved merges in your working tree<br/><a>Resolve</a> conflicts and drop the stash.` | The same without links, plus the actions `Resolve conflicts…` and `View saved changes…` | `src/branches/actions.ts:238` (Ramify's own wording, which matches neither) | low | S |
 | `restore.notification.failed.stash.message` (Git) | `… saved to <a href='saver'>stash</a>.<br/>…` | `… saved to stash.<br/>…`, plus the action `View saved changes…` (`restore.notification.failed.show.changes.action`) | `src/update/flow.ts:47-48`: the text already matches 241; the action is missing | low | S |
 | `vcs.log.commit.does.not.match.view.and.reset.link` (VcsLog) | `View and Reset Filters` | `View and reset filters` | `src/log/LogActions.svelte:76` | low | S |
 | `vcs.log.commit.does.not.match.view.in.tab.link` (VcsLog) | `View in New Tab` | `View in new tab` | `src/log/LogActions.svelte:77` | low | S |
@@ -103,15 +103,15 @@ Bundles compared (232 → 241): `GitBundle` 65 values changed, 18 removed and 87
 | `git.branches.popup.tree.no.nodes` (Git, new) | `Branch '{0}' not found` | `'{0}' not found` when actions are filtered too | `src/branches/BranchesPopup.svelte` (empty text) | low | S |
 | `merge.operation.merged.to` (Git, formatting only) | Branch names in bold and code | Code only | `src/branches/merging.ts` (success card) | low | S |
 
-Texts that already follow 241: `Delete {0}` after a merge is an action button in rama (`src/branches/merging.ts:226`), as in 241 (232 had a link). `View them` is an action in rama (`src/git/flow.ts:286`), as in 241 (`local.changes.would.be.overwritten.by.merge.view.them.action`).
+Texts that already follow 241: `Delete {0}` after a merge is an action button in Ramify (`src/branches/merging.ts:226`), as in 241 (232 had a link). `View them` is an action in Ramify (`src/git/flow.ts:286`), as in 241 (`local.changes.would.be.overwritten.by.merge.view.them.action`).
 
-The texts hard-coded in Kotlin or Java instead of the bundles were not diffed systematically. The ones checked are unchanged, for example `GitRebaseTodoModelConverter.kt:24, 45`, which rama copies in `src/rebase/model.ts:355, 370` and `src-tauri/src/todo.rs:202`.
+The texts hard-coded in Kotlin or Java instead of the bundles were not diffed systematically. The ones checked are unchanged, for example `GitRebaseTodoModelConverter.kt:24, 45`, which Ramify copies in `src/rebase/model.ts:355, 370` and `src-tauri/src/todo.rs:202`.
 
 ## 3. Menus and action groups
 
 The structure of `plugins/git4idea/resources/META-INF/plugin.xml`, `platform/vcs-impl/resources/META-INF/VcsActions.xml`, `platform/vcs-log/impl/src/META-INF/vcs-log.xml` and `platform/dvcs-impl/src/META-INF/dvcs.xml` was compared group by group, in the same paths in both tags. **The groups below did not change:** `Git.MainMenu`, `Git.Experimental.Branch.Popup.Actions` and the branch submenus, `Vcs.Log.ContextMenu` and `Git.Log.ContextMenu`, `ChangesViewPopupMenu` and the changes view toolbar, `Git.Stage.*` except the line below, and the diff toolbar, which is built in code (241:`platform/diff-impl/src/com/intellij/diff/tools/simple/SimpleDiffViewer.java` and `tools/util/base/TextDiffViewerUtil.java` add no actions).
 
-| Difference | 232 → 241 | rama | Impact | Size |
+| Difference | 232 → 241 | Ramify | Impact | Size |
 |---|---|---|---|---|
 | Branches popup gear `Git.Branches.Popup.Settings` | + `Show Actions in Search Results` (`git.branches.popup.filter.by.action`, the single-repository text) and `Repositories` (multi-root only), under `Add in Search Results` (241:`plugin.xml:212`; `ui/branch/popup/GitBranchesTreePopupHeaderActions.kt:121-150`) | The gear has `Show Recent Branches` and the grouping options, without this toggle (`src/branches/BranchesPopup.svelte:445`) | medium | S |
 | Main toolbar `MainToolbarVCSGroup` | + `main.toolbar.git.MergeRebase`, a widget with `GitMergeRebaseWidgetGroup`: Resolve Conflicts, Continue Rebase, Abort Rebase, Abort Merge, Abort Cherry-Pick and Abort Revert, coloured, shown while the operation is in progress (241:`plugin.xml:496-510`; `ui/toolbar/GitMergeRebaseWidget.kt`) | Notification cards with Continue and Abort, and the Git menu. There is no toolbar widget | low (Git.Merge.Abort 43) | M |
@@ -124,13 +124,13 @@ The structure of `plugins/git4idea/resources/META-INF/plugin.xml`, `platform/vcs
 | `Vcs.Diff.Commit.KeymapGroup` | + `Vcs.Diff.IncludeWholeChangedLinesIntoCommit` (no shortcut) | The line selection actions are partial in the matrix anyway | low | S |
 | `Vcs.Diff.EditorTabs.Group`, `Editor.Search.Filter.Results` | + `Vcs.Diff.EnableDisableCombinedDiff` and `Vcs.Diff.ToggleSearchInChanges` | Not applicable (no editor tabs, no find in the diff) | low | — |
 | Main toolbar quick actions | `addQuickAction.Git.*` become `MainToolbarQuickActions.VCS` | Out of scope in the matrix | — | — |
-| Branches popup classic list | `GitBranchPopup` removed. Only the tree popup remains (241:`ui/branch/GitBranchesAction.java`) | rama copies the tree popup (232 already used it in the New UI, 232:`GitBranchesTreePopup.kt:728`) | — | — |
+| Branches popup classic list | `GitBranchPopup` removed. Only the tree popup remains (241:`ui/branch/GitBranchesAction.java`) | Ramify copies the tree popup (232 already used it in the New UI, 232:`GitBranchesTreePopup.kt:728`) | — | — |
 
 ## 4. Defaults and behaviour
 
 Git settings defaults that did not change: `USE_CREDENTIAL_HELPER=false` and `STAGING_AREA_ENABLED=false` (241:`config/GitVcsApplicationSettings.java:25-26`), the update method, the save policy, the incoming check, the push options and `SHOW_RECENT_BRANCHES=true` (`GitVcsOptions.kt:50-51`). The other defaults are unchanged too: those of the log (`VcsLogUiPropertiesImpl.kt`, `VcsLogApplicationSettings.kt`, column visibility only moved), of the diff (`TextDiffSettingsHolder.kt`, only a listener added), of the comparison and merge algorithms (`platform/util/diff/…/comparison/*`, `platform/diff-impl/…/merge/*` except a refactor of `MergeThreesideViewer.java`), and of the registry keys `git.*` except `git.enable.stash.toolwindow`. The git arguments are identical in `commands/GitImpl.java`, the commit options (`checkin/*`), `fetch/GitFetchSupportImpl.kt`, `actions/GitPull.java`, `merge/GitPullDialog.kt`, `update/GitMergeUpdater.java`, `update/GitRebaseUpdater.java`, `cherrypick/GitCherryPicker.java` and `reset/GitResetOperation.java`.
 
-| Difference | 232 → 241 | rama | Impact | Size |
+| Difference | 232 → 241 | Ramify | Impact | Size |
 |---|---|---|---|---|
 | Drop Commits confirmation | 232: none. 241: `SHOW_DROP_COMMIT_DIALOG=true` (`config/GitVcsApplicationSettings.java:29`). An OK/Cancel warning `Drop Commit(s)` / `Do you want to drop N commit(s)?` with `Drop` and `Don't ask again` (`rebase/log/drop/GitDropLogAction.kt:28, 52-63`). Setting `Ask for confirmation to drop commits` (`rebase/log/GitLogCommitEditingConfigurable.kt:17`). The user's `git.xml` has no entry, so it is on | Drops without asking (`src/log/editing.ts:424`; phase 3 decisions, line 28) | low | S |
 | Drop success notification | 232: title only. 241: the body lists up to 10 subjects in quotes, shortened to 40 characters (`GitDropLogAction.kt:35-38`) | Title only | low | S |
@@ -159,7 +159,7 @@ No difference for any action in the matrix. The macOS keymaps (`$default.xml`, `
 
 ## 6. User settings
 
-| Setting | IdeaIC2023.2 (matrix section 1) | IdeaIC2024.1 (brief) | rama | Impact | Size |
+| Setting | IdeaIC2023.2 (matrix section 1) | IdeaIC2024.1 (brief) | Ramify | Impact | Size |
 |---|---|---|---|---|---|
 | Commit interface | Not recorded. No entry in `vcs.xml`, so `COMMIT_FROM_LOCAL_CHANGES=false` (modal) | `COMMIT_FROM_LOCAL_CHANGES=false`, explicit because the 241 default is true | Non-modal only | high | L (section 1) |
 | Staging area | Not recorded | `STAGING_AREA_ENABLED=true`, inactive because the mode is modal | Default false. Could be enabled freely | medium | S |
@@ -182,5 +182,5 @@ No difference for any action in the matrix. The macOS keymaps (`$default.xml`, `
 - The exact layout of the 241 Commit Changes dialog (option panels, button order, the position of the Diff splitter). Only `CommitChangeListDialog.java` was skimmed.
 - The log UI rewrite from Java to Kotlin (`platform/vcs-log/impl/src/com/intellij/vcs/log/ui/filter`, `table`, `frame`): only the file-level diff sizes and the text filter were read. `VcsStructureChooser.java` (Paths filter, 69 changed lines) and `StructureFilterPopupComponent.java` were not reviewed.
 - The effect of passing the conflict type to the merge request (`MultipleFileMergeDialog.kt:445`) on deleted and modified conflicts.
-- Hard-coded texts outside the bundles, and rama literals shorter than 10 characters other than the hand-picked ones (`Rollback`, `Reset Head`, `View them`, `Delete …`, `anyway`, `However`, `Couldn't`).
+- Hard-coded texts outside the bundles, and Ramify literals shorter than 10 characters other than the hand-picked ones (`Rollback`, `Reset Head`, `View them`, `Delete …`, `anyway`, `However`, `Couldn't`).
 - The usage count of `CheckinProject` and `Vcs.UpdateProject`, which are not among the counts in the brief. The impact of the commit mode is rated high because it affects every commit.

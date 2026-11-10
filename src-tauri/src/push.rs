@@ -2582,15 +2582,15 @@ mod tests {
             receive.recv_timeout(WAIT).unwrap()
         }
 
-        let log = std::env::var_os("RAMA_GIT_LOG").unwrap();
+        let log = std::env::var_os("RAMIFY_GIT_LOG").unwrap();
         fs::write(&log, "").unwrap();
         // The log is only activated around what is measured.
         let section = |title: &str| {
             let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
             writeln!(file, "## {title}").unwrap();
-            std::env::set_var("RAMA_GIT_LOG", &log);
+            std::env::set_var("RAMIFY_GIT_LOG", &log);
         };
-        let silence = || std::env::remove_var("RAMA_GIT_LOG");
+        let silence = || std::env::remove_var("RAMIFY_GIT_LOG");
         silence();
 
         let harness = Harness::new();

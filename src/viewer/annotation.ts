@@ -57,7 +57,7 @@ export const DEFAULT_OPTIONS: AnnotationOptions = {
 
 // `annotate.short.names.type`, `annotate.color.mode` and the aspects' availability: global, as
 // `PropertiesComponent` keeps them, so every annotated tab follows a change.
-const OPTIONS_KEY = "rama.annotation.options";
+const OPTIONS_KEY = "ramify.annotation.options";
 
 function loadOptions(): AnnotationOptions {
   try {

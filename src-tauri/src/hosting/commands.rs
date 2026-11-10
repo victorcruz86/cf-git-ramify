@@ -1112,7 +1112,7 @@ pub async fn github_pr_chooser(
     ))
 }
 
-// rama's own progress texts: 241 loads the choosers inside their popups.
+// Ramify's own progress texts: 241 loads the choosers inside their popups.
 fn chooser_title(kind: ChooserKind) -> &'static str {
     match kind {
         ChooserKind::Collaborators => "Loading collaborators",
@@ -1240,7 +1240,7 @@ mod tests {
             "hubot",
             None,
         );
-        let service = format!("rama GitHub {}", fake.url().trim_start_matches("http://"));
+        let service = format!("ramify GitHub {}", fake.url().trim_start_matches("http://"));
         set_default(base.path(), repo_dir.path(), &octocat.id).unwrap();
 
         // Removing another account keeps the default.
@@ -1439,7 +1439,7 @@ mod tests {
         let base = TempDir::new().unwrap();
         let octocat = add(&fake, &store, base.path(), None, "octocat", None);
         let hubot = add(&fake, &store, base.path(), None, "hubot", None);
-        let service = format!("rama GitHub {}", fake.url().trim_start_matches("http://"));
+        let service = format!("ramify GitHub {}", fake.url().trim_start_matches("http://"));
         store.delete(&service, "hubot").unwrap();
 
         let listed = rows(&store, base.path(), Some(&octocat.id)).unwrap();
@@ -1493,9 +1493,10 @@ mod tests {
                 (hubot.id.as_str(), true, false)
             ]
         );
-        // With the tokens, as Settings asks: one read per account.
+        // With the tokens, as Settings asks: per account Ramify's item and, since this store holds
+        // none, rama's too (`migration`). A missing item never makes macOS prompt.
         account_rows(&store, base.path(), None, true).unwrap();
-        assert_eq!(store.reads(), 2);
+        assert_eq!(store.reads(), 4);
         fake.finish();
     }
 

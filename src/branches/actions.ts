@@ -266,7 +266,7 @@ function restoredWithConflicts(
   };
 }
 
-// rama's own: an unshelve writes no conflict, so what conflicts stays in the shelf, untouched on disk.
+// Ramify's own: an unshelve writes no conflict, so what conflicts stays in the shelf, untouched on disk.
 function shelvedWithConflicts(message: string, failure: string | null, view: () => void): Notification {
   return {
     kind: "warning",

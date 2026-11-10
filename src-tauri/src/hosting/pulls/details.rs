@@ -415,7 +415,7 @@ fn build(
 }
 
 // GHPRStateServiceImpl.loadMergeabilityState: `findPullRequestMergeability`, built with the base
-// branch's rule of `findPullRequest`, which 241 has loaded already and rama asks again.
+// branch's rule of `findPullRequest`, which 241 has loaded already and Ramify asks again.
 pub fn status(
     check: Check,
     client: &Client,

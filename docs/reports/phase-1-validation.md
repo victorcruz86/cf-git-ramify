@@ -81,11 +81,11 @@ With the screen unlocked and the window in view:
 
 ```bash
 export PATH=$HOME/.nvm/versions/node/v22.23.4/bin:$PATH
-python3 scripts/measure.py --app src-tauri/target/release/rama \
-  --repo ~/rama-medida/git --out docs/reports/phase-1-consumption.json --runs 5
+python3 scripts/measure.py --app src-tauri/target/release/ramify \
+  --repo ~/ramify-measure/git --out docs/reports/phase-1-consumption.json --runs 5
 ```
 
-First a file in `~/rama-medida/git` has to be modified and then restored with `git checkout -- <path>`. The `window_visible` and `visible_runs` fields of the JSON say whether the measurement was complete.
+First a file in `~/ramify-measure/git` has to be modified and then restored with `git checkout -- <path>`. The `window_visible` and `visible_runs` fields of the JSON say whether the measurement was complete.
 
 ## 2. Parity matrix
 
@@ -142,7 +142,7 @@ None of this could be checked automatically. Use a test repository first.
 
 ### Pass with synthetic events (2026-11-01)
 
-Done by Claude with `rama.app` in release on the throwaway lab (`scripts/validation_lab.py`), with System Events keys and CoreGraphics mouse. It reads the window through its accessibility tree and checks the result on disk and in git. There were no screenshots: the process has no screen recording permission. **It does not replace the checkboxes below, which remain open:** it is neither a physical keyboard nor a real repository.
+Done by Claude with `Ramify.app` in release on the throwaway lab (`scripts/validation_lab.py`), with System Events keys and CoreGraphics mouse. It reads the window through its accessibility tree and checks the result on disk and in git. There were no screenshots: the process has no screen recording permission. **It does not replace the checkboxes below, which remain open:** it is neither a physical keyboard nor a real repository.
 
 | Point | Result | Evidence |
 |---|---|---|
@@ -189,7 +189,7 @@ Minor finding: the diff gutter's checkboxes are not in the accessibility tree, b
 
 ### App and real repository
 
-- [ ] Open `rama.app` with a double click from Finder. It has only been tested with the binary directly and with `open -n`.
+- [ ] Open `Ramify.app` with a double click from Finder. It has only been tested with the binary directly and with `open -n`.
 - [ ] A hook that uses `node` or `pnpm` works when opened from Finder. Without the terminal's `PATH` it may not find them, and it has to be compared with IntelliJ.
 - [ ] If you sign commits, make a commit with real GPG. It has only been tested with a fake `gpg`.
 - [ ] Make a real partial commit, choosing lines, and check it with `git show`.
@@ -201,8 +201,8 @@ Minor finding: the diff gutter's checkboxes are not in the accessibility tree, b
 Compare the commands of the same partial commit in a test repository. Close IntelliJ and open it from a terminal, so that it inherits the variables:
 
 ```bash
-export RAMA_GIT_REAL=$(command -v git)
-export RAMA_GIT_LOG=~/intellij-commands.log
+export RAMIFY_GIT_REAL=$(command -v git)
+export RAMIFY_GIT_LOG=~/intellij-commands.log
 "/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea"
 ```
 
@@ -211,7 +211,7 @@ Then set `scripts/git-wrapper.sh` as the path of the Git executable in its setti
 - [ ] Compare the log with the table in `docs/reports/phase-1-commands.md`.
 - [ ] Look at the commands marked "(unread)", above all the options of `add` and whether `rm` carries `-f`.
 - [ ] Look at the order of the result when confirming lines of a hunk with a different number of lines on each side.
-- [ ] Change `A,B,C` to `X,Y`, confirm only `X` and compare the order with IntelliJ. rama leaves `A X B C`.
+- [ ] Change `A,B,C` to `X,Y`, confirm only `X` and compare the order with IntelliJ. Ramify leaves `A X B C`.
 - [ ] Afterwards put IntelliJ's Git path back to its previous value.
 
 ## 4. Known differences with IntelliJ

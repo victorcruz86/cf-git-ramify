@@ -26,7 +26,7 @@
 Research (not in the repository), which the implementer reads before each task:
 - `.superpowers/phase-4/research-stash-shelf-patches.md`: user-facing behaviour, entry points, texts;
 - `.superpowers/phase-4/research-part-3-patches-241.md`: exact reader, writer, applier and shelf rules, dialog layouts, shortcuts, fixtures;
-- `.superpowers/phase-4/research-part-3-rama.md`: what rama has today, with lines.
+- `.superpowers/phase-4/research-part-3-ramify.md`: what Ramify has today, with lines.
 
 Each task names the sections it implements.
 
@@ -41,7 +41,7 @@ Fixtures: `.superpowers/ref-idea-241/ic/platform/platform-tests/testData/diff/` 
 **Branch:** `phase-4`, after part 2 (`018cddf`).
 
 **Commands** (keep the machine load low; one suite at a time):
-- TS: `PATH=$HOME/.cache/rama-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH pnpm exec vitest run --maxWorkers=2 <files>` and `pnpm exec tsc --noEmit -p .`
+- TS: `PATH=$HOME/.cache/ramify-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH pnpm exec vitest run --maxWorkers=2 <files>` and `pnpm exec tsc --noEmit -p .`
 - Rust: `PATH=$HOME/.cargo/bin:$PATH CARGO_BUILD_JOBS=4 cargo test --manifest-path src-tauri/Cargo.toml --lib <filter> -- --test-threads=4`
 - Python: `python3 -I -m unittest discover -s scripts`
 
@@ -72,13 +72,13 @@ They add to the overview's decisions 4 to 11. The user approves them with this p
    Cost: one more dependency (the overview listed only the two for GitHub). Typed paths still work in every field.
 2. **The clipboard is read with `/usr/bin/pbpaste`,** next to the existing `pbcopy` writer, with `LC_CTYPE=UTF-8`. Reveal in Finder is `open -R <path>`. Cost: none.
 3. **Binary sections go through git.**
-   - Writing: rama writes each binary file's `GIT binary patch` section with `git diff --binary` between two blobs made with `git hash-object -w --stdin --no-filters`.
+   - Writing: Ramify writes each binary file's `GIT binary patch` section with `git diff --binary` between two blobs made with `git hash-object -w --stdin --no-filters`.
    - Applying: it applies a binary entry with `git apply --binary` on a temporary patch that holds only that entry.
    - Shelf binaries are whole-file copies, as in IntelliJ, so the shelf needs neither.
    - Not copied from IntelliJ: zlib bytes byte for byte (the decoded bytes are equal), and its zero-byte decoding of `delta` sections, a bug git does not have.
 
    Cost: binary bytes in a written patch differ from IntelliJ's; both apply the same.
-4. **The applier is exact, then exact at an offset, then a 3-way merge with the base, then the merge window.** This corrects the overview's decision 6: IntelliJ's `PlainSimplePatchApplier` is exact only, and the offset search belongs to the fuzzy `GenericPatchApplier`. rama's rules:
+4. **The applier is exact, then exact at an offset, then a 3-way merge with the base, then the merge window.** This corrects the overview's decision 6: IntelliJ's `PlainSimplePatchApplier` is exact only, and the offset search belongs to the fuzzy `GenericPatchApplier`. Ramify's rules:
    1. each hunk exactly at its stated line;
    2. otherwise the same whole hunk at the nearest offset within ±1000 lines, with hunks kept in order and not overlapping;
    3. otherwise, if every hunk matches reversed, the file is "already applied";
@@ -93,10 +93,10 @@ They add to the overview's decisions 4 to 11. The user approves them with this p
 
    Cost: a patch that IntelliJ applies with fuzz, or opens in that viewer, fails here, and the user re-applies it by hand.
 5. **Paths in Apply are relative to the repository root.** `Remove/Restore Leading Directory`, `Remove/Restore All Leading Directories` and `Map Base Directory…` are copied. IntelliJ's project search by name and context (`MatchPatchPaths`) is not. Cost: a patch made in another folder layout needs the strip or map actions.
-6. **One encoding: UTF-8.** rama treats text as UTF-8 everywhere. The `Encoding:` row of Patch File Settings shows `UTF-8`, disabled. Patches are written in UTF-8 with `\n`. Cost: no other charsets.
+6. **One encoding: UTF-8.** Ramify treats text as UTF-8 everywhere. The `Encoding:` row of Patch File Settings shows `UTF-8`, disabled. Patches are written in UTF-8 with `\n`. Cost: no other charsets.
 7. **Separate `Stash` and `Shelf` tabs, the 2024.1 default.** `Combine stashes and shelves in one tab` is not copied. The `Vcs.Shelf.*` rows stay "no effect". Cost: a setting the user has off.
 8. **No commit checks for Shelve and Create Patch.** IntelliJ's Git checks return early when the commit is not a VCS commit (`G/checkin/GitCheckinHandlerFactory.kt:513-514`, `isVcsCommit`), so CRLF, large-file, file-name, detached HEAD and rebase warnings never show for these executors. The executor path still gets a catch with a notification, the draft saved as the list comment, and a tie to its repository. Cost: none.
-9. **The patch folder starts at the repository root.** rama does not read `PATCH_STORAGE_LOCATION`. It remembers the last folder per repository and for the whole app, as IntelliJ does. Cost: the first time, the user browses to `~/Downloads/PATCHS` once.
+9. **The patch folder starts at the repository root.** Ramify does not read `PATCH_STORAGE_LOCATION`. It remembers the last folder per repository and for the whole app, as IntelliJ does. Cost: the first time, the user browses to `~/Downloads/PATCHS` once.
 10. **Not copied:**
     - drag and drop between Local Changes and the Shelf;
     - the `Shelf` settings page (location, base content);
@@ -104,7 +104,7 @@ They add to the overview's decisions 4 to 11. The user approves them with this p
     - the `Help` buttons.
 
     Cost: a few seconds per use for drag and drop, and a page the user does not use.
-11. **The shelf base (`<+>` lines) is written by rama's own reading of IntelliJ's code.** No fixture at the tag has one. The manual checklist includes importing a real IntelliJ shelf, with a tab and an emoji in it. Cost: if the escape rules are wrong, imported bases fail and those files fall back to "no base" (decision 4, step 5).
+11. **The shelf base (`<+>` lines) is written by Ramify's own reading of IntelliJ's code.** No fixture at the tag has one. The manual checklist includes importing a real IntelliJ shelf, with a tab and an emoji in it. Cost: if the escape rules are wrong, imported bases fail and those files fall back to "no base" (decision 4, step 5).
 
 ## Review Focus
 
@@ -114,7 +114,7 @@ They add to the overview's decisions 4 to 11. The user approves them with this p
    - Nothing changed after the copy is overwritten without the merge window or the conflict dialog.
 
    Tests in Tasks 2 and 10.
-2. **Round trip with binaries, renames, deletions, no final newline, CRLF and non-UTF-8 text.** Create a patch, apply it to a clean copy, and the tree is identical. A shelf written by rama is read back identical. The IntelliJ fixtures read, apply and write as their expected files. Tests in Tasks 1, 2 and 8.
+2. **Round trip with binaries, renames, deletions, no final newline, CRLF and non-UTF-8 text.** Create a patch, apply it to a clean copy, and the tree is identical. A shelf written by Ramify is read back identical. The IntelliJ fixtures read, apply and write as their expected files. Tests in Tasks 1, 2 and 8.
 3. **Apply Patch from Clipboard with text that is not a patch, or a 20 MB clipboard.** The action says `Cannot Apply Patch Now` or `No changes detected` as IntelliJ does, with no freeze. Test in Task 5.
 4. **Update with `Clean working tree using: Shelve` stops in a conflict.**
    - The changes stay in the shelf.
@@ -207,7 +207,7 @@ Research: `research-part-3-patches-241.md` §3 (all), decision 4. Reference: `VI
 
 ### Task 3: Infrastructure: choosers, clipboard read, Finder, merge window with contents, two-text diff
 
-Decisions 1 and 2. Research: `research-part-3-rama.md` §7, §9, §10.
+Decisions 1 and 2. Research: `research-part-3-ramify.md` §7, §9, §10.
 
 **Files:**
 - Modify:
@@ -250,7 +250,7 @@ Research: `research-stash-shelf-patches.md` §7 (Copy, Create, Create Patch... f
   - `src/patch/CreatedPatchDialog.svelte` (`Create Patch` / `Successfully created patch <path>` with `Reveal in Finder`, `Close`, `Don't ask again`);
   - `src/patch/flow.ts`.
 - Modify:
-  - `src-tauri/src/patch.rs`: `changelist_content(repo, path, selection) -> PatchSource`, which picks HEAD and `stored_form` or `partial_content` (`research-part-3-rama.md` §2);
+  - `src-tauri/src/patch.rs`: `changelist_content(repo, path, selection) -> PatchSource`, which picks HEAD and `stored_form` or `partial_content` (`research-part-3-ramify.md` §2);
   - `src-tauri/src/vcs_commands.rs`: `patch_create(entries, options, to: File(path) | Clipboard, expected_repo)`;
   - `src-tauri/src/settings.rs`: `patch_folder` per repository and app-wide, `show_patch_in_explorer: Option<bool>`, `patch_to_clipboard` per repository;
   - `src/commit/dialog.ts`, `CommitDialog.svelte`, `dialogStore.ts`:
@@ -438,7 +438,7 @@ Research: `research-part-3-patches-241.md` §4 (all), `research-stash-shelf-patc
   - `load_patch(data, name) -> Patch`;
   - `recycle`, `save_remaining_and_recycle_applied`, `delete`, `restore(date)`, `rename(name, description)`;
   - `cleanup(data, now)`;
-  - `import(data, repo) -> ImportResult { added, skipped }`: read-only on `.idea`, de-duplicated by `(description, date, sha256 of shelved.patch)` and by an `imported.json` record, so a list deleted in rama is not imported again.
+  - `import(data, repo) -> ImportResult { added, skipped }`: read-only on `.idea`, de-duplicated by `(description, date, sha256 of shelved.patch)` and by an `imported.json` record, so a list deleted in Ramify is not imported again.
 - The XML is written with `quick_xml::Writer` in the exact attribute order and spacing of the fixtures. Names follow `suggestFileName`: cut at 90 characters, collisions as `Name`, `Name1`, …
 
 - [ ] **Step 1: Write the failing tests:**
@@ -450,7 +450,7 @@ Research: `research-part-3-patches-241.md` §4 (all), `research-stash-shelf-patc
   - `delete_then_delete_erases`;
   - `restore_sets_the_date`;
   - `cleanup_erases_deleted_older_than_7_days_and_turns_system_recycled_into_deleted`;
-  - `import_is_read_only_and_repeatable`: `.idea` byte-identical before and after, a second import adds nothing, and a list deleted in rama does not come back;
+  - `import_is_read_only_and_repeatable`: `.idea` byte-identical before and after, a second import adds nothing, and a list deleted in Ramify does not come back;
   - `import_reads_a_custom_shelf_path`;
   - `round_trip_with_binary_rename_delete_no_newline_crlf_non_utf8` (Review Focus 2).
 - [ ] **Step 2: Check that they fail.**
@@ -526,7 +526,7 @@ Research: `research-stash-shelf-patches.md` §1 (Shelf tab), §5, §6; `research
 
 ### Task 11: `Clean working tree using: Shelve`
 
-Research: `research-stash-shelf-patches.md` §8, `research-part-3-rama.md` §3. Overview decisions 9 and 10.
+Research: `research-stash-shelf-patches.md` §8, `research-part-3-ramify.md` §3. Overview decisions 9 and 10.
 
 **Files:**
 - Modify:
@@ -571,7 +571,7 @@ Research: `research-stash-shelf-patches.md` §8, `research-part-3-rama.md` §3. 
 
   The rows of decisions 7 and 10 get their reason.
 - Modify: `docs/reports/phase-4-validation.md`, with a Part 3 section: decisions, rulings with costs, tests by feature, what could not be checked, and the manual checklist:
-  - a patch from IntelliJ applied in rama, and the other way;
+  - a patch from IntelliJ applied in Ramify, and the other way;
   - the clipboard flows with a real clipboard;
   - the native choosers;
   - a real `.idea/shelf` import with a tab and an emoji;

@@ -171,7 +171,7 @@ test("the popup follows the order of ChangesViewPopupMenu", async () => {
   const filesMenu = await contextMenu("b.txt");
   expect(labels(filesMenu)[0]).toBe("Commit Files…");
 
-  // rama lists every file, as `--untracked-files=all`, and folders are helper nodes as in
+  // Ramify lists every file, as `--untracked-files=all`, and folders are helper nodes as in
   // `DirectoryChangesGroupingPolicy`: a directory comes first only from a directory root.
   expect(checkinFilesText([{ path: "src", directory: true }])).toBe("Commit Directory…");
   expect(
@@ -341,7 +341,7 @@ test("Add to VCS is offered only for unversioned files, after Show Diff and befo
   const item = within(menu).getByRole("menuitem", { name: "Add to VCS" });
   expect(item.textContent).toContain("⌥⌘A");
   // The group of `$Delete`, `ChangesView.AddUnversioned` and `ChangesView.RemoveDeleted`, between two
-  // separators: rama has neither Delete nor Remove from VCS, so the group is only this item.
+  // separators: Ramify has neither Delete nor Remove from VCS, so the group is only this item.
   expect(item.previousElementSibling?.getAttribute("role")).toBe("separator");
   expect(item.nextElementSibling?.getAttribute("role")).toBe("separator");
 });

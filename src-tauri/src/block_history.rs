@@ -30,7 +30,7 @@ const SHOW_AFFECTED_EVENT: &str = "selection-history-show-affected";
 // What the stream has found so far, to the window only.
 const UPDATE_EVENT: &str = "selection-history-update";
 // `show.history.dialog.title.template` with `action.name.show.history.for.selection` (`V:626-627`).
-// 241 runs the loader without a progress; rama's task needs a title, and takes the window's.
+// 241 runs the loader without a progress; Ramify's task needs a title, and takes the window's.
 const TITLE: &str = "History for Selection";
 // Deadline of each line diff: once past, Myers ends with a valid alignment, though not minimal, so
 // a huge revision does not hold the stream.
@@ -472,7 +472,7 @@ fn locked<T>(mutex: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-// One window, reused: a new selection replaces what it shows, as rama has one window per kind
+// One window, reused: a new selection replaces what it shows, as Ramify has one window per kind
 // (241 opens a frame each time). Like the viewer, it is created hidden and its page shows it once
 // mounted; the selection waits here until the page takes it.
 #[tauri::command]

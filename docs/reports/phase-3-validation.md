@@ -43,22 +43,22 @@ What did change, and can be looked at without waiting for the screen: the execut
 
 ### To repeat the measurement
 
-With the screen unlocked and the Mac untouched. `~/rama-medida/git` is a throwaway clone of `git/git`:
+With the screen unlocked and the Mac untouched. `~/ramify-measure/git` is a throwaway clone of `git/git`:
 
 ```bash
 export PATH=$HOME/.nvm/versions/node/v22.23.4/bin:$PATH
 pnpm tauri build --bundles app
-cd ~/rama-medida/git
+cd ~/ramify-measure/git
 git checkout -q -b measurement-side && sed -i '' 's/static int use_editor = 1/static int use_editor = 1; \/* side *\//' builtin/commit.c
 git -c user.name=m -c user.email=m@e.x commit -qam side && git checkout -q master
 sed -i '' 's/static int use_editor = 1/static int use_editor = 1; \/* main *\//' builtin/commit.c
 git -c user.name=m -c user.email=m@e.x commit -qam main
 git merge measurement-side        # leaves builtin/commit.c in conflict
 cd -
-python3 scripts/measure.py --app src-tauri/target/release/bundle/macos/rama.app/Contents/MacOS/rama \
-  --repo ~/rama-medida/git --out docs/reports/phase-3-consumption.json --runs 5
-git -C ~/rama-medida/git merge --abort
-git -C ~/rama-medida/git reset -q --hard ebdc087dc9 && git -C ~/rama-medida/git branch -D measurement-side
+python3 scripts/measure.py --app src-tauri/target/release/bundle/macos/Ramify.app/Contents/MacOS/ramify \
+  --repo ~/ramify-measure/git --out docs/reports/phase-3-consumption.json --runs 5
+git -C ~/ramify-measure/git merge --abort
+git -C ~/ramify-measure/git reset -q --hard ebdc087dc9 && git -C ~/ramify-measure/git branch -D measurement-side
 ```
 
 Expected: `window_visible: true`, `merge_path: builtin/commit.c` and `merge_open_ms`. With no modified file, `diff_path` comes out empty: the CPU measurement is that of the merge window alone. To measure both windows at once, first modify another file (`echo "// measurement" >> builtin/add.c`) and restore it with `git checkout -- builtin/add.c`.
@@ -111,10 +111,10 @@ None of this could be checked automatically. Use a test repository first (`git i
 How to open the app:
 
 ```bash
-open -n src-tauri/target/release/bundle/macos/rama.app --args /path/to/a/repository
+open -n src-tauri/target/release/bundle/macos/Ramify.app --args /path/to/a/repository
 ```
 
-The `.app` is already built at `src-tauri/target/release/bundle/macos/rama.app` (7.96 MiB, ad hoc signature). With a double click in Finder it opens without a repository: type the path in the bar. To rebuild it:
+The `.app` is already built at `src-tauri/target/release/bundle/macos/Ramify.app` (7.96 MiB, ad hoc signature). With a double click in Finder it opens without a repository: type the path in the bar. To rebuild it:
 
 ```bash
 export PATH=$HOME/.nvm/versions/node/v22.23.4/bin:$PATH
@@ -146,7 +146,7 @@ With a merge that really collides, in a repository you can break.
 - [ ] **Physical keyboard in the merge window:** `⌘Enter`, `F7`, `⇧F7`, `Esc`, the click with a modifier on the arrows (resolves the whole block) and typing in the center pane.
 - [ ] The `Merge Conflicts` node of the Commit view takes the files out of their changelist; it could not be checked in IntelliJ's copy (`ChangesBrowserConflictsNode` is not built in 232), so compare it with your IntelliJ.
 - [ ] Merge with `--no-commit` and with `--squash`: the Commit view must propose the message, and committing must close the merge.
-- [ ] Smart Merge with overlapping local changes: the dialog, the stash `Uncommitted changes before Merge at <fecha>`, and that your changes come back (also after a resolved conflict).
+- [ ] Smart Merge with overlapping local changes: the dialog, the stash `Uncommitted changes before Merge at <date>`, and that your changes come back (also after a resolved conflict).
 
 ### Rebase
 
@@ -182,8 +182,8 @@ On a branch of yours that you can rewrite.
 Close IntelliJ and open it from a terminal so that it inherits the variables:
 
 ```bash
-export RAMA_GIT_REAL=$(command -v git)
-export RAMA_GIT_LOG=~/intellij-commands-phase-3.log
+export RAMIFY_GIT_REAL=$(command -v git)
+export RAMIFY_GIT_LOG=~/intellij-commands-phase-3.log
 "/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea"
 ```
 

@@ -310,7 +310,7 @@ export class MergeEdit {
     const change = ChangeSet.of(found, doc.length, "\n");
     const after = change.apply(doc);
     if (line1 !== line2 && lines.length === 0) {
-      // Here rama departs from IntelliJ. Its DocumentListener measures the deletion with
+      // Here Ramify departs from IntelliJ. Its DocumentListener measures the deletion with
       // getAffectedLineRange, which also counts the line break it takes along: deleting line 0
       // leaves the block at 1, and deleting one in the middle or the last empties the block above.
       // A later `appendChange` would then write somewhere else. The deleted lines are

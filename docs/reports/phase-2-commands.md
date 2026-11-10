@@ -1,4 +1,4 @@
-# Phase 2 commands: rama versus IntelliJ
+# Phase 2 commands: Ramify versus IntelliJ
 
 Comparison of what the app launches in checkout, new branch, fetch, update, pull, push and force push with what the plan says (`docs/superpowers/plans/2026-11-01-phase-2-log-branches-and-remotes.md`, Tasks 9, 11, 12, 13 and 14) and IntelliJ's code at tag `idea/232.10072.27` (2023.2.3), according to the reference summaries (`ref-branches-push.md`, `ref-update.md`) and the files `GitImpl.java`, `GitUpdateProcess.java`, `GitMergeUpdater.java`, `GitRebaseUpdater.java`, `GitPull.java` and `GitPushOperation.java`.
 
@@ -16,7 +16,7 @@ The preparation of each operation (commits, branches, the other clone) is not re
 trace=$(mktemp -d)
 mkdir "$trace/bin"
 ln -s "$PWD/scripts/git-wrapper.sh" "$trace/bin/git"
-(cd src-tauri && RAMA_GIT_REAL=$(command -v git) RAMA_GIT_LOG="$trace/commands.log" \
+(cd src-tauri && RAMIFY_GIT_REAL=$(command -v git) RAMIFY_GIT_LOG="$trace/commands.log" \
   PATH="$trace/bin:$PATH" cargo test --lib phase_2_trace -- --ignored)
 cat "$trace/commands.log"
 ```
@@ -249,22 +249,22 @@ git push --progress --porcelain <remote> <source>:<target> [--set-upstream] [--f
 
 ## Differences
 
-| # | Point | IntelliJ | rama | Does it change the result? | Decision |
+| # | Point | IntelliJ | Ramify | Does it change the result? | Decision |
 |---|---|---|---|---|---|
 | 1 | Checkout, new branch, fetch, merge, rebase, pull and push | The commands above | The same, with the same arguments and in the same order | No | Matches |
 | 2 | `git pull` | `--no-stat -v --progress <remote> <branch>`; with `--rebase` it does not launch `git pull` but Update | The same in both cases (`pull without options` and `pull with --rebase`) | No | Matches |
 | 3 | Update | Fetch, `rev-list -1`, `--ff-only` if it is a rebase with local changes, save, `merge`/`rebase`, restore | The same, and in that order. Before saving, with merge, it launches the two reads of `isSaveNeeded` (`diff --name-only --no-renames --cached` and `main..origin/main`); with rebase, `diff --name-only --no-renames HEAD` | No | Matches |
-| 4 | Count of the result (`N files updated in M commits`) | `git log <start>..<end>` | `rev-list --count <start>..<end>`; the files, with `diff --name-only --diff-filter=ADMRUX --no-renames <before>..HEAD` and `ls-files --unmerged`, like `MergeChangeCollector` | No | rama is kept: it does not need to read the commits |
-| 5 | Restoring what was saved | `git stash pop [--index]`, of the top entry | `git stash list --format=%H` and `git stash pop stash@{n}`, with the index of the entry the app saved | Yes if someone saves a stash by hand in between: IntelliJ would pop the foreign one. Tested in `restoring_does_not_take_another_stash` and `another_hand_made_stash_does_not_confuse_it` | rama is kept |
+| 4 | Count of the result (`N files updated in M commits`) | `git log <start>..<end>` | `rev-list --count <start>..<end>`; the files, with `diff --name-only --diff-filter=ADMRUX --no-renames <before>..HEAD` and `ls-files --unmerged`, like `MergeChangeCollector` | No | Ramify is kept: it does not need to read the commits |
+| 5 | Restoring what was saved | `git stash pop [--index]`, of the top entry | `git stash list --format=%H` and `git stash pop stash@{n}`, with the index of the entry the app saved | Yes if someone saves a stash by hand in between: IntelliJ would pop the foreign one. Tested in `restoring_does_not_take_another_stash` and `another_hand_made_stash_does_not_confuse_it` | Ramify is kept |
 | 6 | Smart Checkout | First a normal checkout; if git says it would overwrite files, it opens the dialog and then saves | The interface does the same (`problem_offers_smart_and_force_and_retries`). The trace calls Smart mode directly, so it does not show the prior normal checkout | No | Matches. What is recorded is only the second step |
-| 7 | Before a checkout | Only the checkout | `rev-parse -q --verify <ref>^{commit}`, `ls-files -z -v` and `ls-tree -r -z <tree>`, to copy the unversioned or ignored files that the checkout would overwrite (review focus 4) | It does not change the repository; it adds three reads | rama is kept |
-| 8 | Before saving, in Smart | `git stash save` | Before: rebase and merge state (`rev-parse --git-path`, `ls-files --unmerged`), `status --porcelain`, and `diff --cached` and `diff` of the paths, to copy what is only in the stage (ruling of Task 9) | Yes: IntelliJ loses that stage with staging off | rama is kept |
+| 7 | Before a checkout | Only the checkout | `rev-parse -q --verify <ref>^{commit}`, `ls-files -z -v` and `ls-tree -r -z <tree>`, to copy the unversioned or ignored files that the checkout would overwrite (review focus 4) | It does not change the repository; it adds three reads | Ramify is kept |
+| 8 | Before saving, in Smart | `git stash save` | Before: rebase and merge state (`rev-parse --git-path`, `ls-files --unmerged`), `status --porcelain`, and `diff --cached` and `diff` of the paths, to copy what is only in the stage (ruling of Task 9) | Yes: IntelliJ loses that stage with staging off | Ramify is kept |
 | 9 | Credential helper | With `Use credential helper` off, which is IntelliJ's default (the user's IntelliJ has it on), it adds `-c credential.helper=` | It does not add it: it comes on (decision 3). With the setting off it does (`helper_off_adds_an_empty_config`) | Yes: with a system helper, git uses it | Decision 3 |
 | 10 | Force push with lease | `--force-with-lease=<branch>:<sha>` | `--force-with-lease=refs/heads/<branch>:<sha>`, with the whole reference | Yes: the short name matches an equal tag | Ruling of Task 14 |
 | 11 | Force push without lease | `--force` | `+refs/heads/<branch>:refs/heads/<branch>` | Yes: with `Push tags: All`, `--force` overwrote remote tags | Ruling of Task 14 |
 | 12 | Push of a new branch | `<source>:<target> --set-upstream`, with `refs/heads/` in the target | The same: `refs/heads/new:refs/heads/new --set-upstream` | No | Matches |
-| 13 | After a push | Reads the result of `--porcelain` | Also `rev-list --count <remote>..<branch> --` to count what was pushed; after a rejection, `log --merges -c --name-only --format=` to decide what to recommend | It does not change the repository | rama is kept |
-| 14 | Before a push | No prior reads that appear in the reference | `check-ref-format` of the branch, `remote`, `show-ref`, `for-each-ref %(upstream…)`, to fix the target and the upstream | It does not change the repository | rama is kept |
+| 13 | After a push | Reads the result of `--porcelain` | Also `rev-list --count <remote>..<branch> --` to count what was pushed; after a rejection, `log --merges -c --name-only --format=` to decide what to recommend | It does not change the repository | Ramify is kept |
+| 14 | Before a push | No prior reads that appear in the reference | `check-ref-format` of the branch, `remote`, `show-ref`, `for-each-ref %(upstream…)`, to fix the target and the upstream | It does not change the repository | Ramify is kept |
 | 15 | Rejection and retry | Update (merge or rebase according to the setting) and push again, up to 10 times | The same, with `update_and_push`; it does not retry on force, nor on a branch that is not the current one, nor if saved changes remain (ruling of Task 14) | Yes in the last one: IntelliJ does go on | Ruling of Task 14 |
 | 16 | Prefix `-c core.quotepath=false -c log.showSignature=false` | On all | On the task's commands and on `log`; the direct reads of `git.rs` (`rev-parse --git-path`, `symbolic-ref`, `for-each-ref`, `show-ref`, `ls-files --unmerged`, `status`, `remote`) do not carry it | No: they use `-z` or do not read the log | Minor pending item of Task 4 (direct `git::run` without `log.showSignature=false`) |
 | 17 | Stash in Update | `git stash save "<message>"`, without `-u` | `git stash save Uncommitted changes before Update at <date>`, without `-u` | To be checked: the text of Update's message is not in the reference | Compare live |
@@ -282,8 +282,8 @@ git push --progress --porcelain <remote> <source>:<target> [--set-upstream] [--f
 With IntelliJ closed and opened from a terminal that inherits the variables, and `scripts/git-wrapper.sh` as the Git path in its settings, do the same operations and compare the log with the section above:
 
 ```bash
-export RAMA_GIT_REAL=$(command -v git)
-export RAMA_GIT_LOG=~/intellij-commands-phase-2.log
+export RAMIFY_GIT_REAL=$(command -v git)
+export RAMIFY_GIT_LOG=~/intellij-commands-phase-2.log
 "/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea"
 ```
 

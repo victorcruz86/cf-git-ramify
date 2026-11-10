@@ -82,7 +82,7 @@ afterEach(() => {
 });
 
 const PUSH_INFO: PushInfo = {
-  repository: "rama",
+  repository: "ramify",
   branch: "main",
   head: HASH,
   remotes: ["origin"],
@@ -149,12 +149,12 @@ test("push_from_the_menu_of_a_branch_and_of_a_commit", async () => {
   const { component } = render(BranchDialogs);
 
   component.run({ kind: "ref", operation: "push", ref: { name: "other", kind: "local" } });
-  await screen.findByRole("dialog", { name: "Push Commits to rama" });
+  await screen.findByRole("dialog", { name: "Push Commits to ramify" });
   expect(invoke).toHaveBeenCalledWith("push_info", { branch: "other" });
   await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
   component.run({ kind: "pushUpTo", hash: HASH });
-  await screen.findByRole("dialog", { name: "Push Commits to rama" });
+  await screen.findByRole("dialog", { name: "Push Commits to ramify" });
   await waitFor(() =>
     expect(invoke).toHaveBeenCalledWith("push_outgoing", {
       source: HASH,

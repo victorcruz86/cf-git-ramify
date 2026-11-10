@@ -517,7 +517,7 @@ describe("rebase", () => {
 
   test("disallowed_rebase_says_so_with_its_title", async () => {
     const refused: RebaseRun = {
-      outcome: { kind: "failed", reason: "There is an unfinished merge process in rama." },
+      outcome: { kind: "failed", reason: "There is an unfinished merge process in ramify." },
       title: "Rebase not allowed",
       saved: [],
     };
@@ -527,7 +527,7 @@ describe("rebase", () => {
     expect(last()).toMatchObject({
       kind: "error",
       title: "Rebase not allowed",
-      body: "There is an unfinished merge process in rama.",
+      body: "There is an unfinished merge process in ramify.",
     });
     expect(dialogs.rebaseStopped).not.toHaveBeenCalled();
   });

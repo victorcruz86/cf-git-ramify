@@ -19,7 +19,7 @@ import {
 const HASH = "a1b2c3d4".repeat(5);
 
 const INFO: PushInfo = {
-  repository: "rama",
+  repository: "ramify",
   branch: "main",
   head: HASH,
   remotes: ["origin", "upstream"],
@@ -99,7 +99,7 @@ beforeEach(() => {
 });
 
 test("title_push_commits_to_repo", () => {
-  expect(pushTitle("rama")).toBe("Push Commits to rama");
+  expect(pushTitle("ramify")).toBe("Push Commits to ramify");
 });
 
 test("shows_20_commits_and_the_rest_with_dots", () => {

@@ -77,7 +77,7 @@ export const getDialogsUi: GetUi = {
 const files = (count: number) => (count === 1 ? "1 file" : `${count} files`);
 const quoted = (paths: string[]) => paths.map((path) => `"${path}"`).join(", ");
 
-// rama's own texts: 241 says nothing after a Get, rama says where its copy is.
+// Ramify's own texts: 241 says nothing after a Get, Ramify says where its copy is.
 function report(got: GotRevision, root: string) {
   if (got.written.length > 0) {
     notify({

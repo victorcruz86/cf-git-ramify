@@ -1,5 +1,5 @@
-rama
-====
+Ramify
+======
 
 This project includes code ported from IntelliJ IDEA Community Edition, and test data taken
 from that same repository.
@@ -54,7 +54,7 @@ platform/vcs-log/ and plugins/git4idea/:
   src-tauri/src/log/store.rs         git4idea: GitLogProvider (reading of hashes)
   src-tauri/src/log/commands.rs      impl: VcsLogNavigationUtil (only the navigation part)
 
-graph.rs, mod.rs, options.rs, parse.rs and recent.rs are rama's own and do not port code; they
+graph.rs, mod.rs, options.rs, parse.rs and recent.rs are Ramify's own and do not port code; they
 are cited here because they are in the same folder and share structures with the ones above.
 
 Ported code: src/
@@ -587,7 +587,7 @@ are git's own output, not IntelliJ's encoding.
                                           ApplyPatchTest, ApplyPatchStatusTest
 
 The offset search of patch_apply.rs (each whole hunk within 1000 lines of its stated line) is
-rama's own, between PlainSimplePatchApplier and GenericPatchApplier; binary entries are applied
+Ramify's own, between PlainSimplePatchApplier and GenericPatchApplier; binary entries are applied
 by git.
 
   src/patch/flow.ts (applyFlow, clipboardWatcher), src/patch/ApplyPatchDialog.svelte,
@@ -1245,7 +1245,7 @@ Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
                                           VcsLogCommitSelectionListenerForDetails
 
 The two signature icons, src/lib/icons/signatureVerified.svg and
-src/lib/icons/signatureSigned.svg, are rama's own drawings, not 241's.
+src/lib/icons/signatureSigned.svg, are Ramify's own drawings, not 241's.
 
 Ported code: the submodule update after Update Project
 ------------------------------------------------------
@@ -1260,10 +1260,10 @@ Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
                                           submodules after the repository's own update)
   src/update/flow.ts (Submodule update failed)
                                           git4idea: update/GitSubmoduleUpdater (the failure);
-                                          the title is rama's own
+                                          the title is Ramify's own
 
 Which submodules are moved, and the check that no submodule HEAD that nothing else keeps is
-moved, are rama's own (docs/reports/phase-4-validation.md, part 6, section 2).
+moved, are Ramify's own (docs/reports/phase-4-validation.md, part 6, section 2).
 
 Ported code: submodule diffs
 ----------------------------
@@ -1296,7 +1296,7 @@ Read at the tag idea/241.14494.240 (build IC-241.14494.240, version 2024.1).
   src-tauri/src/git.rs (git_dirs)         git4idea: GitUtil (findGitDir),
                                           repo/GitRepositoryFiles (commondir)
 
-rama asks git for both folders (git rev-parse --absolute-git-dir and --git-common-dir) instead
+Ramify asks git for both folders (git rev-parse --absolute-git-dir and --git-common-dir) instead
 of reading the .git file and commondir as 241 does.
 
 Test data: src-tauri/src/log/testdata/
@@ -1337,5 +1337,5 @@ ShelveChangesManagerTest.
 
 This data keeps its original license (Apache 2.0).
 
-This notice grants no rights over the names or logos of JetBrains or IntelliJ, which rama does
+This notice grants no rights over the names or logos of JetBrains or IntelliJ, which Ramify does
 not use.

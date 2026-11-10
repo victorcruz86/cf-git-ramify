@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
 import { isIpcFailure, smokeRepoAllowed } from "./smoke";
 
-test("only accepts a repository inside a rama-smoke folder", () => {
-  expect(smokeRepoAllowed("/private/tmp/rama-smoke-x1/repo")).toBe(true);
+test("only accepts a repository inside a ramify-smoke folder", () => {
+  expect(smokeRepoAllowed("/private/tmp/ramify-smoke-x1/repo")).toBe(true);
   expect(smokeRepoAllowed("/Users/victor/PROJECTS/my-repo")).toBe(false);
-  expect(smokeRepoAllowed("/Users/victor/rama-smoke")).toBe(false);
+  expect(smokeRepoAllowed("/Users/victor/ramify-smoke")).toBe(false);
   expect(smokeRepoAllowed(null)).toBe(false);
 });
 

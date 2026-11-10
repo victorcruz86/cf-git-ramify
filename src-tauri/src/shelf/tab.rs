@@ -343,7 +343,7 @@ pub fn restore(data: &Path, names: &[String], now: SystemTime) -> io::Result<()>
     Ok(())
 }
 
-// rama's own recovery of what the store erased (`<data>/shelf-erased/`, kept 30 days): a folder
+// Ramify's own recovery of what the store erased (`<data>/shelf-erased/`, kept 30 days): a folder
 // of it moved by hand into `<data>/shelf-restore/` goes back into the store when the repository
 // opens, before the cleanup.
 const RESTORE_DIR: &str = "shelf-restore";

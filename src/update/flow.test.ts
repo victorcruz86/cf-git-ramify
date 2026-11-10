@@ -421,7 +421,7 @@ describe("result", () => {
   });
 });
 
-// Decision 7: git's output reaches an error of rama's own, and the summary stays.
+// Decision 7: git's output reaches an error of Ramify's own, and the summary stays.
 describe("submodule update", () => {
   const SUBMODULE_ERROR =
     "error: Your local changes to the following files would be overwritten by checkout:\n\tsub.txt\nAborting\nfatal: Unable to checkout 'abc' in submodule path 'sub'";

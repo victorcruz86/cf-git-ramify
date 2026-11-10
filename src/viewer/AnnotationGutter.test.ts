@@ -143,7 +143,7 @@ test("the popup changes the columns for every annotation and closes them", async
   await fireEvent.click(within(viewMenu).getByRole("menuitem", { name: "Revision" }));
 
   await waitFor(() => expect(texts()[0]).toEqual(["11111111", expect.any(String), "Smith"]));
-  expect(JSON.parse(localStorage.getItem("rama.annotation.options")!).shown.revision).toBe(true);
+  expect(JSON.parse(localStorage.getItem("ramify.annotation.options")!).shown.revision).toBe(true);
 
   await fireEvent.contextMenu(cells()[2]);
   await fireEvent.click(

@@ -1181,18 +1181,18 @@ mod tests {
     }
 
     fn case_sensitive_base() -> Option<std::path::PathBuf> {
-        let base = std::path::PathBuf::from(std::env::var_os("RAMA_CASE_SENSITIVE_DIR")?);
+        let base = std::path::PathBuf::from(std::env::var_os("RAMIFY_CASE_SENSITIVE_DIR")?);
         let probe = tempfile::TempDir::new_in(&base).unwrap();
         fs::write(probe.path().join("a"), "").unwrap();
         (!probe.path().join("A").exists()).then_some(base)
     }
 
-    // It only runs if RAMA_CASE_SENSITIVE_DIR points to a folder on a volume that distinguishes
+    // It only runs if RAMIFY_CASE_SENSITIVE_DIR points to a folder on a volume that distinguishes
     // case; no volume is created.
     #[test]
     fn rollback_of_paths_differing_only_in_case_on_a_case_sensitive_volume() {
         let Some(base) = case_sensitive_base() else {
-            eprintln!("skipped: RAMA_CASE_SENSITIVE_DIR does not point to a case-sensitive volume");
+            eprintln!("skipped: RAMIFY_CASE_SENSITIVE_DIR does not point to a case-sensitive volume");
             return;
         };
         let repo = TempRepo::new_in(&base);

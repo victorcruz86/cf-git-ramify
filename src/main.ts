@@ -2,7 +2,14 @@ import { mount } from "svelte";
 import "./lib/controls.css";
 import { plainInputs } from "./lib/plainInputs";
 import { applyTheme } from "./lib/theme";
+import { migrateStorageKeys } from "./lib/storageMigration";
 
+// Before any part reads its keys.
+try {
+  migrateStorageKeys(localStorage);
+} catch {
+  // Without storage every part starts from its defaults, as it already does.
+}
 applyTheme(document.documentElement);
 plainInputs(document);
 const target = document.getElementById("app")!;
@@ -20,7 +27,7 @@ if (kind === "diff") {
   import("./history/window").then(({ mountSelectionHistoryWindow }) =>
     mountSelectionHistoryWindow(target),
   );
-} else if (import.meta.env.VITE_RAMA_SMOKE) {
+} else if (import.meta.env.VITE_RAMIFY_SMOKE) {
   import("./perf/smoke").then(({ runSmoke }) => runSmoke());
 } else {
   import("./App.svelte").then(({ default: App }) => mount(App, { target }));

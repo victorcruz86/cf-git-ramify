@@ -66,7 +66,7 @@
   ];
 
   // `Git.Stash.ChangesBrowser.ContextMenu` after `Compare Before with Local`: `Edit Source` and
-  // `Open Repository Version` are not in rama; `Vcs.ApplySelectedChanges` is.
+  // `Open Repository Version` are not in Ramify; `Vcs.ApplySelectedChanges` is.
   const changeOperations = (stash: StashEntry, change: SavedChange): MenuItem[] => [
     {
       label: "Cherry-Pick Selected Changes",

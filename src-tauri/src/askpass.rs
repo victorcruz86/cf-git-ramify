@@ -20,9 +20,9 @@ use std::time::Duration;
 use serde::Serialize;
 use tempfile::TempDir;
 
-const SOCKET_VARIABLE: &str = "RAMA_ASKPASS_SOCKET";
-const TOKEN_VARIABLE: &str = "RAMA_ASKPASS_TOKEN";
-const SOCKET_FOLDER_PREFIX: &str = "rama-askpass-";
+const SOCKET_VARIABLE: &str = "RAMIFY_ASKPASS_SOCKET";
+const TOKEN_VARIABLE: &str = "RAMIFY_ASKPASS_TOKEN";
+const SOCKET_FOLDER_PREFIX: &str = "ramify-askpass-";
 pub(crate) const SOCKET_FOLDER_RANDOM_CHARS: usize = 6;
 pub(crate) const SOCKET_NAME: &str = "s";
 pub(crate) const TOKEN_BYTES: usize = 32;
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn the_socket_folder_respects_sun_path() {
         // The longest name that can come out, separator included.
-        let free = SOCKET_PATH_LIMIT - "/rama-askpass-XXXXXX/s".len();
+        let free = SOCKET_PATH_LIMIT - "/ramify-askpass-XXXXXX/s".len();
         let fits = format!("/{}", "a".repeat(free - 1));
         let long = format!("{fits}a");
 

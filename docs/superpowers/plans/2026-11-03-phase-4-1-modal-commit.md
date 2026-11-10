@@ -33,7 +33,7 @@ Bundles: `V:` = VcsBundle, `GB:` = GitBundle, `A:` = ActionsBundle. Whoever impl
 **Branch:** `phase-4`.
 
 **Commands** (the user asked to keep the machine load low):
-- TS: `PATH=$HOME/.cache/rama-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH pnpm exec vitest run --maxWorkers=2 <files>` and `pnpm exec tsc --noEmit -p .`
+- TS: `PATH=$HOME/.cache/ramify-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH pnpm exec vitest run --maxWorkers=2 <files>` and `pnpm exec tsc --noEmit -p .`
 - Rust: `PATH=$HOME/.cargo/bin:$PATH CARGO_BUILD_JOBS=4 cargo test --manifest-path src-tauri/Cargo.toml --lib <filter> -- --test-threads=4`
 - Python: `python3 -I -m unittest discover -s scripts`
 
@@ -42,14 +42,14 @@ Bundles: `V:` = VcsBundle, `GB:` = GitBundle, `A:` = ActionsBundle. Whoever impl
 They add to those of the overview, which the user approves with this plan.
 
 1. **The default is modal**, as the user has it. `Settings.non_modal_commit` defaults to `false`; IntelliJ 2024.1 defaults to `true`. Cost: a user who did not choose this would find the dialog first.
-2. **One `Git` stripe button in modal mode.** rama has no editor area, so the `Git` tool window fills the content area. Log and Console stop being separate stripe buttons and become tabs: Local Changes, then Log, then Console, by IntelliJ's weights. Shelf and Stash come in part 3. In non-modal mode the stripe shows `Commit` (⌘0) and `Git` (Log and Console). Pressing ⌘9 again with the window active does nothing; IntelliJ would hide the window, and rama has nothing to show behind it. Cost: the layout changes for whoever used the current stripe.
-3. **A double click in Local Changes opens the diff until part 4.** IntelliJ opens the source by default (`SHOW_DIFF_ON_DOUBLE_CLICK=false`), but rama has no viewer until part 4. Part 4 adds the `Show on Double-Click` gear item and the source viewer. Cost: until then a double click shows the diff, not the file.
+2. **One `Git` stripe button in modal mode.** Ramify has no editor area, so the `Git` tool window fills the content area. Log and Console stop being separate stripe buttons and become tabs: Local Changes, then Log, then Console, by IntelliJ's weights. Shelf and Stash come in part 3. In non-modal mode the stripe shows `Commit` (⌘0) and `Git` (Log and Console). Pressing ⌘9 again with the window active does nothing; IntelliJ would hide the window, and Ramify has nothing to show behind it. Cost: the layout changes for whoever used the current stripe.
+3. **A double click in Local Changes opens the diff until part 4.** IntelliJ opens the source by default (`SHOW_DIFF_ON_DOUBLE_CLICK=false`), but Ramify has no viewer until part 4. Part 4 adds the `Show on Double-Click` gear item and the source viewer. Cost: until then a double click shows the diff, not the file.
 4. **The `Preview Diff` splitter is included**, visible by default (`LOCAL_CHANGES_DETAILS_PREVIEW_SHOWN=true`), as a read-only embedded `FilePane` without line checkboxes. Cost: an embedded diff that loads when the selection changes; nothing loads while the preview is hidden.
-5. **No `DiffCommitMessageEditor`.** In IntelliJ, the diff window opened from the dialog shows a second editor for the message. rama edits the message only in the dialog. Cost: little; IntelliJ hides that editor easily.
+5. **No `DiffCommitMessageEditor`.** In IntelliJ, the diff window opened from the dialog shows a second editor for the message. Ramify edits the message only in the dialog. Cost: little; IntelliJ hides that editor easily.
 6. **Dialog size.** The first opening is 900×700, centred. After that the size, both splitters and the open or closed `Diff` panel are remembered in `localStorage` under IntelliJ's keys (`CommitChangelistDialog2`, `CommitChangeListDialog.SPLITTER_PROPORTION_2`, `CommitChangeListDialog.DETAILS_SPLITTER_PROPORTION_2`, `CommitChangeListDialog.DETAILS_SHOW_OPTION_`). Cost: the first opening may differ from IntelliJ's preferred size.
 7. **The message history keeps 25 entries**, as IntelliJ does (`VA/VcsConfiguration.java:146`). It kept 20 since phase 1 (`src-tauri/src/messages.rs:7`). Cost: none.
-8. **No code checks and no `Commit Message Inspections` table.** rama has no code model, and `validate.ts` keeps its fixed rules. The `Commit Checks` group shows only `Run Git hooks`, and only when the repository has hooks. Cost: none for a Git-only use.
-9. **The setting switches on Save.** IntelliJ moves the tabs live when the setting is applied. rama remounts the views on Save. The draft survives because it lives in the changelist comment. Cost: the views blink once.
+8. **No code checks and no `Commit Message Inspections` table.** Ramify has no code model, and `validate.ts` keeps its fixed rules. The `Commit Checks` group shows only `Run Git hooks`, and only when the repository has hooks. Cost: none for a Git-only use.
+9. **The setting switches on Save.** IntelliJ moves the tabs live when the setting is applied. Ramify remounts the views on Save. The draft survives because it lives in the changelist comment. Cost: the views blink once.
 
 ## Review Focus
 

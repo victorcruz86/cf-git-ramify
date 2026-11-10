@@ -232,7 +232,7 @@ pub fn label_of(repo: &Path, sha: &str) -> Option<String> {
     Some(format!("stash@{{{position}}}"))
 }
 
-// rama's own trail of what Drop and Clear removed (IntelliJ only asks first): git keeps the
+// Ramify's own trail of what Drop and Clear removed (IntelliJ only asks first): git keeps the
 // objects until it prunes them, and `git stash store -m <message> <sha>` brings an entry back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DroppedStash {

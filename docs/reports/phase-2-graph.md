@@ -1,6 +1,6 @@
 # Log graph: measurements
 
-Repository `~/rama-medida/git` (git/git): 85,936 commits and 1,022 references. Release binary with the project profile (`opt-level = "s"`, LTO), on an arm64 Mac. `open_repo` and `rows_in` are called directly, without Tauri: it does not include the round trip between processes or the drawing. Three runs.
+Repository `~/ramify-measure/git` (git/git): 85,936 commits and 1,022 references. Release binary with the project profile (`opt-level = "s"`, LTO), on an arm64 Mac. `open_repo` and `rows_in` are called directly, without Tauri: it does not include the round trip between processes or the drawing. Three runs.
 
 ## Targets
 

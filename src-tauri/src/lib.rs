@@ -26,6 +26,7 @@ pub mod log;
 pub mod merge;
 pub mod merge3;
 pub mod messages;
+pub mod migration;
 pub mod operation;
 pub mod patch;
 pub mod patch_apply;
@@ -33,6 +34,7 @@ pub mod preserve;
 pub mod pull;
 pub mod push;
 pub mod rebase;
+pub mod recent;
 pub mod remotes;
 pub mod rewrite;
 pub mod rollback;
@@ -61,6 +63,23 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+// A failed copy starts with empty data and is tried again on the next start (`migration`).
+fn migrate_data_folder(app: &tauri::AppHandle) {
+    let Some(support) = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|dir| dir.parent().map(|parent| parent.to_path_buf()))
+    else {
+        return;
+    };
+    match migration::migrate_data_folder(&support) {
+        Ok(migration::Migration::Copied) => eprintln!("Copied rama's data folder for Ramify"),
+        Ok(migration::Migration::NotNeeded) => {}
+        Err(error) => eprintln!("Could not copy rama's data folder: {error}"),
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -71,12 +90,19 @@ pub fn run() {
                 commands::quit(app.clone());
             } else if event.id() == commands::SETTINGS_MENU_ID {
                 commands::open_settings(app);
+            } else if event.id() == commands::OPEN_MENU_ID {
+                commands::open_project_chooser(app);
+            } else if let Some(path) = commands::recent_menu_path(&event.id().0) {
+                commands::open_recent(app, path);
             } else if commands::is_git_menu_item(&event.id().0) {
                 commands::git_menu_action(app, &event.id().0);
             }
         })
         .setup(|app| {
+            // Before anything reads the data folder.
+            migrate_data_folder(app.handle());
             commands::load_settings(app.handle());
+            commands::refresh_recent_menu(app.handle());
             commands::forward_task_events(app.handle());
             commands::start_askpass(app.handle());
             commands::start_editor(app.handle());
@@ -87,6 +113,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_version,
             commands::initial_repo,
+            commands::recent_projects_remove,
             viewer::initial_target,
             viewer::viewer_open,
             viewer::viewer_targets,

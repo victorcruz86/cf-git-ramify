@@ -28,16 +28,16 @@
 Research (not in the repository), which the implementer reads before each task:
 - `.superpowers/phase-4/research-history-compare.md`: entry points, git commands, texts, menu orders (the first pass);
 - `.superpowers/phase-4/research-part-4-241.md`: the gaps the first pass left (layouts, titles, colours, shortcuts, the user's settings), with its corrections in §0;
-- `.superpowers/phase-4/research-part-4-rama.md`: what rama has today, with lines.
+- `.superpowers/phase-4/research-part-4-ramify.md`: what Ramify has today, with lines.
 
-Each task names the sections it implements as `H§n` (first pass), `G§n` (241 gaps) and `R§n` (rama).
+Each task names the sections it implements as `H§n` (first pass), `G§n` (241 gaps) and `R§n` (Ramify).
 
 **Reference:** tag `idea/241.14494.240`. Bundles: `B:` GitBundle, `V:` VcsBundle, `A:` ActionsBundle, `L:` VcsLogBundle, `D:` DvcsBundle, `DB:` DiffBundle, `IB:`/`EB:` IdeBundle/EditorBundle (installed jar). Copy literal texts from the cited line, not from this plan.
 
 **Branch:** `phase-4`, after part 3 (`944d203`).
 
 **Commands** (keep the machine load low; one suite at a time):
-- TS: `PATH=$HOME/.cache/rama-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH pnpm exec vitest run --maxWorkers=2 <files>` and `pnpm exec tsc --noEmit -p .`
+- TS: `PATH=$HOME/.cache/ramify-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH pnpm exec vitest run --maxWorkers=2 <files>` and `pnpm exec tsc --noEmit -p .`
 - Rust: `PATH=$HOME/.cargo/bin:$PATH CARGO_BUILD_JOBS=4 cargo test --manifest-path src-tauri/Cargo.toml --lib <filter> -- --test-threads=4`
 - Python: `python3 -I -m unittest discover -s scripts`
 
@@ -56,17 +56,17 @@ The overview's Global Constraints, which include phase 3's. The ones this part l
 
 They add to the overview's decisions. The user approves them with this plan. Each has its cost if wrong.
 
-1. **Opening a file from outside starts its own rama process, as opening a repository does today.** `rama <file>` and `rama <file>:<line>` find the repository with `git rev-parse --show-toplevel` from the file's folder, open it, and show the file in the viewer at that line. Not copied: reaching a rama that is already running (that needs `tauri-plugin-single-instance`, a new dependency) and Finder's "Open With". Cost: opening a file of a repository that is already open gives a second window on it.
-2. **The viewer is one separate window with a tab per file**, because rama has no editor area. The user's IntelliJ opens diffs in a separate window too (`openInNewWindow=true`, G§13). The tabs wrap in rows (`SCROLL_TAB_LAYOUT_IN_EDITOR=false`). It is read-only, as the spec says. Editing stays in the diff window. Cost: files do not open beside the tree.
+1. **Opening a file from outside starts its own Ramify process, as opening a repository does today.** `Ramify <file>` and `Ramify <file>:<line>` find the repository with `git rev-parse --show-toplevel` from the file's folder, open it, and show the file in the viewer at that line. Not copied: reaching a Ramify that is already running (that needs `tauri-plugin-single-instance`, a new dependency) and Finder's "Open With". Cost: opening a file of a repository that is already open gives a second window on it.
+2. **The viewer is one separate window with a tab per file**, because Ramify has no editor area. The user's IntelliJ opens diffs in a separate window too (`openInNewWindow=true`, G§13). The tabs wrap in rows (`SCROLL_TAB_LAYOUT_IN_EDITOR=false`). It is read-only, as the spec says. Editing stays in the diff window. Cost: files do not open beside the tree.
 3. **The Project tree reads the folders from disk on expand**, as IntelliJ's file system does, and colours each entry from `git status --ignored`. It shows ignored files in their colour and hides IntelliJ's default ignore patterns (G§1). Cost: a folder with tens of thousands of entries is listed whole when it is opened.
 4. **History tabs are a tab kind of the Log, and are remembered per repository**, as 241 reopens them when the log is recreated (H§1). Compare Branches is also a Log tab kind (two stacked logs), not an editor tab. Its filters live in memory only, as in 241 (G§4). Cost: none.
-5. **`Changes` and `Repositories` are tool windows on the left stripe, registered on first use** (overview decision 12). `Changes` holds one tab, and a new one replaces it (G§0.3). `Repositories` has one tab per repository, and since rama has one repository per window, a new revision replaces it. Cost: none.
-6. **`Get` writes only the files.** It does not run `git add` or `git rm`: IntelliJ asks about adding by default, and rama leaves a new file unversioned for the user to add. It writes to the path the file had in that revision, as IntelliJ does. Cost: one `Add` (⌥⌘A) after getting a deleted file back.
-7. **Annotate and selection history run in the viewer**, which is where rama has a gutter and a selection. The annotation options are IntelliJ's defaults, since the user has none set (G§13): `Last Name`, colours by `Order`, `Date` and `Author` shown. Cost: no annotation inside the diff window.
+5. **`Changes` and `Repositories` are tool windows on the left stripe, registered on first use** (overview decision 12). `Changes` holds one tab, and a new one replaces it (G§0.3). `Repositories` has one tab per repository, and since Ramify has one repository per window, a new revision replaces it. Cost: none.
+6. **`Get` writes only the files.** It does not run `git add` or `git rm`: IntelliJ asks about adding by default, and Ramify leaves a new file unversioned for the user to add. It writes to the path the file had in that revision, as IntelliJ does. Cost: one `Add` (⌥⌘A) after getting a deleted file back.
+7. **Annotate and selection history run in the viewer**, which is where Ramify has a gutter and a selection. The annotation options are IntelliJ's defaults, since the user has none set (G§13): `Last Name`, colours by `Order`, `Date` and `Author` shown. Cost: no annotation inside the diff window.
 8. **Not copied:**
    - `Show Diff On Hover` in the annotation `View` menu;
-   - `Show Diff in a New Tab or Window`, which does what `Show Diff` does, since rama has no editor tabs (as part 3's Shelf tab);
-   - `Choose Parent to Compare` in file history: 241 shows a merge row as a three-side diff (G§0.6), and rama does the same;
+   - `Show Diff in a New Tab or Window`, which does what `Show Diff` does, since Ramify has no editor tabs (as part 3's Shelf tab);
+   - `Choose Parent to Compare` in file history: 241 shows a merge row as a three-side diff (G§0.6), and Ramify does the same;
    - F4 inside the file history table: 241 has no defined flow there (G§2);
    - the `Git.Stage.Compare.*` and `Show Staged Version` rows: they exist only in staging mode, which is not the user's mode (H§0.1). They are marked "not in the user's mode".
 
@@ -168,7 +168,7 @@ Research: G§2, H§5 (Show File at Revision), H§7 (viewer), R§3 (`diff::read_s
   - `a_revision_is_read_at_its_own_path_through_exact`, with an NFD name.
   - `thirty_megabytes_give_a_preview_with_the_241_text` and `a_png_is_binary`.
   - `a_missing_revision_says_could_not_load_content` (`V:98-99`).
-  - `a_file_argument_opens_its_repository_and_the_viewer_at_the_line`. Also `a_folder_argument_still_opens_the_repository` (the old shape), and `a_file_outside_a_repository_says_so` (rama's own text, recorded in the report).
+  - `a_file_argument_opens_its_repository_and_the_viewer_at_the_line`. Also `a_folder_argument_still_opens_the_repository` (the old shape), and `a_file_outside_a_repository_says_so` (Ramify's own text, recorded in the report).
   - `tabs_reuse_the_same_path_and_revision_and_wrap`.
   - `edit_source_opens_the_local_file_and_open_repository_version_the_revision`.
 - [ ] **Step 2: Check that they fail.**

@@ -1041,20 +1041,20 @@ mod tests {
 
     #[test]
     fn new_window_with_bundle_uses_open_n_and_the_path_goes_in_argv() {
-        let exe = Path::new("/Applications/rama.app/Contents/MacOS/rama");
+        let exe = Path::new("/Applications/Ramify.app/Contents/MacOS/ramify");
 
         let command = new_window_command(exe, Path::new("/tmp/my repo")).unwrap();
 
         assert_eq!(command.get_program(), "/usr/bin/open");
         assert_eq!(
             args(&command),
-            ["-n", "/Applications/rama.app", "--args", "/tmp/my repo"]
+            ["-n", "/Applications/Ramify.app", "--args", "/tmp/my repo"]
         );
     }
 
     #[test]
     fn new_window_without_bundle_launches_the_binary_with_the_path() {
-        let exe = Path::new("/project/target/debug/rama");
+        let exe = Path::new("/project/target/debug/ramify");
 
         let command = new_window_command(exe, Path::new("/tmp/repo")).unwrap();
 
@@ -1064,7 +1064,7 @@ mod tests {
 
     #[test]
     fn new_window_rejects_relative_or_dashed_paths() {
-        let exe = Path::new("/Applications/rama.app/Contents/MacOS/rama");
+        let exe = Path::new("/Applications/Ramify.app/Contents/MacOS/ramify");
 
         assert!(new_window_command(exe, Path::new("-n")).is_err());
         assert!(new_window_command(exe, Path::new("relative/repo")).is_err());

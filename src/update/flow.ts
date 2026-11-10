@@ -76,7 +76,7 @@ const RESTORE_CONFLICTS =
 const RESTORE_BLOCKED =
   "These files changed on disk while your changes were saved. The version on disk must be committed or moved first.";
 const AFTER_ABORT = "The update was aborted.";
-// Decision 7: rama's own, as 241 only logs the failure of `GitSubmoduleUpdater`.
+// Decision 7: Ramify's own, as 241 only logs the failure of `GitSubmoduleUpdater`.
 const SUBMODULE_UPDATE_FAILED = "Submodule update failed";
 
 export type UpdateRequest =
@@ -204,7 +204,7 @@ function restoreProblem(restore: RestoreOutcome | null, place: string, saving?: 
   return updateIncomplete(place);
 }
 
-// rama's own last line: which entry or lists hold them.
+// Ramify's own last line: which entry or lists hold them.
 const notRestoredBody = ({ saved, restore, saving }: Unfinished) =>
   `${restoreProblem(restore, placeOf(saved), saving)}\nThey are in the ${placeOf(saved)}: ${saved?.message}`;
 

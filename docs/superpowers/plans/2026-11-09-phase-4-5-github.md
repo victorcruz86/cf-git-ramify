@@ -39,7 +39,7 @@
 **Research** (not in the repository). The implementer reads it before each task:
 - `.superpowers/phase-4/research-github-gitlab.md` (E§n): the first pass, from the phase design;
 - `.superpowers/phase-4/research-part-5-241.md` (P§n): the 241 details, with corrections to E in P§10 and the GraphQL texts in its Appendix A;
-- `.superpowers/phase-4/research-part-5-rama.md` (M§n): rama today, with lines, and the hazards in M§0.
+- `.superpowers/phase-4/research-part-5-ramify.md` (M§n): Ramify today, with lines, and the hazards in M§0.
 
 **Reference:**
 - Tag `idea/241.14494.240`.
@@ -49,7 +49,7 @@
 **Branch:** `phase-4`, after part 4 (`f2a3c7b`, also `main`).
 
 **Commands.** These are binding: the MacBook froze under parallel builds. Run one command at a time, at low priority, never in the background, and never in a second copy of the project.
-- TS: `PATH=$HOME/.cache/rama-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH nice -n 15 pnpm exec vitest run --maxWorkers=2 <files>` and `nice -n 15 pnpm exec tsc --noEmit -p .`
+- TS: `PATH=$HOME/.cache/ramify-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH nice -n 15 pnpm exec vitest run --maxWorkers=2 <files>` and `nice -n 15 pnpm exec tsc --noEmit -p .`
 - Rust: `PATH=$HOME/.cargo/bin:$PATH CARGO_BUILD_JOBS=3 nice -n 15 cargo test --manifest-path src-tauri/Cargo.toml --lib <filter> -- --test-threads=3`
 - Integration: the same with `--no-fail-fast --test '*'`, in every final verification.
 - Python: `python3 -I -m unittest discover -s scripts`
@@ -58,7 +58,7 @@
 
 The overview's Global Constraints, including phase 3's. The ones this part leans on most:
 - **Tokens:**
-  - only in the Keychain (`secrets.rs`): service `rama GitHub <server>`, account `<login>`;
+  - only in the Keychain (`secrets.rs`): service `ramify GitHub <server>`, account `<login>`;
   - never on disk, in the console, an error, an argument, the environment, a URL or a log line;
   - the webview sends one once, in `github_login`, and no command returns one;
   - a redirect to another host or scheme drops the `Authorization` header.
@@ -79,7 +79,7 @@ The overview's Global Constraints, including phase 3's. The ones this part leans
 
 They add to the overview's decisions, and the user approves them with this plan. Each has its cost if wrong.
 
-1. **Account changes apply at once, not on Save.** 241 keeps them pending until Apply. rama's settings dialog saves `Settings`, and a token must never ride in `Settings`, so `+`, `−`, `Set as Default` and `Log in` act immediately. Cost: Cancel does not undo an added or removed account.
+1. **Account changes apply at once, not on Save.** 241 keeps them pending until Apply. Ramify's settings dialog saves `Settings`, and a token must never ride in `Settings`, so `+`, `−`, `Set as Default` and `Log in` act immediately. Cost: Cancel does not undo an added or removed account.
 2. **Where accounts live:**
    - Identity is (server without its scheme, login), which is 241's uniqueness rule (P§1.3). It is written `<server>/<login>`, for example `github.com/octocat`.
    - The list (server and login only) is in `<app data>/github-accounts.json`.
@@ -92,30 +92,30 @@ They add to the overview's decisions, and the user approves them with this plan.
    - 241 replaces the whole list with what the remotes of the last fetch returned, so fetching only a non-GitHub remote empties it (P§4.1).
    - As in 241, the loader runs inside the fetch's task, after git, with the progress text `Loading GitHub branch protection rules`. A loader error keeps R's previous entry and is never shown.
    - Cost: a remote's rules stay in force until that remote is fetched again, which forbids more, not less. A fetch can wait for the loader's requests (connect timeout 5 s).
-7. **No "unseen" dot and no tool-window badge**, because 241 clears them only from the timeline, which is left out (P§5.5). **No access lines** (`Repository access required…`, `Merging is disabled…`), because they are about merge rights and rama has no merge or close actions (P§6.3). Cost: visual only.
+7. **No "unseen" dot and no tool-window badge**, because 241 clears them only from the timeline, which is left out (P§5.5). **No access lines** (`Repository access required…`, `Merging is disabled…`), because they are about merge rights and Ramify has no merge or close actions (P§6.3). Cost: visual only.
 8. **Where `Open on GitHub` and `Copy Link` go** (P§8.5):
    - **Same place as 241:**
      - the Log menu, last;
      - the file history menu, last, plus its toolbar button;
      - the selection history popup, last;
      - the annotation gutter, after a separator.
-   - **The Project tree and the viewer** have no `Open In` submenu in rama, so they get a new `Open In ▸ GitHub`, last.
-   - **`Copy Link to GitHub Repository`** goes in a new `Copy / Paste Special` submenu of the viewer's editor menu, with the line range. rama has no `Copy Path/Reference…` popup, so the Project tree gets no Copy Link.
+   - **The Project tree and the viewer** have no `Open In` submenu in Ramify, so they get a new `Open In ▸ GitHub`, last.
+   - **`Copy Link to GitHub Repository`** goes in a new `Copy / Paste Special` submenu of the viewer's editor menu, with the line range. Ramify has no `Copy Path/Reference…` popup, so the Project tree gets no Copy Link.
    - **Several GitHub remotes:** the group becomes a submenu named by URL, with `_` shown as a space, as in 241.
    - Cost: two small submenus that 241 fills with other items; no Copy Link from the tree.
-9. **The PR changes tree waits for both fetches.** 241 draws the tree from REST and only the diff waits (P§6.7). Cost: with a failed fetch rama shows `Can't load changes` where 241 shows the tree and fails the diff.
+9. **The PR changes tree waits for both fetches.** 241 draws the tree from REST and only the diff waits (P§6.7). Cost: with a failed fetch Ramify shows `Can't load changes` where 241 shows the tree and fails the diff.
 10. **The list's last search and search history are kept per repository** in `github-pr-search.json`. 241 keeps them per project in `workspace.xml`. Cost: none.
 11. **Settings:**
     - `Connection timeout:` (seconds, `0..60`, default 5) is an app setting, and the read timeout stays at 60 s (P§1.1).
-    - `Clone git repositories using ssh` (no clone in rama) and `Automatically mark opened files as viewed` (review) are not copied.
+    - `Clone git repositories using ssh` (no clone in Ramify) and `Automatically mark opened files as viewed` (review) are not copied.
     - Cost: none.
 12. **HTTP details:**
-    - the `User-Agent` is `rama`;
+    - the `User-Agent` is `Ramify`;
     - no gzip;
     - redirects are followed by hand, up to 10, and the `Authorization` header is kept only on the same scheme, host and port;
-    - the `Generate…` page's description is `rama GitHub integration plugin` (P§2.4).
+    - the `Generate…` page's description is `ramify GitHub integration plugin` (P§2.4).
     - Cost: none.
-13. **The PR diff opens in rama's diff window**, titled `Diff for Pull Request #<n>` (`GB:246`), as every rama diff does. 241 opens an editor tab. Cost: none.
+13. **The PR diff opens in Ramify's diff window**, titled `Diff for Pull Request #<n>` (`GB:246`), as every Ramify diff does. 241 opens an editor tab. Cost: none.
 
 ## Review Focus
 
@@ -283,10 +283,10 @@ Research: P§1, P§2, E§2, E§6, M§4. Decisions 1, 2, 3 and 12.
   - `relogin_renames_the_edited_account_to_the_tokens_login`.
   - `removing_an_account_deletes_its_keychain_item_and_clears_the_default`.
   - `a_missing_token_gives_missing_access_token_and_needs_login` (`CTB:8`).
-  - `the_generate_url_is_241s_with_rama_s_name`: the exact string of P§2.4.
+  - `the_generate_url_is_241s_with_ramify_s_name`: the exact string of P§2.4.
   - `no_command_returns_a_token`. Grep `hosting/commands.rs` for `Secret` in any `-> Result<` or `Serialize` type. Also check the recorded requests: the token appears only in `Authorization: Bearer`.
   - `open_url_refuses_a_dash_and_other_schemes`.
-  - Manual, recorded for Task 10: add a real account and quit and reopen rama; the account is still there. Check the token in Keychain Access.
+  - Manual, recorded for Task 10: add a real account and quit and reopen Ramify; the account is still there. Check the token in Keychain Access.
 - [ ] **Step 2: Check that they fail.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Check that they pass.**
@@ -458,7 +458,7 @@ Research: P§3.3-3.6, M§3, M§10. Decisions 2, 4 and 5.
 - Modify:
   - `src/shell/toolWindows.ts`: the `pulls` entry, `Pull Requests`, on the left, registered on first use.
   - `src/lib/tabs.ts`, `src/App.svelte`, `src/lib/api.ts`, `src-tauri/src/lib.rs`.
-  - A new `src/lib/icons/pullRequests.svg`, a plain drawing of rama's own.
+  - A new `src/lib/icons/pullRequests.svg`, a plain drawing of Ramify's own.
   - The window registers when `github_known()` has a mapping, and is checked again on `open()` and on `repo-changed`.
 - Test: `src-tauri/src/hosting/pulls/mod.rs`, `src/pulls/Selector.test.ts`, `src/pulls/PullRequestsWindow.test.ts`, `src/lib/tabs.test.ts`.
 
@@ -556,7 +556,7 @@ Research: P§6, Appendix A.2-A.4, M§6. Decisions 7, 9 and 13.
     - **Description:** the body as plain text in a `pre-wrap` block, or `No description provided` in grey italic (`GB:264`).
     - **Commits and branch row:** the commits dropdown (`Changes` / `Changes from`, `{0} commits`, `All commits ({0})`, `Search commits`, next and previous), then the branch link (Task 9 fills its popup).
     - **Commit info:** the selected commit with `Show details` / `Hide details`. The body is read from git after the fetch, because the API has only HTML.
-    - **Dates:** the commit rows and the commit info use rama's existing pretty date-time (`src/log/draw.ts:234-243`). Check its one-hour bound against 241's `HOUR + MINUTE` (P§6.5, `DateFormatUtil.java:167`) and fix it if the 241 source says so, with a test.
+    - **Dates:** the commit rows and the commit info use Ramify's existing pretty date-time (`src/log/draw.ts:234-243`). Check its one-hour bound against 241's `HOUR + MINUTE` (P§6.5, `DateFormatUtil.java:167`) and fix it if the 241 source says so, with a test.
     - **Changes:** the tree, reusing `ChangesTree`, `fileNodes` and `pairOf` from `changes/ChangesToolWindow.svelte`. Extract them into a shared module so the `Changes` window keeps working.
       - Double click and `Show Diff` open `diffWindowOpenRequest({ kind: "revisions", title: "Diff for Pull Request #<n>" })`.
       - Its menu follows P§6.8 without `Mark as Viewed`.

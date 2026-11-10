@@ -94,13 +94,13 @@ export const baseOutside = (parent: string) =>
   `Base path doesn't contain all selected changes (use ${parent})`;
 // IdeBundle `error.file.with.name.already.exists`.
 export const fileExists = (file: string) => `A file with the name '${file}' already exists`;
-// rama's own: a relative path would be taken from the app's working folder.
+// Ramify's own: a relative path would be taken from the app's working folder.
 export const NOT_ABSOLUTE = "The path must be absolute";
-// rama's own, as the other copies before overwriting say it.
+// Ramify's own, as the other copies before overwriting say it.
 export const overwrittenText = (name: string) => `${name} was overwritten. A snapshot was saved.`;
 export const RESTORED = "Snapshot restored.";
 
-// rama's own: a file split across lists whose hunks the last refresh could not read.
+// Ramify's own: a file split across lists whose hunks the last refresh could not read.
 export function unreadablePatchText(paths: string[]): string {
   const files = paths.map((path) => `"${path}"`).join(", ");
   return `Could not read the changes of ${files}, split across lists: no patch was made`;
@@ -371,7 +371,7 @@ export async function suggestPatchFile(
 export type PatchProblem = { field: "file" | "base"; text: string };
 
 // `CreatePatchConfigurationPanel.validateFields`: the name first, then the base path. The file is
-// checked even with `To clipboard`, as there; rama's own absolute-path check only when it is used.
+// checked even with `To clipboard`, as there; Ramify's own absolute-path check only when it is used.
 export function settingsProblem(
   paths: PatchPaths,
   parent: string | null,
@@ -542,7 +542,7 @@ export const SUCCESS_TEXT = "Patch successfully applied";
 export const ABORTED_TITLE = "Apply patch aborted";
 export const ABORTED_TEXT = "All files changed during 'Apply Patch' action were rolled back";
 export const ROLLBACK_FAILED_TITLE = "Rollback failed";
-// V:363, kept as IntelliJ has it, and a second line of rama's own: rama has no Local History, and
+// V:363, kept as IntelliJ has it, and a second line of Ramify's own: Ramify has no Local History, and
 // the copy taken before applying is in Restore Snapshot… of Local Changes.
 export const ROLLBACK_FAILED_TEXT =
   "Try using 'Local History' dialog to perform revert manually.\n" +
@@ -556,7 +556,7 @@ export function conflictTitle(repo: string, path: string): string {
   const { name, parent } = splitPath(joinPath(repo, path));
   return `Patch Conflict for ${name} (${parent})`;
 }
-// rama's own: another repository was opened while the dialog was open, or while the patch was
+// Ramify's own: another repository was opened while the dialog was open, or while the patch was
 // being applied (then nothing more is written or rolled back in the new one).
 export const REPOSITORY_SWITCHED = "Another repository was opened: the patch was not applied";
 export const SWITCHED_WHILE_APPLYING =
@@ -802,7 +802,7 @@ export function applyFlow(ui: ApplyUi, api: ApplyApi = defaultApplyApi) {
   }
 
   // `ApplyPatchFromClipboardAction`: the dialog over the clipboard's text. Text that is not a patch
-  // is not read (`No changes detected`); with no text rama cannot have the item disabled, so it says
+  // is not read (`No changes detected`); with no text Ramify cannot have the item disabled, so it says
   // `Cannot Apply Patch Now`.
   async function applyFromClipboard(context: ApplyContext): Promise<void> {
     if (applyRunning) return;

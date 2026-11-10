@@ -56,7 +56,7 @@ The interface adds a three-pane merge window, separate from the diff one, with C
 
 Each one departs from IntelliJ or from the approved matrix. The user approves them with the plan.
 
-1. **Only stash until phase 4**, same as in phase 2. Rebase, Smart Merge and editing from the log save with `git stash`, with IntelliJ's messages (`Uncommitted changes before rebase`, `Uncommitted changes before Merge at <fecha>`). IntelliJ's default policy is Shelve.
+1. **Only stash until phase 4**, same as in phase 2. Rebase, Smart Merge and editing from the log save with `git stash`, with IntelliJ's messages (`Uncommitted changes before rebase`, `Uncommitted changes before Merge at <date>`). IntelliJ's default policy is Shelve.
 2. **`GIT_SEQUENCE_EDITOR` in addition to `GIT_EDITOR`.** IntelliJ only sets `GIT_EDITOR`, and a user's `sequence.editor` wins over it. Here both are set. Cost: none visible.
 3. **A single merge window.** IntelliJ opens one per file from the Commit view and a modal one from the Conflicts dialog. Here there is only one, and asking for another file while it is open brings it to the front without changing file. Cost: two files cannot be resolved at the same time.
 4. **The diff from base to each side uses Myers (`similar`)**, the one `hunks.rs` already uses. IntelliJ uses its "fair" diff with line optimizations. The rest is ported as is: the merging of ranges, the type of each block and the automatic resolution. Cost: in ambiguous cases a block may start or end one line earlier or later than in IntelliJ. The ported tests of `LineComparisonMergeUtilTest` say how many cases differ; if any differs, it is noted.
@@ -89,7 +89,7 @@ Reference:
 - `commands/GitImplBase.java:239-279` (removing comments);
 - `commands/GitImpl.java:61,712,729,748-779` (`-c core.commentChar=\u0001`).
 
-Model in rama: `askpass.rs` (`client_main`, `Server`, `ClientEnv`) and `commands::start_askpass`.
+Model in Ramify: `askpass.rs` (`client_main`, `Server`, `ClientEnv`) and `commands::start_askpass`.
 
 **Files:**
 - Create: `src-tauri/src/editor.rs`, `src/editor/MessageEditorDialog.svelte`, `src/editor/editor.ts`, `src/editor/editor.test.ts`
@@ -101,7 +101,7 @@ Model in rama: `askpass.rs` (`client_main`, `Server`, `ClientEnv`) and `commands
   - `trait editor::EditorHandler: Send + Sync { fn edit(&self, kind: EditKind, text: &str) -> Option<String>; }`. `None` makes the editor exit with code 1.
   - `editor::Trivial`, which returns the text as is, and `editor::Ask`, which asks the main window.
   - `editor::Server::start(on_request: impl Fn(u64, EditKind, String) -> bool + Send + Sync + 'static) -> io::Result<Server>`, `Server::register(handler: Arc<dyn EditorHandler>, git_dir: PathBuf) -> Registration`, `Server::answer(id: u64, text: Option<String>)`.
-  - `Registration` carries its token and applies `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `RAMA_EDITOR_SOCKET` and `RAMA_EDITOR_TOKEN` to a `Command`. When dropped, it unregisters.
+  - `Registration` carries its token and applies `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `RAMIFY_EDITOR_SOCKET` and `RAMIFY_EDITOR_TOKEN` to a `Command`. When dropped, it unregisters.
   - `editor::client_main() -> Option<i32>`, tried in `main.rs` before `askpass::client_main`.
   - `TaskContext::git_editing(args: &[&str], handler: Arc<dyn EditorHandler>) -> Result<GitOutput, GitError>`.
   - `editor::REBASE_CONFIG: [&str; 2] = ["-c", "core.commentChar=\u{1}"]`.
@@ -556,7 +556,7 @@ Reference:
     - rebase: `operation_continue`;
     - merge started by the app: `merge_commit()`;
     - cherry-pick and revert: the commit of Task 10.
-  - Command `merge_commit()`: `git commit -F .git/MERGE_MSG --`, or `-m "Merge branch '<rama>' of <ruta> with conflicts."` if there is no `MERGE_MSG`, like `GitMerger.mergeCommit`.
+  - Command `merge_commit()`: `git commit -F .git/MERGE_MSG --`, or `-m "Merge branch '<branch>' of <path> with conflicts."` if there is no `MERGE_MSG`, like `GitMerger.mergeCommit`.
   - Command `merge_message() -> Option<String>`: reads `MERGE_MSG` or `SQUASH_MSG` for the Commit view, like `getDefaultMessageFor`.
   - `Merge Conflicts` node with the `Resolve` link in the changelists tree (new `NodeKind` `conflicts`).
   - Actions `Merge…`, `Accept Theirs` and `Accept Yours` at the start of the context menus of Changes and of Staging, only for files in conflict.
@@ -712,7 +712,7 @@ Reference:
 **Interfaces:**
 - Consumes: `merge::merge`, `rebase::rebase` and `rebase::Outcome` from Tasks 2 and 8, `resolveConflicts` from Task 7, and `update::update_project` and `pull::pull` from phase 2.
 - Produces:
-  - `merge::smart_merge(repo, branch, expected_head) -> Result<MergeOutcome, GitError>`: saves with `preserve` (`Uncommitted changes before Merge at <fecha>`), does the merge and restores. With conflicts, it restores after they are resolved.
+  - `merge::smart_merge(repo, branch, expected_head) -> Result<MergeOutcome, GitError>`: saves with `preserve` (`Uncommitted changes before Merge at <date>`), does the merge and restores. With conflicts, it restores after they are resolved.
   - `rebase::Process`, the common flow of `GitRebaseProcess`:
     1. checks the state with the texts of `isRebaseAllowed`;
     2. saves the changes (`Uncommitted changes before rebase`), and again if git sees the tree as dirty;
@@ -1207,9 +1207,9 @@ Compare with the commands cited in this plan, and note the differences in `docs/
 
 - [ ] **Step 3: Measure again**
 
-With the method of `docs/reports/phase-2-validation.md` ("Measurement with the visible window"): Mac untouched for 3 minutes and load below 15. Add to `src/perf/run.ts` the opening of the merge window with a conflict of `builtin/commit.c` in `~/rama-medida/git`, and measure its idle CPU and its memory.
+With the method of `docs/reports/phase-2-validation.md` ("Measurement with the visible window"): Mac untouched for 3 minutes and load below 15. Add to `src/perf/run.ts` the opening of the merge window with a conflict of `builtin/commit.c` in `~/ramify-measure/git`, and measure its idle CPU and its memory.
 
-Run: `python3 scripts/measure.py --app src-tauri/target/release/bundle/macos/rama.app/Contents/MacOS/rama --repo ~/rama-medida/git --out docs/reports/phase-3-consumption.json --runs 5`
+Run: `python3 scripts/measure.py --app src-tauri/target/release/bundle/macos/Ramify.app/Contents/MacOS/ramify --repo ~/ramify-measure/git --out docs/reports/phase-3-consumption.json --runs 5`
 Expected: JSON with `window_visible: true`. If the screen is locked, note what was not measured.
 
 - [ ] **Step 4: Go through the matrix**

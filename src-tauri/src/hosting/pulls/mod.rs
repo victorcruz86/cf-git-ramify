@@ -2,7 +2,7 @@
 // accounts can open them, and the connect itself. Ports GHPRToolWindowViewModel (the saved choice),
 // GHPRDataContextRepository.getContextAsync (connect), GithubAccountInformationProvider (the
 // 30-minute cache of `GET /user`) and GHUIUtil.getRepositoryDisplayName (plugins/github at
-// idea/241.14494.240). rama's own choices are decisions 2, 4 and 5 of the part 5 plan: the default
+// idea/241.14494.240). Ramify's own choices are decisions 2, 4 and 5 of the part 5 plan: the default
 // account plays no part, there is no server discovery, and connect skips `findUser("ghost")`.
 
 use std::collections::HashMap;
@@ -826,8 +826,9 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, HostingError::MissingToken);
         assert_eq!(error.to_string(), "Missing access token");
-        // The connect read the one token it needed, and asked GitHub nothing.
-        assert_eq!(place.reads(), 1);
+        // The connect read the one token it needed, in Ramify's item and then rama's (`migration`),
+        // and asked GitHub nothing.
+        assert_eq!(place.reads(), 2);
         assert!(fake.requests().is_empty());
         fake.finish();
     }

@@ -653,7 +653,7 @@
     openToolbarMenu(event, "Changelists", changelistActions());
   }
 
-  // `ChangesViewToolWindowPanel`: `Group By` ▸, the only option rama has.
+  // `ChangesViewToolWindowPanel`: `Group By` ▸, the only option Ramify has.
   function openViewOptions(event: MouseEvent) {
     openToolbarMenu(event, "View Options", [
       {
@@ -820,7 +820,7 @@
     ]);
   }
 
-  // `MultipleLocalChangeListsBrowser.createPopupMenuActions`, without what rama does not have: `Show
+  // `MultipleLocalChangeListsBrowser.createPopupMenuActions`, without what Ramify does not have: `Show
   // Diff in a New Tab or Window` (the diff is always a window) and `Jump to Source`. Of the unversioned
   // group (`Unversioned.Files.Dialog.Popup`) there is only `Add to VCS`, shown even when disabled
   // because the place is not `ChangesViewPopupMenu`; `Move to Another Changelist` has only its shortcut.
@@ -855,7 +855,7 @@
     menu = { x, y, label: "Changes", items };
   }
 
-  // `ChangesViewPopupMenu`, without what rama does not have yet.
+  // `ChangesViewPopupMenu`, without what Ramify does not have yet.
   function openContextMenu(x: number, y: number) {
     if (browser) {
       openBrowserMenu(x, y);
@@ -888,7 +888,7 @@
     }
     if (count > 0) items.push({ label: "Show Diff", shortcut: "⌘D", run: showDiff });
     // `ChangesView.AddUnversioned` is visible here only when enabled; `$Delete` and `Remove from VCS`,
-    // the rest of its group, rama does not have.
+    // the rest of its group, Ramify does not have.
     if (selectedUnversioned.length > 0) {
       items.push(null, { label: "Add to VCS", shortcut: "⌥⌘A", run: addToVcs });
     }

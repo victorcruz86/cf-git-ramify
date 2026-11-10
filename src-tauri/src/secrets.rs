@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn the_memory_store_keeps_one_secret_per_service_and_account() {
         let store = MemoryStore::new();
-        let service = "rama GitHub github.com";
+        let service = "ramify GitHub github.com";
         assert!(store.get(service, "octocat").unwrap().is_none());
 
         store
@@ -175,7 +175,7 @@ mod tests {
             .unwrap();
         store
             .set(
-                "rama GitHub ghe.example.com",
+                "ramify GitHub ghe.example.com",
                 "octocat",
                 &Secret::new("ghe".to_string()),
             )
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(read(service, "octocat").as_deref(), Some("second"));
         assert_eq!(read(service, "hubot").as_deref(), Some("other"));
         assert_eq!(
-            read("rama GitHub ghe.example.com", "octocat").as_deref(),
+            read("ramify GitHub ghe.example.com", "octocat").as_deref(),
             Some("ghe")
         );
 
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     #[ignore = "uses the real login Keychain; run by hand"]
     fn the_keychain_store_keeps_replaces_and_deletes_a_token() {
-        let service = format!("rama GitHub test-{}.invalid", std::process::id());
+        let service = format!("ramify GitHub test-{}.invalid", std::process::id());
         let store = KeychainStore;
         assert!(store.get(&service, "octocat").unwrap().is_none());
         store

@@ -1251,11 +1251,11 @@ mod tests {
 
     // Review Focus 4: time and memory of a large annotation, run on demand
     // (`cargo test --lib annotate::tests::large -- --ignored --nocapture`, under `/usr/bin/time -l`).
-    // `RAMA_ANNOTATE_MB` picks the size; a local text with edits every 1000 lines is mapped too.
+    // `RAMIFY_ANNOTATE_MB` picks the size; a local text with edits every 1000 lines is mapped too.
     #[test]
     #[ignore]
     fn large_file_annotation_time() {
-        let megabytes: usize = std::env::var("RAMA_ANNOTATE_MB")
+        let megabytes: usize = std::env::var("RAMIFY_ANNOTATE_MB")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(30);

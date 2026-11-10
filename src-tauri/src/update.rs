@@ -2562,7 +2562,7 @@ mod tests {
     // `sub`, a submodule of the repository, published with it and received by the colleague.
     // git refuses to fetch a local path from inside `submodule update` unless the submodule's
     // config allows it. Here that is the test's own setting, as it would be the user's: what
-    // rama runs never passes it.
+    // Ramify runs never passes it.
     fn published_submodule(harness: &Harness) -> TempRepo {
         let sub = harness.repo.with_submodule("sub");
         sub.git(&["config", "protocol.file.allow", "always"]);
@@ -2980,7 +2980,7 @@ mod tests {
 
     // The final review: git's own submodule fetch runs with `GIT_PROTOCOL_FROM_USER=0`, so a URL
     // that came from a repository cannot use a transport that `protocol.allow` leaves to the user,
-    // such as a local path. Without the submodule's own `protocol.file.allow`, rama's fetch is
+    // such as a local path. Without the submodule's own `protocol.file.allow`, Ramify's fetch is
     // refused the same way, and git's error reaches the notification.
     #[test]
     fn a_submodule_with_a_local_path_url_is_refused_by_the_fetch() {

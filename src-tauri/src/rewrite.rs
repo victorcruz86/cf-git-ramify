@@ -538,7 +538,7 @@ fn not_in_todo(hash: &str) -> TodoError {
 fn amend(repo: &Repo, message: &str) -> Result<(), GitError> {
     let dir = repo.ctx.git(&["rev-parse", "--absolute-git-dir"])?;
     let mut file = tempfile::Builder::new()
-        .prefix("rama-reword-")
+        .prefix("ramify-reword-")
         .tempfile_in(dir.stdout.trim_end_matches('\n'))
         .map_err(git::io_error)?;
     file.write_all(message.as_bytes()).map_err(git::io_error)?;
@@ -1587,7 +1587,7 @@ mod tests {
         let left: Vec<String> = fs::read_dir(harness.path().join(".git"))
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("rama-"))
+            .filter(|name| name.starts_with("ramify-"))
             .collect();
         assert!(left.is_empty(), "{left:?}");
     }

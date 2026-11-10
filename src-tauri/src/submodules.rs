@@ -1,6 +1,6 @@
 // The submodule update after Update Project (decision 7). 241's `GitSubmoduleUpdater` runs for a
 // submodule in detached HEAD that is a registered root of its own, which never happens with one
-// repository per window, so rama decides from the open repository, with `git submodule status
+// repository per window, so Ramify decides from the open repository, with `git submodule status
 // --recursive` read before and after the repository's own update.
 //
 // No lost work, unlike 241: a submodule is only moved when, before the update, its detached HEAD
@@ -8,7 +8,7 @@
 // its HEAD, so nothing ends up reachable only from its reflog; the cost is updating it by hand.
 // On top of that, the invariant: an update never moves a HEAD that nothing else keeps (`is_kept`),
 // in the submodule it names or in any submodule inside it. The cost: a submodule whose HEAD only
-// the reflog holds is never updated by rama.
+// the reflog holds is never updated by Ramify.
 use std::collections::HashMap;
 use std::path::{Component, Path};
 
@@ -546,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn the_moved_text_is_rama_s_own() {
+    fn the_moved_text_is_ramify_s_own() {
         assert_eq!(
             moved_text("libs/lib"),
             "Submodule libs/lib was not updated: its HEAD is not at the commit the repository records."

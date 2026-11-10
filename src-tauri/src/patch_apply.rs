@@ -76,12 +76,12 @@ fn is_directory(path: &str) -> String {
     format!("Cannot apply content for {path} file from patch because it is directory.")
 }
 
-// `cannot.create.directory.for.patch` (650), with rama's own reason.
+// `cannot.create.directory.for.patch` (650), with Ramify's own reason.
 fn cannot_create(path: &str) -> String {
     format!("Cannot create file: {path}. One of its folders is not a folder")
 }
 
-// rama's own: what IntelliJ does not check or does not say.
+// Ramify's own: what IntelliJ does not check or does not say.
 fn changed_while_applying(path: &str) -> String {
     format!("{path} changed while the patch was being applied: it was not overwritten")
 }
@@ -863,7 +863,7 @@ pub(crate) fn hash_of(bytes: Option<&[u8]>) -> String {
     bytes.map_or_else(|| ABSENT.to_string(), content_hash)
 }
 
-// What `PathsVerifier.nonWriteActionPreCheck` says of a file, plus rama's own refusal of
+// What `PathsVerifier.nonWriteActionPreCheck` says of a file, plus Ramify's own refusal of
 // directories and links (`filterBadFileTypePatches` for directories).
 enum Check {
     Go,
@@ -1558,7 +1558,7 @@ impl Writer<'_, '_> {
 fn aside_numbered(full: &Path, attempt: u32) -> PathBuf {
     let mut name = std::ffi::OsString::from(".");
     name.push(full.file_name().unwrap_or_default());
-    name.push(format!(".rama-patch-{}", std::process::id()));
+    name.push(format!(".ramify-patch-{}", std::process::id()));
     if attempt > 0 {
         name.push(format!("-{attempt}"));
     }

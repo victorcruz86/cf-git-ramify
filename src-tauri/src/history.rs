@@ -110,7 +110,7 @@ pub fn file_history(
     Ok(rows)
 }
 
-// `GitFileHistory.createLogHandler` with `git.file.history.full`. Only rama's own flags of
+// `GitFileHistory.createLogHandler` with `git.file.history.full`. Only Ramify's own flags of
 // `LOG_ALL` go before `--end-of-options`; every name and hash goes after it.
 fn log_args<'a>(start: &'a Start, max_count: &'a str) -> Vec<&'a str> {
     let mut args = git::exact(&[

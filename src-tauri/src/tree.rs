@@ -83,7 +83,7 @@ const ASYNC_DELETE_EXTENSION: &str = ".__del__";
 
 fn is_hidden(name: &str) -> bool {
     HIDDEN_NAMES.contains(&name)
-        // rama never goes into a `.git`, whatever its case (`snapshots::check_path`).
+        // Ramify never goes into a `.git`, whatever its case (`snapshots::check_path`).
         || is_git_dir(name)
         // The `*~` mask.
         || name.ends_with('~')

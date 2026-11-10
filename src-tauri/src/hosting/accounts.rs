@@ -1,7 +1,7 @@
 // GitHub accounts: the list (server and login, in the app's data folder) and their tokens (in the
 // secret store, never on disk). Ports GHAccountManager, GHAccountsDetailsProvider,
 // GHTokenCredentialsUi.acquireLogin and handleError, and GHSecurityUtil.buildNewTokenUrl
-// (plugins/github at idea/241.14494.240). rama's own choices are decisions 1 to 3 of the part 5
+// (plugins/github at idea/241.14494.240). Ramify's own choices are decisions 1 to 3 of the part 5
 // plan: a change is saved at once, an account is `<server>/<login>`, and the list lives in
 // `github-accounts.json`.
 
@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use crate::hosting::http::{Client, HostingError, PARSE_FAILED};
 use crate::hosting::server::GithubServer;
+use crate::migration::old_token_service;
 use crate::secrets::{Secret, SecretError, SecretStore};
 use crate::storage;
 
@@ -30,9 +31,9 @@ const INVALID_DATA: &str = "Invalid authentication data.\n";
 const MISSING_TOKEN: &str = "Missing access token";
 // `CurrentUser`'s operation name, which GithubApiRequestExecutor puts before a parse failure.
 const PROFILE_OPERATION: &str = "Can't get profile information";
-// GHSecurityUtil.MASTER_SCOPES, and rama's name where 241 has `fullProductName` (decision 12),
+// GHSecurityUtil.MASTER_SCOPES, and Ramify's name where 241 has `fullProductName` (decision 12),
 // already encoded as URLUtil.encodeURIComponent does: space `%20`, `,` `%2C` and `:` `%3A`.
-const NEW_TOKEN_QUERY: &str = "description=rama%20GitHub%20integration%20plugin\
+const NEW_TOKEN_QUERY: &str = "description=Ramify%20GitHub%20integration%20plugin\
      &scopes=repo%2Cgist%2Cread%3Aorg%2Cworkflow%2Cread%3Auser%2Cuser%3Aemail";
 
 // Reading, changing and writing the list is one step: two logins at once must not lose one.
@@ -56,7 +57,7 @@ impl GithubAccount {
 // The Keychain item's service. Without the scheme, as the id: `http://` and `https://` of one host
 // are one server (P§1.3).
 pub(crate) fn service(server: &GithubServer) -> String {
-    format!("rama GitHub {}", server.address())
+    format!("ramify GitHub {}", server.address())
 }
 
 // What a login can end with. The texts are those of GHTokenCredentialsUi.handleError, except
@@ -136,12 +137,32 @@ pub fn token(store: &dyn SecretStore, account: &GithubAccount) -> Option<Secret>
 
 // The token of an account: `None` when the store has none, and the store's own error when it
 // could not be read (a Keychain prompt that was denied, for example), which is not a missing
-// token.
+// token. A token that only rama's item holds is copied to Ramify's item the first time it is read;
+// rama's item stays (`migration`). A copy that fails is tried again on the next read.
 pub fn read_token(
     store: &dyn SecretStore,
     account: &GithubAccount,
 ) -> Result<Option<Secret>, SecretError> {
-    store.get(&service(&account.server), &account.login)
+    let new = service(&account.server);
+    if let Some(token) = store.get(&new, &account.login)? {
+        return Ok(Some(token));
+    }
+    let old = old_token_service(&account.server.address());
+    let token = store.get(&old, &account.login)?;
+    if let Some(token) = &token {
+        let _ = store.set(&new, &account.login, token);
+    }
+    Ok(token)
+}
+
+// Ramify's item and then rama's, so that a removed account leaves no token behind. rama's item
+// belongs to another binary and macOS may refuse to delete it: that does not stop Ramify's own
+// item from going, and is not reported.
+fn delete_tokens(store: &dyn SecretStore, account: &GithubAccount) -> Result<(), SecretError> {
+    store.delete(&service(&account.server), &account.login)?;
+    let old = old_token_service(&account.server.address());
+    let _ = store.delete(&old, &account.login);
+    Ok(())
 }
 
 // What a place that needs the token shows when the store failed.
@@ -236,7 +257,7 @@ pub fn login(
         return Err(saving(error));
     }
     if let Some(old) = edited {
-        let _ = store.delete(&service(&old.server), &old.login);
+        let _ = delete_tokens(store, &old);
     }
     Ok(account)
 }
@@ -279,8 +300,7 @@ pub fn remove(store: &dyn SecretStore, base: &Path, id: &str) -> io::Result<()> 
     };
     let account = accounts.remove(position);
     save(base, &accounts)?;
-    store
-        .delete(&service(&account.server), &account.login)
+    delete_tokens(store, &account)
         .map_err(|error| io::Error::other(error.to_string()))
 }
 
@@ -656,6 +676,84 @@ mod tests {
         assert_eq!(list(base.path()).unwrap(), &accounts[1..]);
     }
 
+    fn octocat() -> GithubAccount {
+        GithubAccount {
+            server: GithubServer::github_com(),
+            login: "octocat".to_string(),
+        }
+    }
+
+    fn set_old(store: &MemoryStore, token: &str) {
+        store
+            .set(
+                &old_token_service("github.com"),
+                "octocat",
+                &Secret::new(token.to_string()),
+            )
+            .unwrap();
+    }
+
+    fn old_stored(store: &MemoryStore) -> Option<String> {
+        store
+            .get(&old_token_service("github.com"), "octocat")
+            .unwrap()
+            .map(|secret| secret.expose().to_string())
+    }
+
+    #[test]
+    fn a_token_saved_by_rama_is_read_and_copied_and_the_old_item_stays() {
+        let store = MemoryStore::new();
+        set_old(&store, TOKEN);
+
+        let token = read_token(&store, &octocat()).unwrap();
+
+        assert_eq!(token.as_ref().map(Secret::expose), Some(TOKEN));
+        assert_eq!(
+            stored(&store, &GithubServer::github_com(), "octocat").as_deref(),
+            Some(TOKEN)
+        );
+        assert_eq!(old_stored(&store).as_deref(), Some(TOKEN));
+    }
+
+    #[test]
+    fn the_new_item_wins_over_rama_s() {
+        let store = MemoryStore::new();
+        set_old(&store, OTHER_TOKEN);
+        store
+            .set(
+                &service(&GithubServer::github_com()),
+                "octocat",
+                &Secret::new(TOKEN.to_string()),
+            )
+            .unwrap();
+
+        let token = read_token(&store, &octocat()).unwrap();
+
+        assert_eq!(token.as_ref().map(Secret::expose), Some(TOKEN));
+    }
+
+    #[test]
+    fn without_any_item_there_is_no_token() {
+        let store = MemoryStore::new();
+
+        assert!(read_token(&store, &octocat()).unwrap().is_none());
+        assert_eq!(stored(&store, &GithubServer::github_com(), "octocat"), None);
+    }
+
+    #[test]
+    fn removing_an_account_deletes_rama_s_item_too() {
+        let store = MemoryStore::new();
+        let base = TempDir::new().unwrap();
+        save(base.path(), &[octocat()]).unwrap();
+        set_old(&store, TOKEN);
+        read_token(&store, &octocat()).unwrap();
+
+        remove(&store, base.path(), "github.com/octocat").unwrap();
+
+        assert_eq!(stored(&store, &GithubServer::github_com(), "octocat"), None);
+        assert_eq!(old_stored(&store), None);
+    }
+
     // A store whose writes and deletes fail on demand, as a Keychain that refuses can.
     #[derive(Default)]
     struct RefusingStore {
@@ -691,6 +789,52 @@ mod tests {
             self.refused()?;
             self.inner.delete(service, account)
         }
+    }
+
+    // A Keychain that refuses to delete rama's item, which another binary created.
+    #[derive(Default)]
+    struct RefusingOldStore {
+        inner: MemoryStore,
+    }
+
+    impl SecretStore for RefusingOldStore {
+        fn get(&self, service: &str, account: &str) -> Result<Option<Secret>, SecretError> {
+            self.inner.get(service, account)
+        }
+
+        fn set(&self, service: &str, account: &str, secret: &Secret) -> Result<(), SecretError> {
+            self.inner.set(service, account, secret)
+        }
+
+        fn delete(&self, service: &str, account: &str) -> Result<(), SecretError> {
+            if service.starts_with("rama ") {
+                return Err(SecretError("refused".to_string()));
+            }
+            self.inner.delete(service, account)
+        }
+    }
+
+    #[test]
+    fn a_refused_delete_of_rama_s_item_still_deletes_ramify_s() {
+        let store = RefusingOldStore::default();
+        let base = TempDir::new().unwrap();
+        save(base.path(), &[octocat()]).unwrap();
+        store
+            .set(
+                &old_token_service("github.com"),
+                "octocat",
+                &Secret::new(TOKEN.to_string()),
+            )
+            .unwrap();
+        read_token(&store, &octocat()).unwrap();
+
+        remove(&store, base.path(), "github.com/octocat").unwrap();
+
+        assert!(list(base.path()).unwrap().is_empty());
+        let new = store
+            .get(&service(&GithubServer::github_com()), "octocat")
+            .unwrap();
+        assert!(new.is_none());
     }
 
     // The folder of the list cannot take a new file, so `save` fails and `list` still reads.
@@ -865,14 +1009,14 @@ mod tests {
     }
 
     #[test]
-    fn the_generate_url_is_241s_with_rama_s_name() {
+    fn the_generate_url_is_241s_with_ramify_s_name() {
         assert_eq!(
             generate_url(&GithubServer::github_com()),
-            "https://github.com/settings/tokens/new?description=rama%20GitHub%20integration%20plugin&scopes=repo%2Cgist%2Cread%3Aorg%2Cworkflow%2Cread%3Auser%2Cuser%3Aemail"
+            "https://github.com/settings/tokens/new?description=Ramify%20GitHub%20integration%20plugin&scopes=repo%2Cgist%2Cread%3Aorg%2Cworkflow%2Cread%3Auser%2Cuser%3Aemail"
         );
         assert_eq!(
             generate_url(&GithubServer::parse("http://ghe.example.com:8080/prefix/").unwrap()),
-            "http://ghe.example.com:8080/prefix/settings/tokens/new?description=rama%20GitHub%20integration%20plugin&scopes=repo%2Cgist%2Cread%3Aorg%2Cworkflow%2Cread%3Auser%2Cuser%3Aemail"
+            "http://ghe.example.com:8080/prefix/settings/tokens/new?description=Ramify%20GitHub%20integration%20plugin&scopes=repo%2Cgist%2Cread%3Aorg%2Cworkflow%2Cread%3Auser%2Cuser%3Aemail"
         );
     }
 

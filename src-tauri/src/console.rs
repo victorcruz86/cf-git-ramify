@@ -33,7 +33,7 @@ const WRITING: [&str; 19] = [
     "update-ref",
 ];
 // Read forms of a write command (`GitStashUtils` uses `STASH.readLockingCommand()`). `submodule
-// status` is the read rama runs after every Update (decision 7), which 241 does not run there.
+// status` is the read Ramify runs after every Update (decision 7), which 241 does not run there.
 const READING_FORMS: [(&str, &[&str]); 2] =
     [("stash", &["list", "show"]), ("submodule", &["status"])];
 // For these the normal output is shown, not just the errors (`setStdoutSuppressed(false)`).

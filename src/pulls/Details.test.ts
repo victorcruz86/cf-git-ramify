@@ -213,7 +213,7 @@ test("a_fork_shows_its_owner_before_the_branch", async () => {
 
 // The check-URL decision (2026-11-09): a job's page on the connection's server opens at once; an
 // `https://` page elsewhere (an external CI) opens after a confirmation that shows the full
-// address; anything else (`http://` elsewhere, another scheme) stays disabled with rama's own
+// address; anything else (`http://` elsewhere, another scheme) stays disabled with Ramify's own
 // tooltip, `refusedUrlText`.
 const EXTERNAL = "https://ci.example.com/o/r/42?token=abc&next=<img src=x onerror=alert(1)>#frag";
 

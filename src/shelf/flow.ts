@@ -56,14 +56,14 @@ export const shelvingFailedText = (names: string[]) =>
 
 const quoted = (items: string[]) => items.map((item) => `"${item}"`).join(", ");
 
-// rama's own: what the shelf did not store (a folder, a submodule), which was left as it is.
+// Ramify's own: what the shelf did not store (a folder, a submodule), which was left as it is.
 export const NOT_SHELVED = "Some changes were not shelved";
 export const notShelvedText = (paths: string[]) =>
   paths.length === 1
     ? `${quoted(paths)} could not be stored in the shelf and was left as it is.`
     : `${quoted(paths)} could not be stored in the shelf and were left as they are.`;
 
-// rama's own: the shelf was written but the rollback after it failed.
+// Ramify's own: the shelf was written but the rollback after it failed.
 export const ROLLBACK_FAILED = "Shelved, but not rolled back";
 export const rollbackFailedText = (lists: string[], error: string) =>
   `The changes were saved to the shelf as ${quoted(lists)}. A snapshot of the files was taken ` +
@@ -76,7 +76,7 @@ export function shelvingFailedBody(failed: { name: string; reason: string }[]): 
   return [shelvingFailedText(names), ...reasons].join("\n");
 }
 
-// rama's own: a file split across lists whose hunks the last refresh could not read.
+// Ramify's own: a file split across lists whose hunks the last refresh could not read.
 export function unreadableShelfText(paths: string[]): string {
   const files = paths.map((path) => `"${path}"`).join(", ");
   return `Could not read the changes of ${files}, split across lists: nothing was shelved`;
@@ -274,7 +274,7 @@ export const IMPORT_ERRORS = "Import patches to shelf";
 export const NO_PATCHES = "No patches found";
 export const UNSHELVE_TO_CHANGELIST = "Unshelve Changes to Changelist";
 export const IMPORT_TO_SHELF = "Import to Shelf";
-// rama's own: `Import from .idea` (decision 5 of the overview).
+// Ramify's own: `Import from .idea` (decision 5 of the overview).
 export const IMPORT_IDEA = "Import from .idea";
 export const importedIdeaText = (imported: ShelfImported) =>
   `${imported.added === 1 ? "1 shelved changelist" : `${imported.added} shelved changelists`} imported, ` +

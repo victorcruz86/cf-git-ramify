@@ -54,7 +54,7 @@ afterEach(() => {
   answerPatchDialog(null);
 });
 
-// `rama <folder>`: the repository alone, as before files could be opened.
+// `Ramify <folder>`: the repository alone, as before files could be opened.
 const folder = (repo: string) => ({ repo, file: null, line: null });
 
 const INFO = {
@@ -764,7 +764,7 @@ test("shows_the_window_when_mounting_finishes", async () => {
   expect(order.indexOf("repo_open")).toBeLessThan(order.indexOf("show_window"));
 });
 
-// Decision 1 of part 4: `rama <file>:<line>` opens the file's repository, then the viewer there.
+// Decision 1 of part 4: `Ramify <file>:<line>` opens the file's repository, then the viewer there.
 test("a_file_argument_opens_its_repository_and_the_viewer_at_the_line", async () => {
   mockApp({
     initial_target: () => ({ repo: "/repo/a", file: "src/main file.rs", line: 12 }),
@@ -1390,7 +1390,7 @@ test("a commit of the dialog that fails after closing does not push", async () =
   await vi.waitFor(() => expect(get(notifications).map(({ title }) => title)).toContain("hook failed"));
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(calls("commit_changes")).toHaveLength(1);
-  expect(screen.queryByRole("dialog", { name: "Push Commits to rama" })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Push Commits to ramify" })).toBeNull();
   expect(calls("push_info")).toHaveLength(0);
 });
 
@@ -1648,6 +1648,131 @@ test("the Settings menu opens the settings", async () => {
   expect(await screen.findByRole("dialog", { name: "Settings" })).toBeTruthy();
 });
 
+test("Open chooses a folder with the macOS chooser and opens it", async () => {
+  vi.mocked(chooseNative).mockReset();
+  vi.mocked(chooseNative).mockResolvedValueOnce("/repo/a");
+  mockApp({ repo_open: () => INFO });
+  render(App);
+  await screen.findByText("0.0.1");
+
+  await fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+  expect(calls("repo_open")[0][1]).toEqual({ repo: "/repo/a" });
+  expect(chooseNative).toHaveBeenCalledWith(
+    expect.objectContaining({ title: "Open File or Project", directory: true, multiple: false }),
+  );
+  expect((screen.getByLabelText("Repository path") as HTMLInputElement).value).toBe("/repo/a");
+});
+
+test("a cancelled chooser opens nothing and it starts in the typed folder", async () => {
+  vi.mocked(chooseNative).mockReset();
+  vi.mocked(chooseNative).mockResolvedValueOnce(null);
+  mockApp({ repo_open: () => INFO });
+  render(App);
+  await screen.findByText("0.0.1");
+  const input = screen.getByLabelText("Repository path");
+  await fireEvent.input(input, { target: { value: "/repo/b" } });
+
+  await fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+  await waitFor(() => expect(chooseNative).toHaveBeenCalledTimes(1));
+  expect(chooseNative).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "/repo/b" }));
+  await tick();
+  expect(calls("repo_open")).toHaveLength(0);
+  expect((input as HTMLInputElement).value).toBe("/repo/b");
+});
+
+test("Enter in the path field opens the typed path without the chooser", async () => {
+  vi.mocked(chooseNative).mockReset();
+  mockApp({ repo_open: () => INFO });
+  render(App);
+  await screen.findByText("0.0.1");
+  const input = screen.getByLabelText("Repository path");
+  await fireEvent.input(input, { target: { value: "/repo/a" } });
+
+  await fireEvent.submit(input.closest("form")!);
+
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+  expect(calls("repo_open")[0][1]).toEqual({ repo: "/repo/a" });
+  expect(chooseNative).not.toHaveBeenCalled();
+});
+
+test("the File Open menu opens the chooser", async () => {
+  vi.mocked(chooseNative).mockReset();
+  vi.mocked(chooseNative).mockResolvedValueOnce("/repo/a");
+  mockApp({ repo_open: () => INFO });
+  render(App);
+  await screen.findByText("0.0.1");
+
+  deliver("open-project-chooser");
+
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+  expect(calls("repo_open")[0][1]).toEqual({ repo: "/repo/a" });
+});
+
+test("a recent project from the menu opens like a typed one", async () => {
+  mockApp({ repo_open: () => INFO });
+  render(App);
+  await screen.findByText("0.0.1");
+
+  deliver("open-recent", { path: "/repo/a", exists: true });
+
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+  expect(calls("repo_open")[0][1]).toEqual({ repo: "/repo/a" });
+});
+
+test("a recent project that no longer exists can be removed from the list", async () => {
+  mockApp({ repo_open: () => INFO, recent_projects_remove: () => undefined });
+  render(App);
+  await screen.findByText("0.0.1");
+
+  deliver("open-recent", { path: "/gone/app", exists: false });
+
+  const dialog = await screen.findByRole("dialog", { name: "Reopen Project" });
+  expect(dialog.textContent).toContain("The path /gone/app does not exist.");
+  expect(dialog.textContent).toContain(
+    "If it is on a removable or network drive, please make sure that the drive is connected.",
+  );
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Remove From List" }));
+
+  await waitFor(() => expect(calls("recent_projects_remove")).toHaveLength(1));
+  expect(calls("recent_projects_remove")[0][1]).toEqual({ path: "/gone/app" });
+  expect(screen.queryByRole("dialog", { name: "Reopen Project" })).toBeNull();
+  expect(calls("repo_open")).toHaveLength(0);
+});
+
+test("with a modal dialog open, File > Open… and Recent Projects do nothing", async () => {
+  vi.mocked(chooseNative).mockReset();
+  mockApp({ repo_open: () => INFO });
+  render(App);
+  await screen.findByText("0.0.1");
+  deliver("open-settings");
+  await screen.findByRole("dialog", { name: "Settings" });
+
+  deliver("open-recent", { path: "/repo/a", exists: true });
+  deliver("open-project-chooser");
+  await tick();
+
+  expect(calls("repo_open")).toHaveLength(0);
+  expect(chooseNative).not.toHaveBeenCalled();
+});
+
+test("OK keeps a recent project that no longer exists in the list", async () => {
+  mockApp({ repo_open: () => INFO, recent_projects_remove: () => undefined });
+  render(App);
+  await screen.findByText("0.0.1");
+
+  deliver("open-recent", { path: "/gone/app", exists: false });
+
+  const dialog = await screen.findByRole("dialog", { name: "Reopen Project" });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Reopen Project" })).toBeNull());
+  expect(calls("recent_projects_remove")).toHaveLength(0);
+  expect(calls("repo_open")).toHaveLength(0);
+});
+
 test("saved settings apply without restarting", async () => {
   await openRepo();
 
@@ -1856,7 +1981,7 @@ test("commit_from_the_popup_goes_to_the_commit_view", async () => {
 
 const PUSH_COMMANDS = {
   push_info: () => ({
-    repository: "rama",
+    repository: "ramify",
     branch: "main",
     head: "a".repeat(40),
     remotes: ["origin"],
@@ -1884,7 +2009,7 @@ test("cmd_alt_k_commits_and_opens_the_push_dialog", async () => {
   await fireEvent.input(field, { target: { value: "message" } });
   await fireEvent.keyDown(field, { key: "˚", code: "KeyK", metaKey: true, altKey: true });
 
-  expect(await screen.findByRole("dialog", { name: "Push Commits to rama" })).toBeTruthy();
+  expect(await screen.findByRole("dialog", { name: "Push Commits to ramify" })).toBeTruthy();
   expect(calls("commit_changes")).toHaveLength(1);
 });
 
@@ -1895,7 +2020,7 @@ test("cmd_shift_k_opens_the_dialog", async () => {
 
   await fireEvent.keyDown(window, { key: "K", code: "KeyK", metaKey: true, shiftKey: true });
 
-  expect(await screen.findByRole("dialog", { name: "Push Commits to rama" })).toBeTruthy();
+  expect(await screen.findByRole("dialog", { name: "Push Commits to ramify" })).toBeTruthy();
   expect(calls("push_info")).toEqual([["push_info", { branch: null }]]);
 });
 
@@ -1906,7 +2031,7 @@ test("push_from_the_popup_opens_the_dialog", async () => {
 
   await fireEvent.click(await screen.findByRole("treeitem", { name: "Push…" }));
 
-  expect(await screen.findByRole("dialog", { name: "Push Commits to rama" })).toBeTruthy();
+  expect(await screen.findByRole("dialog", { name: "Push Commits to ramify" })).toBeTruthy();
 });
 
 test("the_git_menu_also_opens_push", async () => {
@@ -1916,7 +2041,7 @@ test("the_git_menu_also_opens_push", async () => {
 
   deliver("git-action", "Vcs.Push");
 
-  expect(await screen.findByRole("dialog", { name: "Push Commits to rama" })).toBeTruthy();
+  expect(await screen.findByRole("dialog", { name: "Push Commits to ramify" })).toBeTruthy();
 });
 
 test("on_open_what_was_saved_comes_back_and_changing_repository_withdraws_it", async () => {
@@ -2251,7 +2376,7 @@ test("define_remote_from_the_push_dialog_opens_define_remote_and_reloads_the_inf
   render(App);
   await screen.findByRole("button", { name: "Git Branch: main" });
   deliver("git-action", "Vcs.Push");
-  const push = await screen.findByRole("dialog", { name: "Push Commits to rama" });
+  const push = await screen.findByRole("dialog", { name: "Push Commits to ramify" });
 
   await fireEvent.click(within(push).getByRole("button", { name: "Define remote" }));
   const define = await screen.findByRole("dialog", { name: "Define Remote" });
@@ -2804,7 +2929,7 @@ test("a_stash_list_that_fails_shows_an_error_node", async () => {
   expect((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-// `VcsShowToolWindowTabAction` at the level of the app: active and selected does nothing (rama
+// `VcsShowToolWindowTabAction` at the level of the app: active and selected does nothing (Ramify
 // has no hidden tool window), active elsewhere selects, inactive activates the tab.
 test("show_git_stash_selects_activates_or_leaves_the_tab", async () => {
   mockApp({
@@ -2926,7 +3051,7 @@ test("the_git_menu_shelve_changes_opens_shelve_changes_and_shelves_the_included_
   expect(screen.queryByRole("dialog", { name: "Shelve Changes" })).toBeNull();
 });
 
-// P26: rama's own `Import Shelf from .idea…` of Git › Uncommitted Changes runs the Shelf tab's
+// P26: Ramify's own `Import Shelf from .idea…` of Git › Uncommitted Changes runs the Shelf tab's
 // import, also while the shelf is empty and the tab is not there; the lists it adds bring the tab.
 test("the_git_menu_import_shelf_from_idea_imports_while_the_shelf_is_empty", async () => {
   let lists: unknown[] = [];
@@ -3047,7 +3172,7 @@ test("show_shelf_toggles", async () => {
   await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
   const tree = screen.getByRole("tree", { name: "Shelf" });
   await waitFor(() => expect(document.activeElement).toBe(tree));
-  // In front with the focus inside: the hiding step, which rama has not, changes nothing.
+  // In front with the focus inside: the hiding step, which Ramify has not, changes nothing.
   deliver("git-action", "Vcs.Show.Shelf");
   expect(tab.getAttribute("aria-selected")).toBe("true");
 
@@ -3183,7 +3308,7 @@ test("the_main_window_is_inert_while_an_apply_runs", async () => {
 });
 
 // `PatchClipboardListener`: with `Analyze and apply patch from clipboard on the fly` on, the app
-// becoming active (the backend's `app-activated`, not a move between rama's own windows) offers
+// becoming active (the backend's `app-activated`, not a move between Ramify's own windows) offers
 // the dialog for a patch on the clipboard, once for that text.
 test("on_the_fly_offers_the_dialog_once_per_clipboard_text", async () => {
   const text = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n";
@@ -3296,7 +3421,7 @@ test("current_file_follows_the_project_tree_and_runs_on_its_selection", async ()
     "Vcs.ShowTabbedFileHistory",
   ]);
 
-  // Without the focus (another of rama's windows has it) Current File is not this window's.
+  // Without the focus (another of Ramify's windows has it) Current File is not this window's.
   const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
   deliver("git-action", "Compare.SameVersion");
   await new Promise((resolve) => setTimeout(resolve, 20));

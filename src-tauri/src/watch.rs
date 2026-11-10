@@ -355,7 +355,7 @@ mod tests {
         seen
     }
 
-    // `git -C <repo>`, as from a terminal: not through rama.
+    // `git -C <repo>`, as from a terminal: not through Ramify.
     fn terminal(repo: &Path, args: &[&str]) {
         let output = crate::test_support::git_command()
             .arg("-C")
@@ -598,7 +598,7 @@ mod tests {
         assert!(!switched.is_empty(), "git checkout -b");
     }
 
-    // Devin, say, works in the main checkout and in another worktree while rama shows this one.
+    // Devin, say, works in the main checkout and in another worktree while Ramify shows this one.
     #[test]
     fn activity_in_the_other_checkouts_does_not_refresh_a_linked_worktree() {
         let main = TempRepo::new();

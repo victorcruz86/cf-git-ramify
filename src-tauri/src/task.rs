@@ -195,7 +195,7 @@ impl TaskContext {
         self.report(text, fraction);
     }
 
-    // A line of rama's own in the Console, among git's output.
+    // A line of Ramify's own in the Console, among git's output.
     pub fn console_line(&self, text: &str) {
         self.shared.console.output(text);
     }

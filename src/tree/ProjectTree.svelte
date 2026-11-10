@@ -289,7 +289,7 @@
     menu = { x, y };
   }
 
-  // `ProjectViewPopupMenu`, with what rama has of it: `Edit Source` (`LangActions.xml:844`) and,
+  // `ProjectViewPopupMenu`, with what Ramify has of it: `Edit Source` (`LangActions.xml:844`) and,
   // in `VersionControlsGroup`, `Git ▸`.
   function menuItems(): MenuItem[] {
     const entries = selectedEntries();

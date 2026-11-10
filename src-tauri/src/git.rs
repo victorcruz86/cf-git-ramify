@@ -942,7 +942,7 @@ mod tests {
     }
 
     // The main repository was moved: the worktree's `gitdir:` points nowhere. git says `not a git
-    // repository`, which rama shows as it shows it for any folder (`<path> is not a Git
+    // repository`, which Ramify shows as it shows it for any folder (`<path> is not a Git
     // repository`); nothing panics and no watcher starts.
     #[test]
     fn a_worktree_with_a_broken_gitdir_fails_to_open_as_not_a_repository() {

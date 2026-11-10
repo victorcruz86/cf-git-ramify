@@ -7,14 +7,14 @@
   - `Configure GPG Key…` with the key list;
   - the `GPG Signature` log column;
   - the signature in the commit details;
-- a linked worktree or a submodule opened as a repository, with rama noticing every change made to it from outside;
+- a linked worktree or a submodule opened as a repository, with Ramify noticing every change made to it from outside;
 - `git submodule update --recursive` after Update Project;
 - submodule diffs with 241's contents and titles;
 - the close of the phase: the matrix, `NOTICE`, the reference-change report and the phase summary. The consumption measurement is a separate step that runs only when the user says so.
 
 **Architecture:**
 - **Worktrees and submodules.** The watcher learns the repository's real git folder and its common folder from git (`rev-parse --absolute-git-dir` and `--git-common-dir`) instead of assuming `<root>/.git`. That closes part 1's parked P7.
-- **Signing.** It moves to 241's model: `commit.gpgSign` and `user.signingkey` in the repository's git config, which git applies by itself. rama's app-wide `Sign commits` setting and its `-S` go away. A new `src-tauri/src/gpg.rs` finds `gpg`, lists the secret keys, and reads and writes the two config values.
+- **Signing.** It moves to 241's model: `commit.gpgSign` and `user.signingkey` in the repository's git config, which git applies by itself. Ramify's app-wide `Sign commits` setting and its `-S` go away. A new `src-tauri/src/gpg.rs` finds `gpg`, lists the secret keys, and reads and writes the two config values.
 - **Signatures.** They are read lazily, only for the visible rows and the selected commits, with 241's `git log --no-walk=unsorted --format=%H%n%G?%n%GS%n%GF --stdin`. They never go into the all-commits log format.
 - **Submodules.**
   - A new `src-tauri/src/submodules.rs` reads `git submodule status --recursive` and decides the update.
@@ -26,7 +26,7 @@
 
 **Research** (not in the repository). The implementer reads it before each task:
 - `.superpowers/phase-4/research-part-6-241.md` (P§n): the 241 behaviour, texts and commands, and git 2.54 checks;
-- `.superpowers/phase-4/research-part-6-rama.md` (M§n): rama today, with lines and the observations at its end.
+- `.superpowers/phase-4/research-part-6-ramify.md` (M§n): Ramify today, with lines and the observations at its end.
 
 **Reference:**
 - Tag `idea/241.14494.240`.
@@ -40,7 +40,7 @@
 - clear old `*.rcgu.o` and incremental caches under `src-tauri/target/debug` between tasks when the disk is under 50 GiB free.
 
 The commands:
-- TS: `PATH=$HOME/.cache/rama-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH nice -n 15 pnpm exec vitest run --maxWorkers=2 <files>` and `nice -n 15 pnpm exec tsc --noEmit -p .`
+- TS: `PATH=$HOME/.cache/ramify-toolchain/node-v22.23.4-darwin-arm64/bin:$PATH nice -n 15 pnpm exec vitest run --maxWorkers=2 <files>` and `nice -n 15 pnpm exec tsc --noEmit -p .`
 - Rust: `PATH=$HOME/.cargo/bin:$PATH CARGO_BUILD_JOBS=3 nice -n 15 cargo test --manifest-path src-tauri/Cargo.toml --lib <filter> -- --test-threads=3`
 - Integration: the same with `--no-fail-fast --test '*'`, in every final verification.
 - Python: `python3 -I -m unittest discover -s scripts`
@@ -50,8 +50,8 @@ The commands:
 The overview's Global Constraints, including phase 3's. The ones this part leans on most:
 - **Changing the repository.** Every command that changes files, the index or `.git/config` calls `flush_diff_window` first and takes `RepoLocks`. The guard tests and `scripts/smoke_ipc.py` follow the new commands.
 - **Git.** Real `git` with arguments and no shell. Hashes go through `diff::check_hash`, paths through `--literal-pathspecs` and `--`, and every `git log` and `git show` gets `-c log.showSignature=false`.
-- **gpg.** It runs only by an absolute path that rama resolved itself, with no shell. A passphrase never passes through rama: gpg's own pinentry asks for it.
-- **No lost work.** A submodule update never overwrites a submodule's local changes. git refuses, and rama shows git's error.
+- **gpg.** It runs only by an absolute path that Ramify resolved itself, with no shell. A passphrase never passes through Ramify: gpg's own pinentry asks for it.
+- **No lost work.** A submodule update never overwrites a submodule's local changes. git refuses, and Ramify shows git's error.
 - **Untrusted text.** Key user IDs, signer names, submodule paths and hashes are shown as text, with no `{@html}`.
 - **Tests stay offline.**
   - Worktrees come from `git worktree add` in throwaway repositories.
@@ -66,37 +66,37 @@ They add to the overview's decisions. The user approves them with this plan, and
 
 1. **Signing moves to 241's model.**
    - `Configure GPG Key…` writes `commit.gpgSign` and `user.signingkey` to the repository's local git config, as 241 does (P§1.5), and git signs by itself.
-   - rama's app-wide `Sign commits` checkbox and `Signing key` field (`settings.rs:60-61`, `SettingsView.svelte:303-322`) and the `-S<key>` that `commit.rs:432` adds are removed.
+   - Ramify's app-wide `Sign commits` checkbox and `Signing key` field (`settings.rs:60-61`, `SettingsView.svelte:303-322`) and the `-S<key>` that `commit.rs:432` adds are removed.
    - The user's IntelliJ settings and global git config show no signing (P§1.8).
-   - Cost: anyone who relied on rama's app-wide toggle has to set it per repository.
+   - Cost: anyone who relied on Ramify's app-wide toggle has to set it per repository.
 2. **Where `Configure GPG Key…` goes.** It goes in the settings, in the existing commit section, where 241 has it (`Settings > Version Control > Git > Commit`, P§1.1), with 241's status label. The overview said "the commit dialog or panel gear", but that place does not exist in 241.
-   - rama has one repository per window, so only the single-root dialog is built (P§1.2). Its title is `Configure GPG Key`, without the trailing space that 241's empty `mention` leaves.
+   - Ramify has one repository per window, so only the single-root dialog is built (P§1.2). Its title is `Configure GPG Key`, without the trailing space that 241's empty `mention` leaves.
    - Cost: no multi-root table.
 3. **Finding gpg.** gpg is found once, as git is found:
    - `gpg.program` from the repository's git config, when set;
    - else `gpg` on `PATH`;
    - else `/opt/homebrew/bin/gpg`, `/usr/local/bin/gpg` and `/usr/local/MacGPG2/bin/gpg`.
 
-   Signing also needs git's own gpg call to find gpg when rama is opened from Finder, whose PATH is `/usr/bin:/bin:/usr/sbin:/sbin` (M§6). So every git rama starts gets those three folders appended to its `PATH`, when they are not already in it. 241 inherits the login shell's environment instead.
+   Signing also needs git's own gpg call to find gpg when Ramify is opened from Finder, whose PATH is `/usr/bin:/bin:/usr/sbin:/sbin` (M§6). So every git Ramify starts gets those three folders appended to its `PATH`, when they are not already in it. 241 inherits the login shell's environment instead.
 
    Cost: a gpg installed elsewhere needs `gpg.program`.
 4. **SSH signing keeps working, and 241's trap is closed.**
    - With `gpg.format=ssh`, the settings row and dialog show the configured key as it is, as 241 does.
-   - Unlike 241, the dialog refuses to write a GPG key ID while `gpg.format` is `ssh`, because that breaks every commit (P§1.7). The refusal text is rama's own: `Commits are signed with SSH (gpg.format=ssh). Change gpg.format to use a GPG key.`
+   - Unlike 241, the dialog refuses to write a GPG key ID while `gpg.format` is `ssh`, because that breaks every commit (P§1.7). The refusal text is Ramify's own: `Commits are signed with SSH (gpg.format=ssh). Change gpg.format to use a GPG key.`
    - Unchecking still writes `commit.gpgSign false`.
-   - Cost: one rama text.
+   - Cost: one Ramify text.
 5. **No `See GPG setup guide` link.** It opens a JetBrains help topic (P§1.2, P§1.6), and the app uses no JetBrains services.
-   - A commit that fails with `gpg failed to sign the data` keeps rama's existing `Could not sign the commit: …` error, with git's output.
+   - A commit that fails with `gpg failed to sign the data` keeps Ramify's existing `Could not sign the commit: …` error, with git's output.
    - Cost: no guide link.
-6. **The signature icons are rama's own drawings**, as for every icon so far: a green check badge for verified, and an amber badge for the other signed states. 241's texts and states are kept.
+6. **The signature icons are Ramify's own drawings**, as for every icon so far: a green check badge for verified, and an amber badge for the other signed states. 241's texts and states are kept.
    - Cost: a visual difference.
 7. **The submodule update fits one repository per window.**
-   - 241 runs `GitSubmoduleUpdater` only when the submodule and its parent are both registered roots (P§4.2), which never happens in rama.
-   - rama decides from the open repository itself. After an Update Project that ends `Success` or `NothingToUpdate`, it runs `git submodule update --recursive` once in the repository when `git submodule status --recursive` shows an initialized submodule (status ` ` or `+`) whose HEAD is detached.
+   - 241 runs `GitSubmoduleUpdater` only when the submodule and its parent are both registered roots (P§4.2), which never happens in Ramify.
+   - Ramify decides from the open repository itself. After an Update Project that ends `Success` or `NothingToUpdate`, it runs `git submodule update --recursive` once in the repository when `git submodule status --recursive` shows an initialized submodule (status ` ` or `+`) whose HEAD is detached.
    - It runs inside the same task and the same lock, after the repository's own changes are restored, and its output goes to the Console.
-   - rama does not save the submodules' local changes first, as 241 does. git refuses to overwrite them, so nothing is lost, and rama shows the error as a notification: title `Submodule update failed` (rama's own), with git's output in the body. 241 only logs it and shows a misleading `Local changes were not restored`.
+   - Ramify does not save the submodules' local changes first, as 241 does. git refuses to overwrite them, so nothing is lost, and Ramify shows the error as a notification: title `Submodule update failed` (Ramify's own), with git's output in the body. 241 only logs it and shows a misleading `Local changes were not restored`.
    - Cost: a submodule with local changes is not updated until they are committed or stashed in it.
-8. **Every gitlink is shown as a submodule.** 241 does so only for registered roots (P§4.3); rama does it for every mode-160000 entry.
+8. **Every gitlink is shown as a submodule.** 241 does so only for registered roots (P§4.3); Ramify does it for every mode-160000 entry.
    - **Contents:** the commit hash as text, as 241 does, instead of today's `Subproject commit <hash>`.
    - **The local side:** the submodule's checked-out HEAD, as 241 does, instead of today's index commit (M§5).
    - **Titles:** `{0} (Submodule)` (`GitB:1382`), with the side titles of P§4.4.
@@ -115,7 +115,7 @@ They add to the overview's decisions. The user approves them with this plan, and
    - a submodule inside a linked worktree's superproject;
    - a worktree whose main repository was moved, which leaves a broken `gitdir`.
 
-   rama opens the first three and sees index, branch and stash changes made from a terminal. The broken one fails with git's error and no panic. Tests in Task 1.
+   Ramify opens the first three and sees index, branch and stash changes made from a terminal. The broken one fails with git's error and no panic. Tests in Task 1.
 2. **gpg in every state:**
    - not installed, failing, or listing no key;
    - several keys, including disabled keys and keys without signing capability;
@@ -170,7 +170,7 @@ Research: P§3, P§4.1, M§1. Decisions 9 and overview 19. This closes P7 (`docs
   - `objects_and_locks_in_the_common_dir_are_ignored`.
   - `a_worktree_with_a_broken_gitdir_fails_to_open_with_gits_error` (Review Focus 1).
   - `a_normal_clone_still_registers_a_single_watch`, as before.
-  - `checking_out_a_branch_used_by_another_worktree_shows_could_not_checkout_with_gits_error` (`GitB:1156`, P§3.4). This pins rama's existing checkout error against 241's.
+  - `checking_out_a_branch_used_by_another_worktree_shows_could_not_checkout_with_gits_error` (`GitB:1156`, P§3.4). This pins Ramify's existing checkout error against 241's.
 - [ ] **Step 2: Check that they fail.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Check that they pass**, along with every existing `watch.rs` test.
@@ -262,7 +262,7 @@ Research: P§1.1-1.3. Decisions 2 and 4.
   - `the_dialog_lists_keys_with_their_user_id_and_selects_the_configured_one`.
   - `an_empty_key_list_says_cannot_find_suitable_private_key`.
   - `ok_writes_the_selected_key_and_unchecked_writes_no_key`.
-  - `with_ssh_the_dialog_shows_the_key_and_ok_with_a_gpg_key_shows_ramas_refusal` (decision 4).
+  - `with_ssh_the_dialog_shows_the_key_and_ok_with_a_gpg_key_shows_ramifys_refusal` (decision 4).
   - `a_user_id_with_markup_is_text`.
   - `the_old_sign_commits_fields_are_gone`.
 - [ ] **Step 2: Check that they fail.**
@@ -289,7 +289,7 @@ Research: P§2, M§2 (log, columns, details). Decision 6.
     - the icon and the status text;
     - for a verified signature, `Signature fingerprint:` and `Signed by:` with their values (`GitB:1099-1100`), in the context-help colour;
     - nothing for `N`.
-  - `src/lib/icons/`: `signatureVerified.svg` and `signatureSigned.svg`, rama's own drawings.
+  - `src/lib/icons/`: `signatureVerified.svg` and `signatureSigned.svg`, Ramify's own drawings.
 - Test: `src-tauri/src/log/signatures.rs`, `src/log/LogView.test.ts`, `src/log/DetailsPanel.test.ts`, `src/log/ViewOptions.test.ts`, `src/log/HistoryTab.test.ts`.
 
 **Interfaces:**
@@ -346,7 +346,7 @@ Research: P§4.3-4.4, M§5. Decision 8.
   - `src-tauri/src/worktree_diff.rs`: the local side of a gitlink is the submodule's checked-out HEAD, from `git -C <path> rev-parse HEAD`, validated. A submodule that is not checked out gives an empty side.
   - `src-tauri/src/compare.rs`.
   - `src/diff/` and `src/compare/actions.ts`: a change whose path is a gitlink gets:
-    - the window title `{0} (Submodule)` (`GitB:1382`), where `{0}` is the `<name> (<parent folder>)` title rama already builds;
+    - the window title `{0} (Submodule)` (`GitB:1382`), where `{0}` is the `<name> (<parent folder>)` title Ramify already builds;
     - the side titles of P§4.4: in Local Changes, the parent's full HEAD hash and `Your version` (`DiffB:91`); in the log, the parent commit's full hash and the commit's full hash.
 - Test: `src-tauri/src/diff.rs`, `src-tauri/src/worktree_diff.rs`, `src-tauri/src/compare.rs`, `src/diff/*.test.ts`, `src/compare/actions.test.ts`.
 
@@ -385,9 +385,9 @@ Research: P§4.3-4.4, M§5. Decision 8.
     - blocks for `config/gpg/*`, the signature column, `GitSubmoduleUpdater`, the submodule diff, and the worktree/submodule repository files.
 
 **The manual checklist includes:**
-- a real GPG key: list, select, a signed commit from rama opened from Finder, and the column and details on it;
+- a real GPG key: list, select, a signed commit from Ramify opened from Finder, and the column and details on it;
 - a real SSH-signed repository with an allowed-signers file;
-- a linked worktree and a submodule opened in rama, with terminal changes showing up;
+- a linked worktree and a submodule opened in Ramify, with terminal changes showing up;
 - Update Project on a repository with a submodule in detached HEAD, including one with local changes;
 - a submodule diff from Local Changes and from the log;
 - scrolling the `git/git` log with the `GPG Signature` column shown.
@@ -401,7 +401,7 @@ Research: P§4.3-4.4, M§5. Decision 8.
 Decision 10. It is not dispatched with the others: the controller asks the user first.
 
 - [ ] **Step 1:** Build the release app once: `nice -n 15 pnpm tauri build --bundles app`.
-- [ ] **Step 2:** Prepare `~/rama-medida/git` with the phase 3 recipe (`docs/reports/phase-3-validation.md`, "To repeat the measurement").
+- [ ] **Step 2:** Prepare `~/ramify-measure/git` with the phase 3 recipe (`docs/reports/phase-3-validation.md`, "To repeat the measurement").
 - [ ] **Step 3:** Wait for the gate: input idle for at least 180 s (`ioreg -c IOHIDSystem`, `HIDIdleTime`), a 1-minute load under 15, and the screen not locked. Give up after 30 minutes and record why.
-- [ ] **Step 4:** Run `python3 scripts/measure.py --app <binary> --repo ~/rama-medida/git --out docs/reports/phase-4-consumption.json --runs 5` twice: once with the `GPG Signature` column hidden and once with it shown.
+- [ ] **Step 4:** Run `python3 scripts/measure.py --app <binary> --repo ~/ramify-measure/git --out docs/reports/phase-4-consumption.json --runs 5` twice: once with the `GPG Signature` column hidden and once with it shown.
 - [ ] **Step 5:** Write the table into the phase summary, with phase 0's headers (Goal / Target / App / IntelliJ / Met), and commit with `docs: phase 4 consumption`.

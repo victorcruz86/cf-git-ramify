@@ -594,10 +594,10 @@ mod tests {
 
     // `PatchBuilderTest`: the files of `before/` and `after/` of each case, by name, with
     // `(revision before)` as the before revision. IntelliJ's test writes `(revision after)` for
-    // the after one, and rama writes `(date <ms>)` of the file on disk (here there is none), so
+    // the after one, and Ramify writes `(date <ms>)` of the file on disk (here there is none), so
     // the version ids are masked. `addFileForNullProject` builds with absolute paths, which end
     // up relative to the case folder; `contextLineCount` sets the registry to 5 lines;
-    // `modifyWithCRLF` writes with CRLF there, and rama always with `\n`.
+    // `modifyWithCRLF` writes with CRLF there, and Ramify always with `\n`.
     #[test]
     fn writer_matches_intellij_fixtures() {
         let root = fixtures("patch");

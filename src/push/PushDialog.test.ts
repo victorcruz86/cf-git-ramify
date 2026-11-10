@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), e
 const HASH = "a1b2c3d4".repeat(5);
 
 const INFO: PushInfo = {
-  repository: "rama",
+  repository: "ramify",
   branch: "main",
   head: HASH,
   remotes: ["origin", "upstream"],
@@ -108,7 +108,7 @@ afterEach(cleanup);
 test("title_push_commits_to_repo", async () => {
   await open();
 
-  expect(screen.getByRole("dialog", { name: "Push Commits to rama" })).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Push Commits to ramify" })).toBeTruthy();
   expect(push().className).toContain("default");
   expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
 });

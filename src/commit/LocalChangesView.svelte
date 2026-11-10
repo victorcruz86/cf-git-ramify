@@ -85,7 +85,7 @@
   }
 
   // `LocalChangesListView`'s double click and Enter (`ChangesViewManager.java:361-369`): the
-  // sources of the selection (`OpenSourceUtil.openSourcesFrom`), in rama's viewer; a file that is
+  // sources of the selection (`OpenSourceUtil.openSourcesFrom`), in Ramify's viewer; a file that is
   // not on disk opens nothing. With `Show on Double-Click` ▸ `Diff`, the diff
   // (`isPreviewOnDoubleClickAllowed`, `isPreviewOnEnterAllowed`, 641-651).
   function open(file: FileChange, comparison?: StageComparison) {

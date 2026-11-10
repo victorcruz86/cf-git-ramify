@@ -23,6 +23,10 @@
     onGitFileAction,
     onLeaveRefused,
     onOpenSettings,
+    onOpenProjectChooser,
+    onOpenRecent,
+    recentProjectsRemove,
+    type RecentProject,
     onRepoChanged,
     onSelectionChanged,
     onSettingsChanged,
@@ -54,6 +58,8 @@
   } from "./lib/api";
   import AskpassDialog from "./lib/AskpassDialog.svelte";
   import MessageEditorDialog from "./editor/MessageEditorDialog.svelte";
+  import { homeDir } from "@tauri-apps/api/path";
+  import { chooseFolder } from "./lib/choosers";
   import { errorText } from "./lib/errors";
   import Icon from "./lib/Icon.svelte";
   import { matchShortcut, type ActionId } from "./lib/keymap";
@@ -133,6 +139,7 @@
   import type { ShelfSelection } from "./shelf/shelfTree";
   import { framesRunning, runPerf } from "./perf/run";
   import SettingsView from "./settings/SettingsView.svelte";
+  import MissingProjectDialog from "./recent/MissingProjectDialog.svelte";
   import { showTabStep } from "./stash/flow";
   import StashTab from "./stash/StashTab.svelte";
   import VersionControlWindow from "./vcs/VersionControlWindow.svelte";
@@ -249,6 +256,8 @@
   let comparison: StageComparison = "local";
   let settings = $state.raw<Settings | null>(null);
   let settingsOpen = $state(false);
+  // A recent project whose path no longer exists, while its dialog asks what to do.
+  let missingProject = $state<string | null>(null);
   let branchWidget = $state<HTMLButtonElement>();
   // `null` means in the center of the window, as from the Git menu.
   let branchesPopup = $state.raw<{ anchor: { x: number; y: number } | null } | null>(null);
@@ -367,7 +376,7 @@
   let treeChanges = $state(false);
   let branchesToCompare = $state(false);
   let windowFocused = $state(document.hasFocus());
-  // Whether any window of rama has the focus (`app-activated` / `app-deactivated`).
+  // Whether any window of Ramify has the focus (`app-activated` / `app-deactivated`).
   let appFocused = $state(document.hasFocus());
 
   const fileMenuState = (): GitFileState => ({
@@ -506,7 +515,7 @@
   };
 
   // `Git.Show.Stash` (`VcsShowToolWindowTabAction`), which `Unstash Changes…` tries first. The window is
-  // active when it is in front with the focus inside. rama has no hidden tool window, so the step that
+  // active when it is in front with the focus inside. Ramify has no hidden tool window, so the step that
   // hides it leaves everything as it is. `false` if the tab is not there.
   function showGitStash(): boolean {
     const owner = windowOf("stash");
@@ -692,7 +701,7 @@
     if ((CURRENT_FILE_ACTIONS as string[]).includes(action)) {
       return document.hasFocus() ? fileActionRun(mainFileSelection, fileMenuState(), action) : null;
     }
-    // rama's own: the Shelf tab's `Import from .idea`, also while the tab is not there.
+    // Ramify's own: the Shelf tab's `Import from .idea`, also while the tab is not there.
     if (action === "Shelf.ImportFromIdea") return () => void shelfActions.importIdea(current.path);
     // `ChangesView.Revert`: Local Changes' Rollback, in front.
     if (action === "ChangesView.Revert") return () => void rollbackLocalChanges();
@@ -736,7 +745,7 @@
   }
 
   // `PatchClipboardListener`: the clipboard is looked at when the app becomes active (the backend
-  // says so; moving between rama's own windows is not), with a repository open and nothing modal.
+  // says so; moving between Ramify's own windows is not), with a repository open and nothing modal.
   const onTheFly = clipboardWatcher(defaultApplyApi, (text) => {
     if (modalOpen()) return;
     void applyContext().then((context) => context && applies.applyText(context, text));
@@ -772,6 +781,46 @@
   function submit(event: SubmitEvent) {
     event.preventDefault();
     open();
+  }
+
+  // File > Recent Projects: an existing path opens like a typed one.
+  function openRecent({ path, exists }: RecentProject) {
+    if (!exists) {
+      missingProject = path;
+      return;
+    }
+    if (opening) return;
+    repoPath = path;
+    void open();
+  }
+
+  async function answerMissingProject(remove: boolean) {
+    const path = missingProject;
+    missingProject = null;
+    if (!remove || path === null) return;
+    try {
+      await recentProjectsRemove(path);
+    } catch (failure) {
+      showError(failure);
+    }
+  }
+
+  // Open and File > Open…: IntelliJ's `Open File or Project` chooser, for folders only. It starts in
+  // the typed folder, or in the home folder; the chosen folder is opened like a typed one.
+  async function chooseAndOpen() {
+    if (opening) return;
+    try {
+      const typed = repoPath.trim();
+      const chosen = await chooseFolder({
+        title: "Open File or Project",
+        defaultPath: typed || (await homeDir().catch(() => undefined)),
+      });
+      if (chosen === null) return;
+      repoPath = chosen;
+      await open();
+    } catch (failure) {
+      showError(failure);
+    }
   }
 
   // The next visit to the tab loads it again.
@@ -889,6 +938,13 @@
       }),
       onSettingsChanged(settingsChanged),
       onOpenSettings(() => (settingsOpen = true)),
+      // Like the Git menu, with a modal dialog open they do not act.
+      onOpenProjectChooser(() => {
+        if (!modalOpen()) void chooseAndOpen();
+      }),
+      onOpenRecent((project) => {
+        if (!modalOpen()) openRecent(project);
+      }),
       onGitAction(gitAction),
       onGitFileAction(fileActionFromViewer),
       onAnnotationShowInLog(annotationInLog),
@@ -973,7 +1029,7 @@
     try {
       version = await appVersion();
       applySettings(await settingsGet());
-      // `rama <file>[:<line>]` also shows the file, once its repository is open (decision 1).
+      // `Ramify <file>[:<line>]` also shows the file, once its repository is open (decision 1).
       const initial = await initialTarget();
       if (initial) {
         repoPath = initial.repo;
@@ -1034,7 +1090,7 @@
       placeholder="Repository path"
       aria-label="Repository path"
     />
-    <button class="button" disabled={opening}>Open</button>
+    <button type="button" class="button" disabled={opening} onclick={chooseAndOpen}>Open</button>
     <span class="version">{version}</span>
   </form>
 
@@ -1293,6 +1349,10 @@
 
 {#if settingsOpen && settings}
   <SettingsView {settings} onclose={() => (settingsOpen = false)} />
+{/if}
+
+{#if missingProject !== null}
+  <MissingProjectDialog path={missingProject} onanswer={answerMissingProject} />
 {/if}
 
 <AskpassDialog />

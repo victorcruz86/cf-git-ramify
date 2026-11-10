@@ -657,7 +657,7 @@ Save `stages` in each run, retry if the report JSON is half written and list on 
 
 - [ ] **Step 2: Measure again**
 
-Run: `python3 scripts/measure.py --app src-tauri/target/release/rama --repo ~/rama-medida/git --out docs/reports/phase-1-consumption.json --runs 5`
+Run: `python3 scripts/measure.py --app src-tauri/target/release/ramify --repo ~/ramify-measure/git --out docs/reports/phase-1-consumption.json --runs 5`
 Expected: JSON with memory, CPU and startup.
 
 The measurement mode now opens the Commit view, with a modified file and its diff. Leave the window visible during the measurement.

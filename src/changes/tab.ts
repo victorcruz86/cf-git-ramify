@@ -54,7 +54,7 @@ let lastId = 0;
 export const hasLocalSide = (tab: ChangesRequest) => tab.right === LOCAL_REVISION;
 
 // `DvcsCompareSettings.shouldSwapSidesInCompareBranches`, which the application remembers.
-const SWAP_KEY = "rama.compareBranches.swapSides";
+const SWAP_KEY = "ramify.compareBranches.swapSides";
 
 export function swapSidesSetting(): boolean {
   try {

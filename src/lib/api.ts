@@ -773,7 +773,7 @@ export const perfEnabled = () => invoke<boolean>("perf_enabled");
 export const perfReport = (json: string) => invoke<void>("perf_report", { json });
 export const appVersion = () => invoke<string>("app_version");
 export const initialRepo = () => invoke<string | null>("initial_repo");
-// `rama <file>[:<line>]`: the file's repository, and the file relative to it. A folder comes as
+// `Ramify <file>[:<line>]`: the file's repository, and the file relative to it. A folder comes as
 // `repo` alone, as `initialRepo` gives it.
 export interface InitialTarget {
   repo: string;
@@ -2587,6 +2587,17 @@ export const onSelectionLost = (handler: (lost: LostSelection) => void) =>
 export const onSettingsChanged = (handler: (settings: Settings) => void) =>
   listen<Settings>("settings-changed", (event) => handler(event.payload));
 export const onOpenSettings = (handler: () => void) => listen("open-settings", handler);
+// File > Recent Projects: the chosen repository, and whether its path still exists.
+export interface RecentProject {
+  path: string;
+  exists: boolean;
+}
+export const onOpenRecent = (handler: (project: RecentProject) => void) =>
+  listen<RecentProject>("open-recent", (event) => handler(event.payload));
+export const recentProjectsRemove = (path: string) => invoke<void>("recent_projects_remove", { path });
+// File > Open…: the main window shows the folder chooser.
+export const onOpenProjectChooser = (handler: () => void) =>
+  listen("open-project-chooser", handler);
 // The label of this page's window: the `?window=` its URL was loaded with (`main.ts`), the main
 // window having none. An event sent to one window (`emit_to`) also reaches every listener
 // registered without a target (`{ kind: "Any" }`), so those events are listened to with it.

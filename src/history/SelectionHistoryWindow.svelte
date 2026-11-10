@@ -49,7 +49,7 @@
   // Revision texts, authors and messages are untrusted: shown as text only.
 
   // `VcsConfiguration.SHOW_ONLY_CHANGED_IN_SELECTION_DIFF`, on by default.
-  const CHANGES_ONLY_KEY = "rama.selectionHistory.changesOnly";
+  const CHANGES_ONLY_KEY = "ramify.selectionHistory.changesOnly";
 
   let request = $state.raw<SelectionRequest | null>(null);
   let data = $state.raw<HistoryData>(emptyData());

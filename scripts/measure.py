@@ -186,7 +186,7 @@ def measure_run(app, repo):
         load_before = os.getloadavg()[0]
         started = time.time()
         process = subprocess.Popen(
-            [app, repo], env={**os.environ, "RAMA_PERF_OUT": report_file.name}
+            [app, repo], env={**os.environ, "RAMIFY_PERF_OUT": report_file.name}
         )
         try:
             report = wait_for_report(report_file.name, process)

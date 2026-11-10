@@ -67,7 +67,7 @@ async function select(name: string) {
 }
 
 async function mount() {
-  render(ProjectTree, { root: "/Users/me/rama" });
+  render(ProjectTree, { root: "/Users/me/ramify" });
   await waitFor(() => expect(names()).toContain("src"));
   await waitFor(() => expect(handlers.has("repo-changed")).toBe(true));
 }
@@ -139,13 +139,13 @@ afterEach(() => {
 test("the_root_opens_with_its_entries_coloured_from_git_status", async () => {
   await mount();
 
-  expect(names()).toEqual(["rama", "[ab]", "build", "src", ".gitignore", "debug.log"]);
+  expect(names()).toEqual(["ramify", "[ab]", "build", "src", ".gitignore", "debug.log"]);
   expect(calls("repo_status")).toEqual([["repo_status", { includeIgnored: true }]]);
   await waitFor(() => expect(colorOf("debug.log")).toBe("var(--tree-status-ignored)"));
   expect(colorOf("build")).toBe("var(--tree-status-ignored)");
   expect(colorOf("src")).toBeNull();
   expect(colorOf(".gitignore")).toBeNull();
-  expect(row("rama").getAttribute("aria-expanded")).toBe("true");
+  expect(row("ramify").getAttribute("aria-expanded")).toBe("true");
   expect(row("src").getAttribute("aria-expanded")).toBe("false");
 });
 
@@ -154,7 +154,7 @@ test("double_click_opens_a_file_and_toggles_a_folder", async () => {
 
   await fireEvent.dblClick(row("src"));
   await waitFor(() => expect(names()).toContain("a.txt"));
-  expect(names()).toEqual(["rama", "[ab]", "build", "src", "lib", "a.txt", ".gitignore", "debug.log"]);
+  expect(names()).toEqual(["ramify", "[ab]", "build", "src", "lib", "a.txt", ".gitignore", "debug.log"]);
   expect(row("src").getAttribute("aria-expanded")).toBe("true");
   expect(colorOf("a.txt")).toBe("var(--tree-status-modified)");
   expect(opened()).toEqual([]);
@@ -163,7 +163,7 @@ test("double_click_opens_a_file_and_toggles_a_folder", async () => {
   expect(opened()).toEqual([[{ path: "src/a.txt", revision: null, line: null }]]);
 
   await fireEvent.dblClick(row("src"));
-  expect(names()).toEqual(["rama", "[ab]", "build", "src", ".gitignore", "debug.log"]);
+  expect(names()).toEqual(["ramify", "[ab]", "build", "src", ".gitignore", "debug.log"]);
   // Opening it again shows what was read, and reads it again only on a change.
   await fireEvent.dblClick(row("src"));
   expect(names()).toContain("a.txt");
@@ -231,7 +231,7 @@ test("a_change_on_disk_recolours_and_relists_open_folders", async () => {
   handlers.get("repo-changed")?.({ stash: false, shelf: false });
 
   await waitFor(() => expect(names()).toContain("b.txt"));
-  expect(names()).toEqual(["rama", "[ab]", "build", "src", "a.txt", "b.txt", ".gitignore", "debug.log", "new.txt"]);
+  expect(names()).toEqual(["ramify", "[ab]", "build", "src", "a.txt", "b.txt", ".gitignore", "debug.log", "new.txt"]);
   await waitFor(() => expect(colorOf("a.txt")).toBe("var(--tree-status-added)"));
   expect(colorOf("b.txt")).toBe("var(--tree-status-unknown)");
   expect(colorOf("debug.log")).toBeNull();
@@ -259,7 +259,7 @@ test("a_folder_read_then_collapsed_shows_what_changed_on_disk_when_expanded_agai
 
   await fireEvent.dblClick(row("src"));
   await waitFor(() => expect(names()).toContain("d.ts"));
-  expect(names()).toEqual(["rama", "[ab]", "build", "src", "lib", "d.ts", "c.txt", ".gitignore", "debug.log"]);
+  expect(names()).toEqual(["ramify", "[ab]", "build", "src", "lib", "d.ts", "c.txt", ".gitignore", "debug.log"]);
   expect(listedDirs()).toEqual(["", "src", "src/lib", "", "src", "src/lib"]);
 
   // Expand All reads again what changed while it was collapsed, too.
@@ -275,7 +275,7 @@ test("a_folder_read_then_collapsed_shows_what_changed_on_disk_when_expanded_agai
 test("a_refresh_reads_at_most_16_folders_at_once_and_changes_meanwhile_make_one_more_pass", async () => {
   const folders = Array.from({ length: 40 }, (_, index) => folder(`f${index}`));
   disk = { "": folders, ...Object.fromEntries(folders.map((entry) => [entry.path, [file(`${entry.path}/x`)]])) };
-  render(ProjectTree, { root: "/Users/me/rama" });
+  render(ProjectTree, { root: "/Users/me/ramify" });
   await waitFor(() => expect(names()).toContain("f0"));
   await waitFor(() => expect(handlers.has("repo-changed")).toBe(true));
   hold = true;
@@ -329,13 +329,13 @@ test("cmd_minus_collapses_all_and_cmd_equals_expands_all", async () => {
   await select("lib");
 
   await key("-", { metaKey: true });
-  expect(names()).toEqual(["rama", "[ab]", "build", "src", ".gitignore", "debug.log"]);
+  expect(names()).toEqual(["ramify", "[ab]", "build", "src", ".gitignore", "debug.log"]);
   expect(treeSelection()).toEqual(["src"]);
 
   await key("=", { metaKey: true });
   await waitFor(() => expect(names()).toContain("b.ts"));
   expect(names()).toEqual([
-    "rama",
+    "ramify",
     "[ab]",
     "-x*?.txt",
     "a.txt",
@@ -353,7 +353,7 @@ test("cmd_minus_collapses_all_and_cmd_equals_expands_all", async () => {
 
 test("speed_search_jumps_between_matching_names", async () => {
   await mount();
-  await select("rama");
+  await select("ramify");
 
   // `SpeedSearchBase.findElement`: the first match from the selected row on, any part of the name.
   await key("d");
@@ -384,7 +384,7 @@ test("the_context_menu_has_edit_source_and_the_git_file_menu", async () => {
   const reported: [FileTarget[], boolean][] = [];
   changes = [change("debug.log", "ignored"), change("src/a.ts", "modified")];
   render(ProjectTree, {
-    root: "/Users/me/rama",
+    root: "/Users/me/ramify",
     gitMenu,
     onfiles: (files: FileTarget[], hasChanges: boolean) => reported.push([files, hasChanges]),
   });

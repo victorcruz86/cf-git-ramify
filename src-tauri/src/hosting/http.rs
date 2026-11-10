@@ -1,7 +1,7 @@
 // The HTTP client for GitHub's REST and GraphQL APIs. It follows GithubApiRequestExecutor,
 // GithubApiRequest, GithubErrorMessage, GHEServerVersionChecker and LinkHttpHeaderValue (plugins/
 // github and platform/collaboration-tools at idea/241.14494.240), and HttpRequests for the
-// redirects. rama's own choices (decision 12 of the part 5 plan): the user agent is `rama`, there
+// redirects. Ramify's own choices (decision 12 of the part 5 plan): the user agent is `Ramify`, there
 // is no gzip, and the `Authorization` header only goes to the scheme, host and port the caller
 // named.
 
@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::secrets::Secret;
 
-pub const USER_AGENT: &str = "rama";
+pub const USER_AGENT: &str = "ramify";
 // Connections wait for the timeout of the settings; reads for HttpRequests' default.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -72,7 +72,7 @@ impl fmt::Display for HostingError {
             HostingError::Unreachable => formatter.write_str("Server is unreachable"),
             // CollaborationToolsBundle 8.
             HostingError::MissingToken => formatter.write_str("Missing access token"),
-            // As every other cancelled operation of rama (`GitError::Cancelled`).
+            // As every other cancelled operation of Ramify (`GitError::Cancelled`).
             HostingError::Cancelled => formatter.write_str("The operation was cancelled"),
         }
     }
@@ -485,7 +485,7 @@ impl ErrorMessage {
     }
 
     // `getPresentableError`, with Java's `null` for what is missing. 241 joins the details with
-    // `<br/>` for its HTML error panel; rama shows the text as text, so a line break.
+    // `<br/>` for its HTML error panel; Ramify shows the text as text, so a line break.
     fn presentable(&self) -> String {
         let Some(errors) = &self.errors else {
             return self
@@ -826,7 +826,7 @@ mod tests {
         assert_eq!(missing.to_string(), "404 Not Found - Not Found");
 
         // GithubErrorMessage.getPresentableError, with what is missing written `null`. 241 joins
-        // the details with `<br/>` for its HTML panel; rama shows text, so a line break.
+        // the details with `<br/>` for its HTML panel; Ramify shows text, so a line break.
         let invalid = json_error(
             422,
             "Unprocessable Entity",
@@ -1054,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_carry_rama_s_headers() {
+    fn requests_carry_ramify_s_headers() {
         let fake = FakeGitHub::new();
         fake.script(vec![
             Reply::json("GET", "/api/v3/user", 200, "OK", r#"{"login":"octocat"}"#),
@@ -1092,7 +1092,7 @@ mod tests {
         let requests = fake.requests();
         assert_eq!(requests.len(), 3);
         for request in &requests {
-            assert_eq!(request.header("user-agent"), Some("rama"));
+            assert_eq!(request.header("user-agent"), Some("ramify"));
             assert_eq!(request.header("accept-encoding"), None);
         }
         assert_eq!(

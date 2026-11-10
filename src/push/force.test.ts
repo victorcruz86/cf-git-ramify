@@ -19,7 +19,7 @@ import PushRejectedDialog from "./PushRejectedDialog.svelte";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const INFO: PushInfo = {
-  repository: "rama",
+  repository: "ramify",
   branch: "feature",
   head: "a".repeat(40),
   remotes: ["origin"],

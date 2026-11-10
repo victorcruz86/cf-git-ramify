@@ -5,7 +5,7 @@
    "ok": true,
    "ipc": false,
    "ms": 1,
-   "detail": "\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/repo\""
+   "detail": "\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/ramify-smoke-b5dvarpg/repo\""
   },
   {
    "command": "app_version",
@@ -33,7 +33,7 @@
    "ok": true,
    "ipc": false,
    "ms": 153,
-   "detail": "{\"path\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/repo\",\"head\":\"9e3637e9cfa4d16eedbd775ac7f3140c14c458b7\",\"branch\":\"main\",\"recovery\":null,\"pending\":[],\"unfinished\":false}"
+   "detail": "{\"path\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/ramify-smoke-b5dvarpg/repo\",\"head\":\"9e3637e9cfa4d16eedbd775ac7f3140c14c458b7\",\"branch\":\"main\",\"recovery\":null,\"pending\":[],\"unfinished\":false}"
   },
   {
    "command": "repo_status",
@@ -873,7 +873,7 @@
    "ok": true,
    "ipc": false,
    "ms": 14,
-   "detail": "[{\"name\":\"origin\",\"url\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/remote.git\",\"pushUrl\":null}]"
+   "detail": "[{\"name\":\"origin\",\"url\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/ramify-smoke-b5dvarpg/remote.git\",\"pushUrl\":null}]"
   },
   {
    "command": "remote_add",
@@ -908,14 +908,14 @@
    "ok": true,
    "ipc": false,
    "ms": 522,
-   "detail": "{\"path\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/repo-clone\",\"warning\":null}"
+   "detail": "{\"path\":\"/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/ramify-smoke-b5dvarpg/repo-clone\",\"warning\":null}"
   },
   {
    "command": "init_repository",
    "ok": false,
    "ipc": false,
    "ms": 1,
-   "detail": "The folder '/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/rama-smoke-b5dvarpg/repo-new' does not exist"
+   "detail": "The folder '/private/var/folders/sf/ky80nz8x637dbnq_pywlnmb80000gn/T/ramify-smoke-b5dvarpg/repo-new' does not exist"
   },
   {
    "command": "open_exclude_file",

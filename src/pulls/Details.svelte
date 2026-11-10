@@ -294,7 +294,7 @@
 
   // An external CI's page, held as `new URL(...).href` (a Unicode host as punycode, the rest
   // percent-encoded): the dialog shows it and `openUrl` gets it, so both are the same string.
-  // An external CI's page: `https://` only, and only after rama has shown the full address.
+  // An external CI's page: `https://` only, and only after Ramify has shown the full address.
   let external = $state<string | null>(null);
 
   // What the dialog shows must be what opens: no control, format (bidi, zero width), separator (a plain space aside) or
@@ -357,7 +357,7 @@
   }
 
   // `Github.PullRequest.Changes.Popup` (P§6.8), without `Mark as Viewed` and without `Open in
-  // Separate Window`: rama's diff is always a window of its own.
+  // Separate Window`: Ramify's diff is always a window of its own.
   function changesItems(): MenuItem[] {
     const none = chosenFiles().length === 0;
     return [
@@ -421,7 +421,7 @@
   // `Details…`: a chooser of the jobs, each opening its URL. A page on the connection's server
   // opens at once; an `https://` page elsewhere (an external CI) opens after a confirmation that
   // shows the full address (the user's decision of 2026-11-09); any other URL is disabled, and its
-  // tooltip says why under its state: rama's own `refusedUrlText`, which 241 does not have.
+  // tooltip says why under its state: Ramify's own `refusedUrlText`, which 241 does not have.
   function ciMenu(anchor: HTMLElement, jobs: CiJob[]) {
     const bounds = anchor.getBoundingClientRect();
     const refused = (job: CiJob) => job.url !== null && !isExternalHttps(job.url) && !openableUrl(connection, job.url);

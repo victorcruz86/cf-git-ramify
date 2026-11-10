@@ -109,7 +109,7 @@ test("ok_with_nothing_changed_does_not_write", async () => {
   expect(writes()).toHaveLength(0);
 });
 
-test("with_ssh_the_dialog_shows_the_key_and_ok_with_a_gpg_key_shows_ramas_refusal", async () => {
+test("with_ssh_the_dialog_shows_the_key_and_ok_with_a_gpg_key_shows_ramifys_refusal", async () => {
   mock({ sign: true, key: "/home/me/.ssh/id_ed25519.pub", ssh: true }, [{ id: "AAAA", userId: null }]);
   const onclose = await open();
   expect(screen.getByRole("combobox").textContent).toContain("/home/me/.ssh/id_ed25519.pub");

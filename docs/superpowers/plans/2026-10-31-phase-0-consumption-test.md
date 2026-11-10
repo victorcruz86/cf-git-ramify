@@ -13,7 +13,7 @@
 **Scope of this plan:** phase 0 only. Phases 1 to 4 will have their own plan, because the result of this phase may change the technology. The log and diff code of this phase is a technical test: what is kept is decided when planning phase 1.
 
 **Decisions of this plan** (the design leaves them to whoever builds):
-- Internal name of the app: `rama`.
+- Internal name of the app: `Ramify`.
 - Interface in Svelte 5, for its low runtime consumption.
 - Log drawn on a canvas with virtual rows.
 - Log index in memory only in this phase.
@@ -46,7 +46,7 @@
 - Create: `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `src-tauri/build.rs`, `src-tauri/src/main.rs`, `src-tauri/src/lib.rs`
 
 **Interfaces:**
-- Produces: `rama_lib::run()`, Tauri command `app_version() -> String`, and `pnpm test` and `cargo test` working.
+- Produces: `ramify_lib::run()`, Tauri command `app_version() -> String`, and `pnpm test` and `cargo test` working.
 
 - [ ] **Step 1: Initialize the repository and pin versions**
 
@@ -56,7 +56,7 @@ Do not change the system's default Rust: other projects of the user may depend o
 
 - [ ] **Step 2: Generate the project**
 
-Create the project with Tauri 2 and the Svelte with TypeScript template. Identifier: `dev.rama.app`, window title `rama`, window of 1280×800. Add `vitest` and `@testing-library/svelte`.
+Create the project with Tauri 2 and the Svelte with TypeScript template. Identifier: `dev.ramify.app`, window title `Ramify`, window of 1280×800. Add `vitest` and `@testing-library/svelte`.
 
 - [ ] **Step 3: Write the failing test**
 
@@ -352,7 +352,7 @@ git commit -m "feat: diff view of a commit"
 **Interfaces:**
 - Consumes: `LogView`, `DiffView`, commands from Tasks 5 and 6.
 - Produces:
-  - Command `perf_report(json: String)`, which writes the JSON to the path in `RAMA_PERF_OUT`
+  - Command `perf_report(json: String)`, which writes the JSON to the path in `RAMIFY_PERF_OUT`
   - `frameStats(deltasMs: number[]) -> { frames, p50, p95, p99, over50ms }`
   - `measure.py --app <binary> --repo <path> --out <json> --runs 5`
   - `measure.py --pid <pid> --out <json>`, to measure IntelliJ
@@ -370,7 +370,7 @@ Expected: FAIL
 
 - [ ] **Step 3: Implement the measurement mode in the app**
 
-With `RAMA_PERF_OUT` defined, the app:
+With `RAMIFY_PERF_OUT` defined, the app:
 1. Records the time from the start of the process until the first rows are drawn.
 2. Opens the most recent commit with changes and its first text file.
 3. Scrolls the log from start to end in 10 seconds with `requestAnimationFrame`, saving the duration of each frame.
@@ -383,7 +383,7 @@ Without that variable, none of this runs.
 WebKit processes are not children of the app, so they are identified by difference: list the PIDs with `com.apple.WebKit` before and after launching the app. Close other WebKit-based apps during the measurement, or the results get mixed.
 
 For each run:
-1. Launch the app in release mode with `RAMA_PERF_OUT`.
+1. Launch the app in release mode with `RAMIFY_PERF_OUT`.
 2. Wait for the report and 30 seconds of rest.
 3. Sum `phys_footprint` with `footprint --noCategories <pid>` over all the processes.
 4. Measure CPU with `ps -o %cpu` for 30 seconds without changes to files.
@@ -398,19 +398,19 @@ Expected: PASS
 
 - [ ] **Step 6: Prepare the measurement repository**
 
-Run: `git clone https://github.com/git/git ~/rama-medida/git && git -C ~/rama-medida/git rev-list --all --count`
+Run: `git clone https://github.com/git/git ~/ramify-measure/git && git -C ~/ramify-measure/git rev-list --all --count`
 Expected: a count close to 100,000. Note it in the report, whatever it is.
 
 Do not use a partial clone: the diff would have to download blobs and the measurement would not be valid.
 
 - [ ] **Step 7: Measure the app**
 
-Run: `pnpm tauri build --no-bundle && python3 scripts/measure.py --app src-tauri/target/release/rama --repo ~/rama-medida/git --out docs/reports/phase-0-consumption.json --runs 5`
+Run: `pnpm tauri build --no-bundle && python3 scripts/measure.py --app src-tauri/target/release/ramify --repo ~/ramify-measure/git --out docs/reports/phase-0-consumption.json --runs 5`
 Expected: JSON with memory, CPU, startup and frames.
 
 - [ ] **Step 8: Measure IntelliJ as a reference**
 
-Ask the user to open `~/rama-medida/git` in IntelliJ 2023.2.3, with the Git window and a diff open, and to wait for it to finish indexing. Then, with the PID of IntelliJ:
+Ask the user to open `~/ramify-measure/git` in IntelliJ 2023.2.3, with the Git window and a diff open, and to wait for it to finish indexing. Then, with the PID of IntelliJ:
 
 Run: `python3 scripts/measure.py --pid <pid> --out docs/reports/phase-0-intellij.json`
 Expected: JSON with memory and CPU.

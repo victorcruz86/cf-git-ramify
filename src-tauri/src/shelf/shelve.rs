@@ -17,7 +17,7 @@ use crate::shelf::{self, BinaryChange, ShelvedList};
 use crate::snapshots::SnapshotId;
 
 pub(crate) const SHELVE_REASON: &str = "Shelve changes";
-// rama's own: the changes were read from a repository that is no longer the open one.
+// Ramify's own: the changes were read from a repository that is no longer the open one.
 pub(crate) const SWITCHED_BEFORE_SHELVING: &str =
     "Another repository was opened before the changes were shelved";
 

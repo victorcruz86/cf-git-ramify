@@ -36,6 +36,7 @@ use crate::log::signatures::SignatureLoads;
 use crate::messages;
 use crate::operation::{self, RepoState};
 use crate::preserve::{self, Pending};
+use crate::recent;
 use crate::remotes;
 use crate::rollback::{self, RollbackError};
 use crate::settings::{self, Settings};
@@ -199,8 +200,19 @@ const QUIT_WAIT: Duration = Duration::from_secs(60);
 const LEAVE_REFUSED_EVENT: &str = "leave-refused";
 const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
 const OPEN_SETTINGS_EVENT: &str = "open-settings";
-pub const QUIT_MENU_ID: &str = "rama-quit";
-pub const SETTINGS_MENU_ID: &str = "rama-settings";
+const OPEN_PROJECT_CHOOSER_EVENT: &str = "open-project-chooser";
+pub const QUIT_MENU_ID: &str = "ramify-quit";
+pub const SETTINGS_MENU_ID: &str = "ramify-settings";
+pub const OPEN_MENU_ID: &str = "ramify-open";
+// IntelliJ's File > Open…, with no accelerator: in its macOS keymap ⌘O is Go to Class.
+const OPEN_MENU_TEXT: &str = "Open…";
+const MAC_FILE_MENU: &str = "File";
+pub const RECENT_MENU_ID: &str = "ramify-recent";
+// `group.$LRU.text`.
+const RECENT_MENU_TEXT: &str = "Recent Projects";
+// A row's id is this prefix and the repository's path: the click needs nothing else.
+const RECENT_ITEM_PREFIX: &str = "ramify-recent:";
+const OPEN_RECENT_EVENT: &str = "open-recent";
 const SETTINGS_MENU_POSITION: usize = 2;
 const GIT_ACTION_EVENT: &str = "git-action";
 const WINDOW_MENU: &str = "Window";
@@ -225,7 +237,7 @@ const CREATE_PATCH_TEXT: &str = "Create Patch from Local Changes...";
 // `ChangesView.Shelve`, the same kind of action.
 const SHELVE_CHANGES: &str = "ChangesView.Shelve";
 const SHELVE_CHANGES_TEXT: &str = "Shelve Changes...";
-// rama's own (IntelliJ has no such action): the Shelf tab's `Import from .idea`, reachable while
+// Ramify's own (IntelliJ has no such action): the Shelf tab's `Import from .idea`, reachable while
 // the shelf is still empty and the tab is not there.
 const IMPORT_IDEA_SHELF: &str = "Shelf.ImportFromIdea";
 // What only applies with an operation in progress. The native menu cannot hide an entry: it starts
@@ -243,7 +255,7 @@ const ONGOING_MENU: [&str; 8] = [
 ];
 
 // `GitHub.MainMenu` (github-core-config.xml:111-120), a popup group added before
-// `Git.Configure.Remotes`. Of its actions rama has only `Github.View.Pull.Request` (:97-99,
+// `Git.Configure.Remotes`. Of its actions Ramify has only `Github.View.Pull.Request` (:97-99,
 // `GithubViewPullRequestsAction`), which is visible only while the Pull Requests window is
 // available; 241 hides a popup group whose actions are all hidden. The native menu cannot hide
 // an entry: the group is taken out and put back, like Create Patch, and it starts out.
@@ -343,7 +355,7 @@ const GIT_MENU: [GitMenuEntry; 31] = [
             ),
         ],
     ),
-    // `Git.MainMenu.LocalChanges`, with rama's own `Import Shelf from .idea…` after Show Shelf.
+    // `Git.MainMenu.LocalChanges`, with Ramify's own `Import Shelf from .idea…` after Show Shelf.
     // `Vcs.UmlDiff` is an empty group in the Community Edition.
     Group(
         LOCAL_CHANGES_GROUP,
@@ -1163,6 +1175,7 @@ pub fn close_main(app: AppHandle) {
 pub fn app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::default(app)?;
     replace_quit(app, &menu)?;
+    add_open_item(app, &menu)?;
     add_git_menu(app, &menu)?;
     Ok(menu)
 }
@@ -1194,6 +1207,144 @@ fn replace_quit(app: &AppHandle, menu: &Menu<Wry>) -> tauri::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn is_file_menu(text: &str) -> bool {
+    text == MAC_FILE_MENU
+}
+
+// First in `File`, above `Close Window`, as IntelliJ's Open… heads its File menu.
+fn add_open_item(app: &AppHandle, menu: &Menu<Wry>) -> tauri::Result<()> {
+    for item in menu.items()? {
+        let MenuItemKind::Submenu(submenu) = item else {
+            continue;
+        };
+        if is_file_menu(&submenu.text()?) {
+            let open = MenuItem::with_id(app, OPEN_MENU_ID, OPEN_MENU_TEXT, true, None::<&str>)?;
+            // Off until `refresh_recent_menu` fills it, as IntelliJ's with an empty list.
+            let recent = Submenu::with_id(app, RECENT_MENU_ID, RECENT_MENU_TEXT, false)?;
+            submenu.insert(&PredefinedMenuItem::separator(app)?, 0)?;
+            submenu.insert(&recent, 0)?;
+            submenu.insert(&open, 0)?;
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn recent_menu_id(path: &str) -> String {
+    format!("{RECENT_ITEM_PREFIX}{path}")
+}
+
+pub fn recent_menu_path(id: &str) -> Option<&str> {
+    id.strip_prefix(RECENT_ITEM_PREFIX)
+}
+
+fn recent_submenu(app: &AppHandle) -> tauri::Result<Option<Submenu<Wry>>> {
+    let Some(menu) = app.menu() else {
+        return Ok(None);
+    };
+    for item in menu.items()? {
+        let MenuItemKind::Submenu(submenu) = item else {
+            continue;
+        };
+        for entry in submenu.items()? {
+            if let MenuItemKind::Submenu(recent) = entry {
+                if recent.id().0 == RECENT_MENU_ID {
+                    return Ok(Some(recent));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+// Reads the list again (another window may have added to it) and rebuilds the submenu, without
+// this window's repository.
+pub fn refresh_recent_menu(app: &AppHandle) {
+    let Ok(base) = app.path().app_data_dir() else {
+        return;
+    };
+    let projects = match recent::load(&base) {
+        Ok(projects) => projects,
+        Err(error) => {
+            eprintln!("Could not read the recent projects: {error}");
+            return;
+        }
+    };
+    let current = app
+        .state::<AppState>()
+        .repo
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|session| session.path.to_string_lossy().into_owned());
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let entries = recent::menu_entries(&projects, current.as_deref(), home.as_deref());
+    if let Err(error) = fill_recent_menu(app, &entries) {
+        eprintln!("Could not update the Recent Projects menu: {error}");
+    }
+}
+
+fn fill_recent_menu(app: &AppHandle, entries: &[recent::Entry]) -> tauri::Result<()> {
+    let Some(submenu) = recent_submenu(app)? else {
+        return Ok(());
+    };
+    for item in submenu.items()? {
+        submenu.remove(&item)?;
+    }
+    for entry in entries {
+        let id = recent_menu_id(&entry.path);
+        let item = MenuItem::with_id(app, id, &entry.label, true, None::<&str>)?;
+        submenu.append(&item)?;
+    }
+    submenu.set_enabled(!entries.is_empty())
+}
+
+fn remember_recent(app: &AppHandle, path: &str) {
+    let Ok(base) = app.path().app_data_dir() else {
+        return;
+    };
+    if let Err(error) = recent::record(&base, path) {
+        eprintln!("Could not save the recent projects: {error}");
+    }
+    refresh_recent_menu(app);
+}
+
+#[derive(Clone, Serialize)]
+struct OpenRecent {
+    path: String,
+    exists: bool,
+}
+
+// `ReopenProjectAction`: the main window opens it, or asks about a path that no longer exists.
+pub fn open_recent(app: &AppHandle, path: &str) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = reveal(&window);
+        resume_and_notify(app);
+        let payload = OpenRecent {
+            path: path.to_string(),
+            exists: Path::new(path).exists(),
+        };
+        let _ = window.emit_to(MAIN_WINDOW, OPEN_RECENT_EVENT, payload);
+    }
+}
+
+// `Remove From List` in the dialog for a path that does not exist.
+#[tauri::command]
+pub async fn recent_projects_remove(path: String, app: AppHandle) -> Result<(), ApiError> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| failed(error.to_string()))?;
+    blocking_api(move || {
+        recent::remove(&base, &path)
+            .map(drop)
+            .map_err(|error| failed(error.to_string()))
+    })
+    .await?;
+    refresh_recent_menu(&app);
     Ok(())
 }
 
@@ -1515,6 +1666,7 @@ pub async fn repo_open(
     *state.log.lock().unwrap() = None;
     replace_watcher(&state, Some(watcher));
     state.branch_sync.request();
+    remember_recent(&app_for_diff, &info.path);
     // It belonged to another repository; what it showed, and its selection, no longer apply.
     if let Some(window) = app_for_diff.get_webview_window(DIFF_WINDOW) {
         let _ = window.destroy();
@@ -1592,7 +1744,7 @@ fn run_shelf_cleaner(receiver: Receiver<PathBuf>, period: Duration, mut clean: i
     }
 }
 
-const PERF_OUT_VARIABLE: &str = "RAMA_PERF_OUT";
+const PERF_OUT_VARIABLE: &str = "RAMIFY_PERF_OUT";
 
 const TASK_CHANGED_EVENT: &str = "task-changed";
 const CONSOLE_LINE_EVENT: &str = "console-line";
@@ -1923,7 +2075,7 @@ pub enum MergeSession {
     Contents(MergeContents),
 }
 
-// `ApplicationActivationListener`: whether one of rama's windows has the focus. Moving between them
+// `ApplicationActivationListener`: whether one of Ramify's windows has the focus. Moving between them
 // is not leaving the app: a window that loses the focus only makes it inactive if, a moment later,
 // none of them has it and no focus event came since. `generation` counts the focus events.
 #[derive(Debug)]
@@ -1967,7 +2119,7 @@ impl Activation {
 
 pub const APP_ACTIVATED_EVENT: &str = "app-activated";
 pub const APP_DEACTIVATED_EVENT: &str = "app-deactivated";
-// How long the focus may take to arrive in another window of rama.
+// How long the focus may take to arrive in another window of Ramify.
 const FOCUS_SETTLE: Duration = Duration::from_millis(150);
 
 // The main window hears when the app as a whole gains and loses the focus.
@@ -1976,6 +2128,7 @@ pub fn focus_changed(app: &AppHandle, focused: bool) {
     if focused {
         if state.activation.lock().unwrap().gained() {
             let _ = app.emit_to(MAIN_WINDOW, APP_ACTIVATED_EVENT, ());
+            refresh_recent_menu(app);
         }
         return;
     }
@@ -2710,6 +2863,15 @@ pub async fn git_version(path: Option<String>) -> Result<String, ApiError> {
     blocking(move || git::version_of(path.as_deref().filter(|path| !path.trim().is_empty()))).await
 }
 
+// File > Open…: the chooser is shown by the main window, brought to the front first.
+pub fn open_project_chooser(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = reveal(&window);
+        resume_and_notify(app);
+        let _ = window.emit_to(MAIN_WINDOW, OPEN_PROJECT_CHOOSER_EVENT, ());
+    }
+}
+
 // The main window may be hidden, and the diff one in front.
 pub fn open_settings(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
@@ -2773,7 +2935,7 @@ pub fn snapshots_list(
     Ok(snapshots::list(&repo_data_dir(&app, &state)?))
 }
 
-// rama's own: a copy offered by a notification of another repository is not looked for in the
+// Ramify's own: a copy offered by a notification of another repository is not looked for in the
 // open one, where it is not.
 fn restorable_here(open: &Path, expected_repo: Option<&str>) -> Result<(), ApiError> {
     match expected_repo {
@@ -3283,8 +3445,8 @@ mod tests {
 
     #[test]
     fn the_menu_quit_item_is_recognized() {
-        assert!(is_quit_item("Quit rama"));
-        assert!(!is_quit_item("Hide rama"));
+        assert!(is_quit_item("Quit Ramify"));
+        assert!(!is_quit_item("Hide Ramify"));
     }
 
     #[test]
@@ -3702,7 +3864,7 @@ mod tests {
     #[test]
     fn non_utf8_argument_does_not_close_the_app() {
         let args = [
-            OsString::from("rama"),
+            OsString::from("ramify"),
             OsStr::from_bytes(b"/repo/\xff").to_os_string(),
         ];
 
@@ -3713,7 +3875,7 @@ mod tests {
 
     #[test]
     fn without_arguments_there_is_no_initial_repository() {
-        assert_eq!(first_argument([OsString::from("rama")].into_iter()), None);
+        assert_eq!(first_argument([OsString::from("ramify")].into_iter()), None);
     }
 
     #[test]
@@ -5049,7 +5211,7 @@ mod tests {
     }
 
     // `GitHub.MainMenu`, added before `Git.Configure.Remotes` (github-core-config.xml:111-120), with
-    // `Github.View.Pull.Request` (:97-99), the only one of its actions rama has. The action is
+    // `Github.View.Pull.Request` (:97-99), the only one of its actions Ramify has. The action is
     // visible only while the Pull Requests window is available (`GithubViewPullRequestsAction.update`),
     // and the group goes with it: the submenu starts out of the menu and is put in while the
     // interface names the action among the ones that apply.
@@ -5094,6 +5256,24 @@ mod tests {
         assert!(is_git_menu_item("Git.Unstash"));
         assert!(!is_git_menu_item(QUIT_MENU_ID));
         assert!(!is_git_menu_item(SETTINGS_MENU_ID));
+        assert!(!is_git_menu_item(OPEN_MENU_ID));
+    }
+
+    #[test]
+    fn open_goes_first_in_the_file_menu() {
+        assert!(is_file_menu("File"));
+        assert!(!is_file_menu("Edit"));
+        assert_eq!(OPEN_MENU_TEXT, "Open…");
+    }
+
+    #[test]
+    fn a_recent_project_row_carries_its_path_and_is_not_a_git_action() {
+        let id = recent_menu_id("/Users/me/work/app");
+        assert_eq!(recent_menu_path(&id), Some("/Users/me/work/app"));
+        assert!(!is_git_menu_item(&id));
+        assert_eq!(recent_menu_path(OPEN_MENU_ID), None);
+        assert_eq!(recent_menu_path(RECENT_MENU_ID), None);
+        assert_eq!(RECENT_MENU_TEXT, "Recent Projects");
     }
 
     #[test]
@@ -5239,7 +5419,7 @@ mod tests {
         assert_eq!(input, contents("7"));
     }
 
-    // `ApplicationActivationListener` (on-the-fly patch detection): going from one of rama's
+    // `ApplicationActivationListener` (on-the-fly patch detection): going from one of Ramify's
     // windows to another is not leaving the app; it is left once a window lost the focus and none
     // has it a moment later, and comes back with the next focus.
     #[test]
@@ -5254,7 +5434,7 @@ mod tests {
         let lost = activation.lost();
         assert!(
             activation.settled(lost, false),
-            "no window of rama has the focus"
+            "no window of Ramify has the focus"
         );
         assert!(!activation.settled(lost, false), "said once");
         assert!(activation.gained(), "back from another app");

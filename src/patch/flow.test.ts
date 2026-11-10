@@ -432,7 +432,7 @@ test("an_overwritten_worktree_file_can_be_restored_from_its_copy", async () => {
   await vi.waitFor(() => expect(shown().map((notice) => notice.title)).toContain("Snapshot restored."));
 });
 
-// rama's own: a relative path would be resolved against the app's folder, so it is refused while
+// Ramify's own: a relative path would be resolved against the app's folder, so it is refused while
 // the dialog is open.
 test("relative_paths_are_field_errors", () => {
   expect(settingsProblem(paths("out/x.patch", [], "/repo"), null)).toEqual({
@@ -791,7 +791,7 @@ test("failures_show_patch_applying_partly_failed_and_rollback_restores", async (
   await applyFlow(again, failing).applyPatch(CONTEXT);
   expect(again.partlyFailed.mock.calls).toEqual([[["src/a.txt"], false]]);
   expect(shown()).toEqual([{ kind: "warning", title: ROLLBACK_FAILED_TITLE, body: ROLLBACK_FAILED_TEXT }]);
-  // V:363, then where rama keeps the copy, which it has instead of Local History.
+  // V:363, then where Ramify keeps the copy, which it has instead of Local History.
   expect(ROLLBACK_FAILED_TEXT).toBe(
     "Try using 'Local History' dialog to perform revert manually.\n" +
       "The copy taken before applying is in Restore Snapshot… of Local Changes.",
@@ -825,7 +825,7 @@ test("the_notifications_for_already_applied_partial_and_success", async () => {
   expect(andStatus(null, "skip")).toBe("skip");
 });
 
-// Review Focus 3. rama cannot disable the menu item while the clipboard has no text, as IntelliJ
+// Review Focus 3. Ramify cannot disable the menu item while the clipboard has no text, as IntelliJ
 // does: it says `Cannot Apply Patch Now`. Text that is not a patch opens the dialog with no
 // changes (`No changes detected`) without reading it as a patch.
 test("from_clipboard_without_a_patch_says_cannot_apply_patch_now", async () => {

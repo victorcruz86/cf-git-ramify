@@ -20,7 +20,7 @@ const INFO_WITHOUT_PATCH: &str = "Contains additional information without patch 
 const NO_GIT_NAMES: &str = "Cannot detect file names from git format header line";
 const BINARY_EOF: &str = "Unexpected end of binary patch";
 
-// rama's own: what IntelliJ reads and rama does not, and what IntelliJ would only fail on later.
+// Ramify's own: what IntelliJ reads and Ramify does not, and what IntelliJ would only fail on later.
 const CONTEXT_DIFF: &str = "Context diffs are not supported";
 const UNKNOWN_BINARY_SECTION: &str = "Binary patch without literal or delta";
 const NO_NAMES: &str = "File patch without file names";
@@ -340,7 +340,7 @@ fn next_hunk(lines: &mut Lines) -> Result<Option<Hunk>, PatchError> {
         after_count: number(6, 1)?,
         lines: Vec::new(),
     };
-    // rama's own limit: every line number of the hunk fits in a `u32`, so no consumer can overflow
+    // Ramify's own limit: every line number of the hunk fits in a `u32`, so no consumer can overflow
     // on `start + count`.
     let fits = |start: usize, count: usize| {
         start
@@ -540,7 +540,7 @@ fn read_git_patch(start: &[u8], lines: &mut Lines) -> Result<RawFile, PatchError
     let index = lines.previous_index();
     // IntelliJ strips `a/` from the before name and `b/` from the after name again after the first
     // two patterns (which already matched them), so `diff --git a/a/x b/a/x` names the before side
-    // `x` and leaves the after side `a/x`. rama strips them once, as git does; it matters for the
+    // `x` and leaves the after side `a/x`. Ramify strips them once, as git does; it matters for the
     // files whose names come only from this line (empty, mode only, binary).
     let (found, prefixed) = [
         (&*AB_PREFIX, false),
@@ -692,7 +692,7 @@ fn is_deleted_content(hunk: &Hunk) -> bool {
     hunk.after_start == 0 && hunk.after_count == 0
 }
 
-// From IntelliJ's `FilePatch` to rama's: `isNewFile` leaves no before name and `isDeletedFile`
+// From IntelliJ's `FilePatch` to Ramify's: `isNewFile` leaves no before name and `isDeletedFile`
 // no after name (`TextFilePatch.java:57-70`; for a binary file, its status).
 fn finish(raw: RawFile, index: usize) -> Result<FilePatch, PatchError> {
     let single = |test: fn(&Hunk) -> bool| raw.hunks.len() == 1 && test(&raw.hunks[0]);
@@ -988,10 +988,10 @@ mod tests {
         assert!(!is_patch(b""));
     }
 
-    // rama's own errors (the deviations where IntelliJ crashes, misreads or reads what rama does
+    // Ramify's own errors (the deviations where IntelliJ crashes, misreads or reads what Ramify does
     // not), with the line where reading stopped.
     #[test]
-    fn rama_errors_and_garbage_never_panic() {
+    fn ramify_errors_and_garbage_never_panic() {
         let cases: [(&[u8], usize, &str); 10] = [
             (
                 b"diff --git a/x b/x\nGIT binary patch\nfoo\n",

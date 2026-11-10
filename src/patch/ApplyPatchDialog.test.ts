@@ -411,7 +411,7 @@ test("the_unshelve_dialog_has_its_title_ok_text_and_remove_checkbox", async () =
 });
 
 // Finding 6: a binary file that HEAD changed since it was shelved is not applicable, with its
-// reason and rama's own `Overwrite`; chosen, the row is included and the answer says to overwrite it.
+// reason and Ramify's own `Overwrite`; chosen, the row is included and the answer says to overwrite it.
 test("a_binary_changed_in_head_offers_overwrite_in_the_unshelve_dialog", async () => {
   const why = '"x.bin" changed in HEAD since it was shelved: it was not unshelved';
   const X = { before: "x.bin", after: "x.bin", binary: true };

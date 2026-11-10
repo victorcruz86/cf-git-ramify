@@ -131,7 +131,7 @@ Reference: `git4idea/commands/GitHandlerAuthenticationManager`, `GitHttpLoginDia
 - Consumes: `TaskContext::git`.
 - Produces:
   - `askpass::Server::start(on_prompt) -> Server`. Unix socket in a new `0700` directory per run, with a random 32-byte token.
-  - `askpass::client_main() -> Option<i32>`, first line of `main`: if `RAMA_ASKPASS_SOCKET` and `RAMA_ASKPASS_TOKEN` exist, it acts as a client and exits without opening Tauri.
+  - `askpass::client_main() -> Option<i32>`, first line of `main`: if `RAMIFY_ASKPASS_SOCKET` and `RAMIFY_ASKPASS_TOKEN` exist, it acts as a client and exits without opening Tauri.
   - `askpass::classify(prompt: &str) -> PromptKind`, with `PromptKind` equal to `Username { url } | Password { url, user } | Passphrase { key } | SshPassword { user } | HostKey { text }`.
   - Event `askpass-prompt { id, kind }` and command `askpass_answer(id: u64, answer: Option<String>)`.
   - `Settings.use_credential_helper: bool`, `true` by default.
@@ -224,7 +224,7 @@ Move the log commands to `log/commands.rs`. Keep `LogSummary` and extend `LogRow
 Run: `(cd src-tauri && cargo test) && pnpm vitest run`
 Expected: PASS
 
-Measure, with `git/git` in `~/rama-medida/git`, the memory after `log_open` against phase 1. If it grows by more than 10 %, reduce it before going on.
+Measure, with `git/git` in `~/ramify-measure/git`, the memory after `log_open` against phase 1. If it grows by more than 10 %, reduce it before going on.
 
 - [ ] **Step 5: Commit**
 
@@ -1059,7 +1059,7 @@ With `scripts/git-wrapper.sh` and a throwaway repository, record what the app la
 
 Update `src/perf/run.ts` to open `LogPanel`. Measure `git/git`.
 
-Run: `python3 scripts/measure.py --app src-tauri/target/release/rama --repo ~/rama-medida/git --out docs/reports/phase-2-consumption.json --runs 5`
+Run: `python3 scripts/measure.py --app src-tauri/target/release/ramify --repo ~/ramify-measure/git --out docs/reports/phase-2-consumption.json --runs 5`
 Expected: JSON with memory, CPU, startup and scroll, and `window_visible: true`.
 
 If the screen is locked, leave written which values were not measured, as in phase 1.

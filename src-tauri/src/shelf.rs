@@ -36,7 +36,7 @@ use crate::storage;
 const SHELF_DIR: &str = "shelf";
 // `DEFAULT_PATCH_NAME` + `.` + `VcsConfiguration.PATCH`.
 const PATCH_FILE: &str = "shelved.patch";
-// rama's own, beside the copies: the blob HEAD had for the before path of each binary file when it
+// Ramify's own, beside the copies: the blob HEAD had for the before path of each binary file when it
 // was shelved, so that an unshelve can tell that HEAD changed that file meanwhile. IntelliJ keeps
 // nothing of the kind; a list without it (an imported one) is put back without that check.
 const BASE_IDS_FILE: &str = ".base-ids.json";
@@ -47,7 +47,7 @@ const IMPORTED_CORRUPT: &str = "imported.json.corrupt";
 // `PatchNameChecker.MAX`, and the cut of `shortenAndSanitize` (`MAX - 10`), both in UTF-16 units.
 const NAME_MAX: usize = 100;
 const NAME_CUT: usize = NAME_MAX - 10;
-// rama's own bound, in UTF-8 bytes: a file name holds 255 of them on APFS, and the XML file adds
+// Ramify's own bound, in UTF-8 bytes: a file name holds 255 of them on APFS, and the XML file adds
 // `.xml`. The prefix keeps room for the number of `findSequentFile` (20 digits at most).
 const NAME_BYTES: usize = 240;
 const PREFIX_BYTES: usize = NAME_BYTES - 20;
@@ -57,7 +57,7 @@ const FILE_NAME_BYTES: usize = 255;
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 // `cleanDeletedOlderOneWeek`.
 const DELETED_KEPT_MS: u64 = 7 * DAY_MS;
-// rama's own: where what the store erases is kept (`erase`), beside `shelf/`. The list's name is
+// Ramify's own: where what the store erases is kept (`erase`), beside `shelf/`. The list's name is
 // cut in its folder's name so that the moment and a number fit in 255 bytes.
 const ERASED_DIR: &str = "shelf-erased";
 const ERASED_NAME_BYTES: usize = 200;
@@ -76,7 +76,7 @@ const BEFORE_OPTION: &str = "BEFORE_PATH";
 const AFTER_OPTION: &str = "AFTER_PATH";
 const SHELVED_OPTION: &str = "SHELVED_PATH";
 
-// rama's own: a list asked for by name that is not in the store (any more).
+// Ramify's own: a list asked for by name that is not in the store (any more).
 fn list_gone(name: &str) -> String {
     format!("\"{name}\" is no longer in the shelf")
 }
@@ -943,7 +943,7 @@ fn names(file: &FilePatch) -> (Option<&str>, Option<&str>) {
     }
 }
 
-// rama's own: a new folder in `<data>/shelf-erased/` named after the moment and the list, for
+// Ramify's own: a new folder in `<data>/shelf-erased/` named after the moment and the list, for
 // what the store erases.
 fn erased_place(root: &Path, name: &str, now: SystemTime) -> io::Result<PathBuf> {
     let base = root.parent().unwrap_or(root).join(ERASED_DIR);
@@ -991,7 +991,7 @@ fn keep_erased_copy(root: &Path, list: &ShelvedList, now: SystemTime) -> io::Res
     Ok(())
 }
 
-// `deleteResources`: the list is gone from the store. rama moves its folder and its XML to
+// `deleteResources`: the list is gone from the store. Ramify moves its folder and its XML to
 // `<data>/shelf-erased/` instead of deleting them, and the cleanup removes them after
 // `snapshots::SNAPSHOT_DAYS` days. A link in the place of the folder is moved, never followed.
 fn erase(root: &Path, list: &ShelvedList, now: SystemTime) -> io::Result<()> {
@@ -2543,7 +2543,7 @@ mod tests {
         );
         assert_eq!(list(data), lists);
 
-        // A list deleted in rama, even erased, does not come back.
+        // A list deleted in Ramify, even erased, does not come back.
         delete(data, "description", at(NOW)).unwrap();
         delete(data, "description", at(NOW)).unwrap();
         assert_eq!(list(data).len(), 2);
@@ -2782,7 +2782,7 @@ mod tests {
         assert!(Path::new("/etc/hosts").is_file());
     }
 
-    // Review Focus 2: a shelf written by rama reads back identical.
+    // Review Focus 2: a shelf written by Ramify reads back identical.
     #[test]
     fn round_trip_with_binary_rename_delete_no_newline_crlf_non_utf8() {
         let repo = TempRepo::new();

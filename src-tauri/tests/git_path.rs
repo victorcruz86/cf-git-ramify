@@ -4,8 +4,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-use rama_lib::commands::ApiError;
-use rama_lib::git::{self, GitError};
+use ramify_lib::commands::ApiError;
+use ramify_lib::git::{self, GitError};
 use tempfile::TempDir;
 
 fn wrapper(dir: &Path, log: &Path) -> String {

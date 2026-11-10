@@ -100,7 +100,7 @@ Record of what was decided during execution and of the minor findings that were 
 - Task 6: an unversioned nested/ blocks the batch with an error that blames the copy
 - Task 6: rev-parse code 1 does not distinguish a repo without commits from a corrupt ref; a versioned file was treated as new
 - Task 6: a file only in stage (AD) is not restored and returns Ok
-- Task 6: restore deletes without a copy a user's .name.rama-restore; ENAMETOOLONG with long names
+- Task 6: restore deletes without a copy a user's .name.ramify-restore; ENAMETOOLONG with long names
 - Task 6: snapshots and rollback depend on commands::ApiError, git_with_paths should go in git.rs, NUL splitting duplicated, blocking_api almost repeats blocking
 - Task 6: a case-only rename without edit leaves the new name on disk after rollback
 - Task 6: an Added NFD entry stays in the index and rollback returns Ok without removing it from the stage

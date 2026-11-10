@@ -113,7 +113,7 @@
     return pr.author === null ? info : `${info}, by ${pr.author}`;
   }
 
-  // rama draws no remote images: an avatar is the name's initials.
+  // Ramify draws no remote images: an avatar is the name's initials.
   function initials(name: string): string {
     const words = name.trim().split(/\s+/).filter(Boolean);
     return words

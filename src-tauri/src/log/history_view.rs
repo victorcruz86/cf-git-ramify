@@ -1,6 +1,6 @@
 // A file history in the Log: the commits of `history::file_history` on the permanent graph, with
 // dotted edges between them, as `FileHistoryFilterer.filterWithVcs` builds it when the log is full
-// (rama's always is), and the path of the file in each of them (`FileHistory`, `FileHistoryPaths`).
+// (Ramify's always is), and the path of the file in each of them (`FileHistory`, `FileHistoryPaths`).
 
 use std::collections::HashMap;
 use std::sync::Arc;

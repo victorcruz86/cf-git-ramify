@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs the app's commands through the real IPC, in WebKit, against a throwaway repository.
 
-Builds separately, with VITE_RAMA_SMOKE, and leaves the binary in target/smoke so as not to overwrite the release one.
+Builds separately, with VITE_RAMIFY_SMOKE, and leaves the binary in target/smoke so as not to overwrite the release one.
 Everything happens in a temporary folder, with its own HOME: it never touches a real repository or the app's
 settings. The window is visible for a moment, so the screen has to be unlocked.
 
@@ -107,7 +107,7 @@ def registered():
 
 
 def build():
-    env = {**os.environ, "VITE_RAMA_SMOKE": "1"}
+    env = {**os.environ, "VITE_RAMIFY_SMOKE": "1"}
     subprocess.run(["pnpm", "build"], cwd=ROOT, env=env, check=True)
     target = TAURI / "target/smoke"
     subprocess.run(
@@ -118,14 +118,14 @@ def build():
     )
     # Leaves dist/ as a normal build expects it.
     subprocess.run(["pnpm", "build"], cwd=ROOT, check=True)
-    return target / "release/rama"
+    return target / "release/ramify"
 
 
 def run(app, repo, home, report):
     env = {
         "PATH": os.environ["PATH"],
         "HOME": str(home),
-        "RAMA_PERF_OUT": str(report),
+        "RAMIFY_PERF_OUT": str(report),
         "GIT_CONFIG_NOSYSTEM": "1",
     }
     process = subprocess.Popen([str(app), str(repo)], env=env)
@@ -144,11 +144,11 @@ def run(app, repo, home, report):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out")
-    parser.add_argument("--app", help="Binary already built with VITE_RAMA_SMOKE")
+    parser.add_argument("--app", help="Binary already built with VITE_RAMIFY_SMOKE")
     args = parser.parse_args()
     app = Path(args.app) if args.app else build()
 
-    base = Path(tempfile.mkdtemp(prefix="rama-smoke-")).resolve()
+    base = Path(tempfile.mkdtemp(prefix="ramify-smoke-")).resolve()
     try:
         home = base / "home"
         home.mkdir()

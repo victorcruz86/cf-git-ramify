@@ -3,7 +3,7 @@
 // GithubApiSearchQueryBuilder, GHPullRequestShort, GHPRListETagUpdateChecker, GithubApiRequests
 // (Collaborators, Assignees, Labels, getListETag), GHPRRepositoryDataServiceImpl (the choosers),
 // PersistingReviewListSearchHistoryModel and GHHtmlErrorPanel.getLoadingErrorText (plugins/github
-// and platform/collaboration-tools at idea/241.14494.240). rama's own choice is decision 10 of the
+// and platform/collaboration-tools at idea/241.14494.240). Ramify's own choice is decision 10 of the
 // part 5 plan: the last search and the history are kept per repository.
 
 use std::fs;

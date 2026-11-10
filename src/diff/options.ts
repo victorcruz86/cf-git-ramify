@@ -7,10 +7,10 @@ export interface DiffOptions extends EditorOptions {
   ignore: IgnorePolicy;
 }
 
-// The places of DiffPlaces that rama has: the diff window, the commit dialog's `Diff` panel, the
+// The places of DiffPlaces that Ramify has: the diff window, the commit dialog's `Diff` panel, the
 // Local Changes preview, the merge window, the diff docked in the log (also in the push dialog) and
 // the stash and shelf preview (`SavedPatchesUi.SAVED_PATCHES_UI_PLACE`, not one of DiffPlaces), and
-// the read-only viewer, rama's stand-in for IntelliJ's editor.
+// the read-only viewer, Ramify's stand-in for IntelliJ's editor.
 // Soft wrap is remembered for each one, as TextDiffSettingsHolder's PlaceSettings does.
 export type DiffPlace =
   | "Default"

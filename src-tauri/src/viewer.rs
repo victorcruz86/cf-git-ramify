@@ -437,7 +437,7 @@ pub struct InitialTarget {
     pub line: Option<u32>,
 }
 
-// Decision 1: `rama <file>` and `rama <file>:<line>` open the file's repository and the viewer at
+// Decision 1: `Ramify <file>` and `Ramify <file>:<line>` open the file's repository and the viewer at
 // that line. Anything else (a folder, or what does not exist) goes to `repo_open` as it is.
 pub fn initial_target_of(argument: Option<String>) -> Result<Option<InitialTarget>, ApiError> {
     let Some(argument) = argument else {
