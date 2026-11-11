@@ -496,17 +496,21 @@ mod tests {
             work: impl FnOnce(&TaskContext) -> T + Send + 'static,
         ) -> (TaskId, mpsc::Receiver<T>) {
             let (send, receive) = mpsc::channel();
-            let id = self
-                .runner
-                .start(self.repo.path(), kind, "test".to_string(), move |ctx| {
+            let id = self.runner.start(
+                "main",
+                self.repo.path(),
+                kind,
+                "test".to_string(),
+                move |ctx| {
                     let _ = send.send(work(ctx));
                     Ok(())
-                });
+                },
+            );
             (id, receive)
         }
 
         fn commands(&self) -> Vec<String> {
-            let lines = self.console.lines();
+            let lines = self.console.lines_of("main");
             lines
                 .into_iter()
                 .filter(|line| line.command)
@@ -1026,8 +1030,8 @@ mod tests {
         let deleted = deleted.recv_timeout(Duration::from_secs(20));
         let checked = checked.recv_timeout(Duration::from_secs(20));
         if deleted.is_err() || checked.is_err() {
-            harness.runner.cancel(deleting);
-            harness.runner.cancel(checking);
+            harness.runner.cancel("main", deleting);
+            harness.runner.cancel("main", checking);
         }
         assert!(
             deleted.is_ok() && checked.is_ok(),

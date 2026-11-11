@@ -1309,6 +1309,20 @@ Test data: src-tauri/src/log/testdata/
                                  LinearBekTest.kt, LinearBekExpandTest.kt), in the text format
                                  of those tests
 
+Ported code: project widget
+---------------------------
+
+Read at the tag idea/241.14494.240:
+
+  src/project/projectIcon.ts              platform-impl: RecentProjectIconHelper (ProjectIconPalette,
+                                          generateProjectIcon), ProjectWindowCustomizerService
+                                          (getRecentProjectIconColor); platform/util/ui: AvatarUtils
+                                          (initials, ColorPalette.select)
+  src/project/ProjectWidget.svelte        platform-impl: ProjectToolbarWidgetAction (the button, the
+                                          popup and its sections); resources: JavaActions.xml and
+                                          PlatformActions.xml (ProjectWidget.Actions), ActionsBundle
+                                          and ProjectConceptBundle (texts)
+
 Test data: src-tauri/testdata/patch/
 ------------------------------------
 

@@ -428,6 +428,31 @@
     </label>
   </div>
 
+  <!-- GeneralSettings: `Open project in` and `Reopen projects on startup`. -->
+  <h3>System</h3>
+  <div class="options">
+    <div class="choices" role="group" aria-labelledby="settings-open-project-in">
+      <span id="settings-open-project-in">Open project in</span>
+      <label class="choice">
+        <input type="radio" value="new" bind:group={draft.openProjectIn} />
+        New window
+      </label>
+      <label class="choice">
+        <input type="radio" value="current" bind:group={draft.openProjectIn} />
+        Current window
+      </label>
+      <label class="choice">
+        <input type="radio" value="ask" bind:group={draft.openProjectIn} />
+        Ask
+      </label>
+    </div>
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.reopenProjects} />
+      <span class="check" data-state={draft.reopenProjects ? "on" : "off"}></span>
+      Reopen projects on startup
+    </label>
+  </div>
+
   <!-- GithubSettingsConfigurable. The accounts act at once: only the timeout goes with Save. -->
   <h3>GitHub</h3>
   <AccountsList />

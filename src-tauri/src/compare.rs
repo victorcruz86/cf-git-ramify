@@ -8,7 +8,7 @@ use std::io::Read as _;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
 use crate::commands::{blocking_api, current_repo, ApiError, AppState};
 use crate::diff::{self, ChangedFile, Side};
@@ -837,9 +837,10 @@ pub fn preview(
 pub async fn compare_sides(
     left: SideRef,
     right: SideRef,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<RevisionSides, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(sides(&repo, &left, &right)?)).await
 }
 
@@ -848,18 +849,20 @@ pub async fn compare_preview(
     left: SideRef,
     right: SideRef,
     content: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<Hunk>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(preview(&repo, &left, &right, &content)?)).await
 }
 
 #[tauri::command]
 pub async fn compare_local_state(
     path: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<LocalState, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(local_state(&repo, &path)?)).await
 }
 
@@ -868,9 +871,10 @@ pub async fn compare_local_state(
 pub async fn compare_last_revision(
     revision: Option<String>,
     path: Option<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<FileRevision>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || {
         Ok(match revision {
             Some(revision) => last_revision(&repo, &revision, path.as_deref())?,
@@ -887,27 +891,30 @@ pub async fn compare_last_revision(
 pub async fn compare_resolve(
     kind: RefKind,
     name: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<FileRevision>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(resolve(&repo, kind, &name)?)).await
 }
 
 #[tauri::command]
 pub async fn compare_current_revision(
     path: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<CurrentRevision>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(current_revision(&repo, &path)?)).await
 }
 
 #[tauri::command]
 pub async fn compare_file_revisions(
     path: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileRevision>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(file_revisions(&repo, &path)?)).await
 }
 
@@ -915,9 +922,10 @@ pub async fn compare_file_revisions(
 pub async fn compare_changes_with(
     revision: String,
     paths: Vec<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChangedFile>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(changes_with(&repo, &revision, &paths)?)).await
 }
 
@@ -926,24 +934,29 @@ pub async fn compare_changes_between(
     left: String,
     right: String,
     paths: Vec<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChangedFile>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(changes_between(&repo, &left, &right, &paths)?)).await
 }
 
 #[tauri::command]
 pub async fn compare_changes_from_working_tree(
     revision: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChangedFile>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(changes_from_working_tree(&repo, &revision)?)).await
 }
 
 #[tauri::command]
-pub async fn compare_tags(state: State<'_, AppState>) -> Result<Vec<String>, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn compare_tags(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(tags(&repo)?)).await
 }
 

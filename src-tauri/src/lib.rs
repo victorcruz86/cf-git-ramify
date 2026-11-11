@@ -27,6 +27,7 @@ pub mod merge;
 pub mod merge3;
 pub mod messages;
 pub mod migration;
+pub mod open_projects;
 pub mod operation;
 pub mod patch;
 pub mod patch_apply;
@@ -56,6 +57,7 @@ pub mod update;
 pub mod vcs_commands;
 pub mod viewer;
 pub mod watch;
+pub mod windows;
 pub mod worktree_diff;
 
 #[tauri::command]
@@ -133,6 +135,12 @@ pub fn run() {
             commands::show_window,
             commands::hide_window,
             commands::repo_open,
+            commands::project_resolve,
+            commands::project_focus_open,
+            commands::projects_list,
+            commands::project_new_window,
+            commands::open_projects_reopen,
+            commands::commit_draft_saved,
             commands::repo_state,
             commands::git_menu_enable,
             commands::git_menu_current_file,
@@ -239,7 +247,6 @@ pub fn run() {
             vcs_commands::clone_repository,
             vcs_commands::init_repository,
             vcs_commands::open_exclude_file,
-            vcs_commands::open_in_new_window,
             vcs_commands::fetch_all,
             vcs_commands::fetch_remote,
             vcs_commands::pull_info,
@@ -410,14 +417,17 @@ pub fn run() {
                     .branch_sync
                     .visible();
             }
+            if let WindowEvent::Focused(true) = event {
+                commands::main_focused(window.app_handle(), window.label());
+            }
             if let WindowEvent::Focused(focused) = event {
-                commands::focus_changed(window.app_handle(), *focused);
+                commands::focus_changed(window.app_handle(), window.label(), *focused);
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let app = window.app_handle().clone();
                 if commands::owns_watcher(window.label()) {
-                    commands::close_main(app);
+                    commands::close_project_window(app, window.label());
                 } else {
                     commands::request_close(&app, window.label());
                 }
@@ -429,11 +439,15 @@ pub fn run() {
             RunEvent::ExitRequested {
                 code: None, api, ..
             } => api.prevent_exit(),
-            RunEvent::Reopen { .. } => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = commands::reveal(&window);
-                }
-                commands::resume_and_notify(app);
+            RunEvent::Reopen { .. } => commands::show_last_window(app),
+            // `open -a Ramify <folder>` while it runs, or the folder it was launched with.
+            #[cfg(target_os = "macos")]
+            RunEvent::Opened { urls } => {
+                let paths = urls
+                    .iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .collect();
+                commands::open_paths(app, paths);
             }
             RunEvent::Exit => {
                 commands::stop_askpass(app);

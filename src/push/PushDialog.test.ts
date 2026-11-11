@@ -5,7 +5,7 @@ import type { CommitSummary, PushInfo, PushTags } from "../lib/api";
 import PushDialog from "./PushDialog.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 const HASH = "a1b2c3d4".repeat(5);
 

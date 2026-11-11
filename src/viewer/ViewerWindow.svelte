@@ -9,6 +9,7 @@
     hideWindow,
     onGitAction,
     onRepoChanged,
+    onMenuOwnerGained,
     onViewerOpen,
     showWindow,
     viewerContent,
@@ -394,6 +395,7 @@
         void syncCurrentFile();
       }),
       onGitAction((id) => void gitAction(id)),
+      onMenuOwnerGained(() => void syncCurrentFile()),
       trackTasks(),
     ];
     (async () => {

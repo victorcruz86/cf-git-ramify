@@ -5,7 +5,10 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import GpgKeyRow from "./GpgKeyRow.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
 
 let handlers: (() => void)[] = [];
 

@@ -16,7 +16,10 @@ import {
 } from "./selection";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "selection-history" }),
+}));
 // The block diff's views, counted.
 vi.mock("../diff/textsView", async (original) => {
   const real = await original<typeof import("../diff/textsView")>();

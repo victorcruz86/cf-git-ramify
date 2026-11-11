@@ -8,6 +8,9 @@ import DetailsPanel from "./DetailsPanel.svelte";
 import { signatureDescription, signatureIcon, signatureText } from "./signatures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 const hashOf = (index: number) => index.toString(16).padStart(40, "0");

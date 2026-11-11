@@ -112,6 +112,8 @@ pub fn strip_comments(text: &str) -> String {
 // window's answer, and the server withdraws it if the editor leaves first.
 pub struct Request<'a> {
     id: u64,
+    // The project window of the registration: the one that is asked and the only one that may answer.
+    owner: &'a str,
     // Behind a lock only so it can be shared with the handler's thread.
     answers: &'a Mutex<Receiver<Option<String>>>,
     // Whether it got to be shown: only then is there a dialog to close.
@@ -139,16 +141,17 @@ impl EditorHandler for Trivial {
     }
 }
 
-// Asks the main window. The text is shown without git's help and without the blank lines at
-// the start, as `loadFileAndShowInSimpleEditor`. Without a server, there is no one to
+// Asks the project window `owner`. The text is shown without git's help and without the blank
+// lines at the start, as `loadFileAndShowInSimpleEditor`. Without a server, there is no one to
 // ask and it is cancelled.
 pub struct Ask {
     handle: Option<Handle>,
+    owner: String,
 }
 
 impl Ask {
-    pub fn new(handle: Option<Handle>) -> Self {
-        Self { handle }
+    pub fn new(handle: Option<Handle>, owner: String) -> Self {
+        Self { handle, owner }
     }
 
     // With `request`, the one the server has open; without it (a caller that does not go through
@@ -158,10 +161,11 @@ impl Ask {
         if let Some(request) = request {
             return shared.ask(request, prompt);
         }
-        let (id, answers) = shared.open();
+        let (id, answers) = shared.open(&self.owner);
         let shown = AtomicBool::new(false);
         let request = Request {
             id,
+            owner: &self.owner,
             answers: &answers,
             shown: &shown,
         };
@@ -181,10 +185,19 @@ impl EditorHandler for Ask {
     }
 }
 
-type OnRequest = Box<dyn Fn(u64, Prompt) -> bool + Send + Sync>;
-type OnDismissed = Box<dyn Fn(u64) + Send + Sync>;
+// The project window a request belongs to, its id, and what it asks.
+type OnRequest = Box<dyn Fn(&str, u64, Prompt) -> bool + Send + Sync>;
+type OnDismissed = Box<dyn Fn(&str, u64) + Send + Sync>;
+
+// A request waiting for its window's answer.
+struct Pending {
+    owner: String,
+    answer: Sender<Option<String>>,
+}
 
 struct Entry {
+    // The project window of the task that registered.
+    owner: String,
     handler: Arc<dyn EditorHandler>,
     git_dir: PathBuf,
     // Requests in which git is stopped waiting for the editor.
@@ -197,7 +210,7 @@ struct Shared {
     closed: AtomicBool,
     next: AtomicU64,
     registered: Mutex<HashMap<String, Arc<Entry>>>,
-    pending: Mutex<HashMap<u64, Sender<Option<String>>>>,
+    pending: Mutex<HashMap<u64, Pending>>,
     on_request: OnRequest,
     on_dismissed: OnDismissed,
 }
@@ -223,22 +236,43 @@ impl Shared {
             .contains_key(token)
     }
 
-    fn remove(&self, id: u64) -> Option<Sender<Option<String>>> {
+    fn remove(&self, id: u64) -> Option<Pending> {
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&id)
     }
 
-    // Opens a request: until it is withdrawn, `answer` can respond to it.
-    fn open(&self) -> (u64, Mutex<Receiver<Option<String>>>) {
+    // Opens a request of the project window `owner`: until it is withdrawn, `answer` can respond to it.
+    fn open(&self, owner: &str) -> (u64, Mutex<Receiver<Option<String>>>) {
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         let (send, answers) = mpsc::channel();
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, send);
+            .insert(
+                id,
+                Pending {
+                    owner: owner.to_string(),
+                    answer: send,
+                },
+            );
         (id, Mutex::new(answers))
+    }
+
+    // `false` only if the request belongs to another window: then it keeps waiting for its own.
+    fn answer(&self, owner: &str, id: u64, text: Option<String>) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        match pending.get(&id) {
+            None => true,
+            Some(waiting) if waiting.owner != owner => false,
+            Some(_) => {
+                if let Some(waiting) = pending.remove(&id) {
+                    let _ = waiting.answer.send(text);
+                }
+                true
+            }
+        }
     }
 
     // Waits for the window to answer. If no one can receive the request, or the server closes,
@@ -249,7 +283,7 @@ impl Shared {
             return None;
         }
         request.shown.store(true, Ordering::SeqCst);
-        if !(self.on_request)(request.id, prompt) {
+        if !(self.on_request)(request.owner, request.id, prompt) {
             request.shown.store(false, Ordering::SeqCst);
             return None;
         }
@@ -269,9 +303,15 @@ pub struct Handle {
 }
 
 impl Handle {
-    // The handler only sees files inside `git_dir`, the git directory of the task's repository.
-    // The registration is dropped when it is released.
-    pub fn register(&self, handler: Arc<dyn EditorHandler>, git_dir: PathBuf) -> Registration {
+    // The handler only sees files inside `git_dir`, the git directory of the task's repository,
+    // and its requests go to the project window `owner`. The registration is dropped when it is
+    // released.
+    pub fn register(
+        &self,
+        owner: String,
+        handler: Arc<dyn EditorHandler>,
+        git_dir: PathBuf,
+    ) -> Registration {
         // Without entropy there is no token: the registration stays unregistered and the editor exits with 1.
         let token = random_token().unwrap_or_default();
         if !token.is_empty() {
@@ -282,6 +322,7 @@ impl Handle {
                 .insert(
                     token.clone(),
                     Arc::new(Entry {
+                        owner,
                         handler,
                         git_dir,
                         waiting: AtomicUsize::new(0),
@@ -294,11 +335,11 @@ impl Handle {
         }
     }
 
-    // `None` cancels. If no one is waiting anymore, nothing happens.
-    pub fn answer(&self, id: u64, text: Option<String>) {
-        if let Some(waiting) = self.shared.remove(id) {
-            let _ = waiting.send(text);
-        }
+    // `None` cancels. Only the project window `owner` the request belongs to may answer it:
+    // `false` if it belongs to another, and then it keeps waiting. If no one is waiting anymore,
+    // nothing happens.
+    pub fn answer(&self, owner: &str, id: u64, text: Option<String>) -> bool {
+        self.shared.answer(owner, id, text)
     }
 }
 
@@ -380,8 +421,8 @@ impl Server {
     // `on_dismissed` reports that whoever asked is no longer waiting (the task was cancelled and git killed the
     // editor, or it finished): that way the dialog does not stay open for no one.
     pub fn start(
-        on_request: impl Fn(u64, Prompt) -> bool + Send + Sync + 'static,
-        on_dismissed: impl Fn(u64) + Send + Sync + 'static,
+        on_request: impl Fn(&str, u64, Prompt) -> bool + Send + Sync + 'static,
+        on_dismissed: impl Fn(&str, u64) + Send + Sync + 'static,
     ) -> io::Result<Self> {
         Self::start_with_program(env::current_exe()?, on_request, on_dismissed)
     }
@@ -389,8 +430,8 @@ impl Server {
     // The integration tests launch the app's binary, not the test's.
     pub fn start_with_program(
         program: PathBuf,
-        on_request: impl Fn(u64, Prompt) -> bool + Send + Sync + 'static,
-        on_dismissed: impl Fn(u64) + Send + Sync + 'static,
+        on_request: impl Fn(&str, u64, Prompt) -> bool + Send + Sync + 'static,
+        on_dismissed: impl Fn(&str, u64) + Send + Sync + 'static,
     ) -> io::Result<Self> {
         let folder = tempfile::Builder::new()
             .prefix(SOCKET_FOLDER_PREFIX)
@@ -421,12 +462,17 @@ impl Server {
         self.handle.clone()
     }
 
-    pub fn register(&self, handler: Arc<dyn EditorHandler>, git_dir: PathBuf) -> Registration {
-        self.handle.register(handler, git_dir)
+    pub fn register(
+        &self,
+        owner: String,
+        handler: Arc<dyn EditorHandler>,
+        git_dir: PathBuf,
+    ) -> Registration {
+        self.handle.register(owner, handler, git_dir)
     }
 
-    pub fn answer(&self, id: u64, text: Option<String>) {
-        self.handle.answer(id, text);
+    pub fn answer(&self, owner: &str, id: u64, text: Option<String>) -> bool {
+        self.handle.answer(owner, id, text)
     }
 }
 
@@ -503,10 +549,11 @@ fn run_handler(
     kind: EditKind,
     text: &str,
 ) -> Option<String> {
-    let (id, answers) = shared.open();
+    let (id, answers) = shared.open(&entry.owner);
     let shown = AtomicBool::new(false);
     let request = Request {
         id,
+        owner: &entry.owner,
         answers: &answers,
         shown: &shown,
     };
@@ -527,7 +574,7 @@ fn run_handler(
             if !watching || client_gone(stream) || !shared.is_registered(token) {
                 shared.remove(id);
                 if shown.load(Ordering::SeqCst) {
-                    (shared.on_dismissed)(id);
+                    (shared.on_dismissed)(&entry.owner, id);
                 }
                 // The wait ends with `None`; the scope waits for the handler to exit.
                 return None;
@@ -657,11 +704,11 @@ mod tests {
         let (gone, dismissed) = mpsc::channel();
         let gone = Mutex::new(gone);
         let server = Server::start(
-            move |id, prompt: Prompt| {
+            move |_: &str, id, prompt: Prompt| {
                 let asked = (id, prompt.kind, prompt.text);
                 send.lock().unwrap().send(asked).is_ok()
             },
-            move |id| gone.lock().unwrap().send(id).unwrap(),
+            move |_: &str, id| gone.lock().unwrap().send(id).unwrap(),
         )
         .unwrap();
         (server, requests, dismissed)
@@ -697,7 +744,8 @@ mod tests {
         let file = git_dir.path().join("COMMIT_EDITMSG");
         fs::write(&file, "text\n").unwrap();
         let registration = server.register(
-            Arc::new(Ask::new(Some(server.handle()))),
+            "main".to_string(),
+            Arc::new(Ask::new(Some(server.handle()), "main".to_string())),
             git_dir.path().to_path_buf(),
         );
         let stream = send_request(&server.handle.shared.socket, &registration.token, &file);
@@ -710,7 +758,7 @@ mod tests {
             server.handle.shared.pending.lock().unwrap().is_empty()
         });
         // An answer that arrives late bothers no one and the file does not change.
-        server.answer(id, Some("late".to_string()));
+        server.answer("main", id, Some("late".to_string()));
         assert_eq!(fs::read_to_string(&file).unwrap(), "text\n");
     }
 
@@ -721,7 +769,8 @@ mod tests {
         let file = git_dir.path().join("COMMIT_EDITMSG");
         fs::write(&file, "text\n").unwrap();
         let registration = server.register(
-            Arc::new(Ask::new(Some(server.handle()))),
+            "main".to_string(),
+            Arc::new(Ask::new(Some(server.handle()), "main".to_string())),
             git_dir.path().to_path_buf(),
         );
         let _stream = send_request(&server.handle.shared.socket, &registration.token, &file);
@@ -736,19 +785,52 @@ mod tests {
     }
 
     #[test]
+    fn the_request_names_its_owner() {
+        let (send, requests) = mpsc::channel();
+        let send = Mutex::new(send);
+        let server = Server::start(
+            move |owner: &str, id, _: Prompt| {
+                send.lock().unwrap().send((owner.to_string(), id)).is_ok()
+            },
+            |_: &str, _| {},
+        )
+        .unwrap();
+        let git_dir = tempfile::tempdir().unwrap();
+        let file = git_dir.path().join("COMMIT_EDITMSG");
+        fs::write(&file, "text\n").unwrap();
+        let registration = server.register(
+            "main-2".to_string(),
+            Arc::new(Ask::new(Some(server.handle()), "main-2".to_string())),
+            git_dir.path().to_path_buf(),
+        );
+        let mut stream = send_request(&server.handle.shared.socket, &registration.token, &file);
+
+        let (owner, id) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(owner, "main-2");
+        // Another window cannot answer it: the request keeps waiting for its own.
+        assert!(!server.answer("main", id, Some("wrong\n".to_string())));
+        assert!(server.answer("main-2", id, Some("right\n".to_string())));
+        let mut reply = [1];
+        stream.read_exact(&mut reply).unwrap();
+        assert_eq!(reply, [DONE]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "right\n");
+    }
+
+    #[test]
     fn an_answered_request_does_not_report_being_withdrawn() {
         let (server, requests, dismissed) = watched_server();
         let git_dir = tempfile::tempdir().unwrap();
         let file = git_dir.path().join("COMMIT_EDITMSG");
         fs::write(&file, "text\n").unwrap();
         let registration = server.register(
-            Arc::new(Ask::new(Some(server.handle()))),
+            "main".to_string(),
+            Arc::new(Ask::new(Some(server.handle()), "main".to_string())),
             git_dir.path().to_path_buf(),
         );
         let mut stream = send_request(&server.handle.shared.socket, &registration.token, &file);
         let (id, ..) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
 
-        server.answer(id, Some("new\n".to_string()));
+        server.answer("main", id, Some("new\n".to_string()));
 
         let mut reply = [1];
         stream.read_exact(&mut reply).unwrap();
@@ -760,7 +842,7 @@ mod tests {
     #[test]
     fn ask_shows_the_text_without_git_help_and_returns_the_answer() {
         let (server, requests) = shown_server();
-        let ask = Arc::new(Ask::new(Some(server.handle())));
+        let ask = Arc::new(Ask::new(Some(server.handle()), "main".to_string()));
         let asking = ask.clone();
         let worker = thread::spawn(move || {
             asking.edit(
@@ -770,7 +852,7 @@ mod tests {
         });
 
         let (id, kind, text) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
-        server.answer(id, Some("Fixed\n".to_string()));
+        server.answer("main", id, Some("Fixed\n".to_string()));
 
         assert_eq!(kind, EditKind::Message);
         assert_eq!(text, "Fix\n\n# from the user\n");
@@ -779,13 +861,16 @@ mod tests {
 
     #[test]
     fn ask_without_a_server_cancels() {
-        assert_eq!(Ask::new(None).edit(EditKind::Todo, "pick a b\n"), None);
+        assert_eq!(
+            Ask::new(None, "main".to_string()).edit(EditKind::Todo, "pick a b\n"),
+            None
+        );
     }
 
     #[test]
     fn dropping_the_server_wakes_whoever_is_waiting() {
         let (server, requests) = shown_server();
-        let ask = Ask::new(Some(server.handle()));
+        let ask = Ask::new(Some(server.handle()), "main".to_string());
         let worker = thread::spawn(move || ask.edit(EditKind::Message, "text"));
         requests.recv_timeout(Duration::from_secs(5)).unwrap();
 
@@ -796,9 +881,9 @@ mod tests {
 
     #[test]
     fn a_request_with_no_one_to_answer_is_refused() {
-        let server = Server::start(|_, _| false, |_| {}).unwrap();
+        let server = Server::start(|_: &str, _, _| false, |_: &str, _| {}).unwrap();
 
-        let ask = Ask::new(Some(server.handle()));
+        let ask = Ask::new(Some(server.handle()), "main".to_string());
 
         assert_eq!(ask.edit(EditKind::Message, "text"), None);
     }
@@ -806,7 +891,11 @@ mod tests {
     #[test]
     fn dropping_the_registration_unregisters_it() {
         let (server, _) = shown_server();
-        let registration = server.register(Arc::new(Trivial), PathBuf::from("/r/.git"));
+        let registration = server.register(
+            "main".to_string(),
+            Arc::new(Trivial),
+            PathBuf::from("/r/.git"),
+        );
         let token = registration.token.clone();
         assert!(server.handle.shared.is_registered(&token));
 
@@ -818,8 +907,8 @@ mod tests {
     #[test]
     fn two_registrations_have_different_tokens() {
         let (server, _) = shown_server();
-        let first = server.register(Arc::new(Trivial), PathBuf::from("/a"));
-        let second = server.register(Arc::new(Trivial), PathBuf::from("/b"));
+        let first = server.register("main".to_string(), Arc::new(Trivial), PathBuf::from("/a"));
+        let second = server.register("main".to_string(), Arc::new(Trivial), PathBuf::from("/b"));
 
         assert_eq!(first.token.len(), TOKEN_CHARS);
         assert_ne!(first.token, second.token);

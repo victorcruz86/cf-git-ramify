@@ -19,7 +19,7 @@ use ramify_lib::commands::RepoLocks;
 use ramify_lib::commit;
 use ramify_lib::conflicts::{self, Side};
 use ramify_lib::console::Console;
-use ramify_lib::editor::Server;
+use ramify_lib::editor::{Prompt, Server};
 use ramify_lib::merge;
 use ramify_lib::operation::{self, Operation};
 use ramify_lib::rebase::{self, RebaseParams};
@@ -120,15 +120,17 @@ impl Fixture {
         let server = Arc::new(
             Server::start_with_program(
                 PathBuf::from(CLIENT),
-                move |id, prompt| send.lock().unwrap().send((id, prompt.text)).is_ok(),
-                |_| {},
+                move |_: &str, id, prompt: Prompt| {
+                    send.lock().unwrap().send((id, prompt.text)).is_ok()
+                },
+                |_: &str, _| {},
             )
             .unwrap(),
         );
         let answering = server.clone();
         std::thread::spawn(move || {
             for (id, text) in requests {
-                answering.answer(id, Some(text));
+                answering.answer("main", id, Some(text));
             }
         });
         let runner = Runner::new(Arc::new(RepoLocks::default()), Arc::new(Console::default()));
@@ -147,6 +149,7 @@ impl Fixture {
         let path = repo.path().to_path_buf();
         let (send, receive) = mpsc::channel();
         self.runner.start(
+            "main",
             repo.path(),
             TaskKind::Write,
             "trace".to_string(),
@@ -284,7 +287,9 @@ fn phase_3_trace() {
     let repo = Scratch::diverged();
     let head = repo.head();
     fixture
-        .run(&repo, move |r| merge::merge_into(r, "side", "local", false, &head))
+        .run(&repo, move |r| {
+            merge::merge_into(r, "side", "local", false, &head)
+        })
         .unwrap();
     let accepted = trace.of("Accept Yours in a merge", &fixture, &repo, |r| {
         conflicts::accept(r, &["a.txt".to_string()], Side::Yours)
@@ -302,7 +307,9 @@ fn phase_3_trace() {
     let repo = Scratch::diverged();
     let head = repo.head();
     fixture
-        .run(&repo, move |r| merge::merge_into(r, "side", "local", false, &head))
+        .run(&repo, move |r| {
+            merge::merge_into(r, "side", "local", false, &head)
+        })
         .unwrap();
     let accepted = trace.of("Accept Theirs in a merge", &fixture, &repo, |r| {
         conflicts::accept(r, &["a.txt".to_string()], Side::Theirs)
@@ -313,7 +320,9 @@ fn phase_3_trace() {
     let repo = Scratch::diverged();
     let head = repo.head();
     fixture
-        .run(&repo, move |r| merge::merge_into(r, "side", "local", false, &head))
+        .run(&repo, move |r| {
+            merge::merge_into(r, "side", "local", false, &head)
+        })
         .unwrap();
     let aborted = trace.of("Abort Merge", &fixture, &repo, |r| {
         operation::abort(r, Operation::Merging)

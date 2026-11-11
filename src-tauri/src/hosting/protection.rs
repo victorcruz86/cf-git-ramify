@@ -492,8 +492,12 @@ mod tests {
             let sync = self.sync.clone();
             let path = self.repo.path().to_path_buf();
             let data = self.data.path().to_path_buf();
-            self.runner
-                .start(self.repo.path(), kind, "test".to_string(), move |ctx| {
+            self.runner.start(
+                "main",
+                self.repo.path(),
+                kind,
+                "test".to_string(),
+                move |ctx| {
                     let repo = Repo {
                         ctx,
                         path: &path,
@@ -501,7 +505,8 @@ mod tests {
                     };
                     send.send(work(&repo, &sync)).unwrap();
                     Ok(())
-                });
+                },
+            );
             receive.recv_timeout(Duration::from_secs(60)).unwrap()
         }
 
@@ -524,7 +529,7 @@ mod tests {
         }
 
         fn console_text(&self) -> String {
-            let lines = self.console.lines();
+            let lines = self.console.lines_of("main");
             let texts: Vec<String> = lines.into_iter().map(|line| line.text).collect();
             texts.join("\n")
         }

@@ -113,7 +113,7 @@ pub fn in_task_as<T: Send + 'static>(
     work: impl FnOnce(&TaskContext) -> T + Send + 'static,
 ) -> T {
     let (send, receive) = mpsc::channel();
-    runner.start(repo, kind, "test".to_string(), move |ctx| {
+    runner.start("main", repo, kind, "test".to_string(), move |ctx| {
         send.send(work(ctx)).unwrap();
         Ok(())
     });
@@ -404,7 +404,7 @@ impl RepoHarness {
     }
 
     pub fn ran(&self, command: &str) -> bool {
-        let lines = self.console.lines();
+        let lines = self.console.lines_of("main");
         lines
             .iter()
             .any(|line| line.command && line.text.ends_with(command))

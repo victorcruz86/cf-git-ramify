@@ -12,7 +12,10 @@ import { unprocessedMessage, withSeparator } from "./model";
 const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
 
 // jsdom does no layout: CodeMirror measures with this.
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;

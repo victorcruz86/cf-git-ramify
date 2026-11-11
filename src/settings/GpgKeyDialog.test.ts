@@ -5,7 +5,7 @@ import { taskResult } from "../lib/tasks";
 import GpgKeyDialog from "./GpgKeyDialog.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
 vi.mock("../lib/tasks", () => ({ taskResult: vi.fn() }));
 
 type Config = { sign: boolean; key: string | null; ssh: boolean };

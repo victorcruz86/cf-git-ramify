@@ -209,10 +209,11 @@ fn cached_or_read(
 // Who asks: each table and each details panel has its own loader in 241
 // (`VcsLogExternalStatusColumnService`, `VcsLogCommitSelectionListenerForDetails`), and a new request
 // of one cancels only its own previous one (`GitCommitSignatureLoaderBase.currentIndicator`).
+// A requester is numbered inside its project window, so `pending` is keyed by the owner too.
 #[derive(Default)]
 pub struct SignatureLoads {
     cache: Arc<Mutex<SignatureCache>>,
-    pending: Mutex<HashMap<u32, TaskId>>,
+    pending: Mutex<HashMap<(String, u32), TaskId>>,
 }
 
 impl SignatureLoads {
@@ -222,6 +223,7 @@ impl SignatureLoads {
         &self,
         runner: &Runner,
         repo: &Path,
+        owner: &str,
         requester: u32,
         hashes: Vec<String>,
     ) -> Result<TaskId, GitError> {
@@ -229,17 +231,24 @@ impl SignatureLoads {
             diff::check_hash(hash)?;
         }
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(previous) = pending.get(&requester) {
-            runner.cancel(*previous);
+        let key = (owner.to_string(), requester);
+        if let Some(previous) = pending.get(&key) {
+            runner.cancel(owner, *previous);
         }
         let cache = self.cache.clone();
         let path = repo.to_path_buf();
-        let id = runner.start(repo, TaskKind::Read, LOADING.to_string(), move |context| {
-            cached_or_read(&cache, &path, &hashes, |args, input| {
-                Ok(context.git_with_input(args, input)?.stdout)
-            })
-        });
-        pending.insert(requester, id);
+        let id = runner.start(
+            owner,
+            repo,
+            TaskKind::Read,
+            LOADING.to_string(),
+            move |context| {
+                cached_or_read(&cache, &path, &hashes, |args, input| {
+                    Ok(context.git_with_input(args, input)?.stdout)
+                })
+            },
+        );
+        pending.insert(key, id);
         Ok(id)
     }
 }
@@ -536,7 +545,7 @@ mod tests {
         let hashes = || vec!["e".repeat(40)];
         let start = |requester, hashes| {
             loads
-                .start(&harness.runner, repo.path(), requester, hashes)
+                .start(&harness.runner, repo.path(), "main", requester, hashes)
                 .unwrap()
         };
 
@@ -552,7 +561,38 @@ mod tests {
         assert_eq!(other.state, TaskState::Done);
         assert_eq!(other.value, Some(serde_json::json!([])));
 
-        let refused = loads.start(&harness.runner, repo.path(), 1, vec!["HEAD".to_string()]);
+        let refused = loads.start(
+            &harness.runner,
+            repo.path(),
+            "main",
+            1,
+            vec!["HEAD".to_string()],
+        );
         assert!(refused.is_err());
+    }
+
+    // Requesters are numbered inside each project window: the same number in another window is
+    // another table.
+    #[test]
+    fn the_same_requester_of_another_window_is_not_cancelled() {
+        let mut harness = Harness::new();
+        let loads = SignatureLoads::default();
+        let repo = TempDir::new().unwrap();
+        let hashes = || vec!["e".repeat(40)];
+        let start = |owner, hashes| {
+            loads
+                .start(&harness.runner, repo.path(), owner, 1, hashes)
+                .unwrap()
+        };
+
+        let first = start("main", hashes());
+        let second = start("main-2", hashes());
+        harness.wait_started(2);
+        let again = start("main", Vec::new());
+
+        assert_eq!(harness.finished(first).state, TaskState::Cancelled);
+        assert_eq!(harness.finished(again).state, TaskState::Done);
+        fs::write(harness.dir.path().join("release"), "").unwrap();
+        assert_eq!(harness.finished(second).state, TaskState::Done);
     }
 }

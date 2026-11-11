@@ -782,6 +782,7 @@ mod tests {
         let (resume, paused) = mpsc::channel::<()>();
         let (answer, outcome) = mpsc::channel();
         let id = runner.start(
+            "main",
             repo.path(),
             TaskKind::Write,
             "test".to_string(),
@@ -795,7 +796,7 @@ mod tests {
             },
         );
         saved.recv_timeout(WAIT).unwrap();
-        runner.cancel(id);
+        runner.cancel("main", id);
         resume.send(()).unwrap();
 
         assert_eq!(

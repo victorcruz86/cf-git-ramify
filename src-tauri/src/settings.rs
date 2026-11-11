@@ -43,6 +43,16 @@ pub enum UpdateMethod {
     Rebase,
 }
 
+// `GeneralSettings.confirmOpenNewProject2`: where opening a project goes. Ask is IntelliJ's default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenProjectIn {
+    #[default]
+    Ask,
+    New,
+    Current,
+}
+
 // The settings of `Settings > Version Control > Git`. They belong to the app, not to each
 // repository. Whatever is missing from the file takes its default value, and unknown things are ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +100,10 @@ pub struct Settings {
     // `GithubSettings.connectionTimeout`: how long a GitHub request waits to connect. The page
     // shows seconds, `0..60`.
     pub github_connection_timeout_ms: u64,
+    // `Open project in:` (`GeneralSettings.confirmOpenNewProject2`).
+    pub open_project_in: OpenProjectIn,
+    // `Reopen projects on startup` (`GeneralSettings.reopenLastProject`, true by default).
+    pub reopen_projects: bool,
 }
 
 // `GithubSettings.CONNECTION_TIMEOUT`, and the most the page's `0..60` seconds allow.
@@ -129,6 +143,8 @@ impl Default for Settings {
             clear_initial_commit_message: false,
             show_drop_commit_dialog: true,
             github_connection_timeout_ms: GITHUB_CONNECTION_TIMEOUT_MS,
+            open_project_in: OpenProjectIn::Ask,
+            reopen_projects: true,
         }
     }
 }
@@ -558,6 +574,24 @@ mod tests {
     }
 
     #[test]
+    fn an_old_settings_file_gets_the_window_defaults() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(FILE_NAME), r#"{"stagingArea": true}"#).unwrap();
+        let settings = load(dir.path());
+        assert_eq!(settings.open_project_in, OpenProjectIn::Ask);
+        assert!(settings.reopen_projects);
+
+        fs::write(
+            dir.path().join(FILE_NAME),
+            r#"{"openProjectIn": "new", "reopenProjects": false}"#,
+        )
+        .unwrap();
+        let settings = load(dir.path());
+        assert_eq!(settings.open_project_in, OpenProjectIn::New);
+        assert!(!settings.reopen_projects);
+    }
+
+    #[test]
     fn the_github_connection_timeout_stays_within_sixty_seconds() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(FILE_NAME), r#"{"stagingArea": true}"#).unwrap();
@@ -690,7 +724,11 @@ mod tests {
         fs::write(dir.path().join(FILE_NAME), r#"{"stagingArea": true}"#).unwrap();
         assert!(load(dir.path()).show_drop_commit_dialog);
 
-        fs::write(dir.path().join(FILE_NAME), r#"{"showDropCommitDialog": false}"#).unwrap();
+        fs::write(
+            dir.path().join(FILE_NAME),
+            r#"{"showDropCommitDialog": false}"#,
+        )
+        .unwrap();
         assert!(!load(dir.path()).show_drop_commit_dialog);
     }
 
@@ -760,6 +798,8 @@ mod tests {
             clear_initial_commit_message: true,
             show_drop_commit_dialog: false,
             github_connection_timeout_ms: 12_000,
+            open_project_in: OpenProjectIn::Current,
+            reopen_projects: false,
         };
 
         save(dir.path(), &settings).unwrap();

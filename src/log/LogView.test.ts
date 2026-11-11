@@ -9,6 +9,9 @@ import LogView from "./LogView.svelte";
 import { defaultOptions, toggleColumn } from "./options";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 const HASH = "a".repeat(40);

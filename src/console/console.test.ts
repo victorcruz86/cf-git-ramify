@@ -6,9 +6,12 @@ import type { ConsoleLine } from "../lib/api";
 import ConsoleView from "./ConsoleView.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
-  emit: vi.fn(async () => {}),
+  emitTo: vi.fn(async () => {}),
 }));
 
 let send: (line: ConsoleLine) => void;

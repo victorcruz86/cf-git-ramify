@@ -69,6 +69,9 @@ import {
 import sharedNames from "../../src-tauri/testdata/patch-names.json?raw";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const ENTRY: PatchEntry = {

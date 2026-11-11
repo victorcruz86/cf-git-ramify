@@ -160,7 +160,7 @@ impl Fixture {
         let gone = Mutex::new(gone);
         let server = Server::start_with_program(
             PathBuf::from(CLIENT),
-            move |id, prompt: Prompt| {
+            move |_: &str, id, prompt: Prompt| {
                 if !shown {
                     return false;
                 }
@@ -168,7 +168,7 @@ impl Fixture {
                 let asked = (id, prompt.kind, prompt.text);
                 send.lock().unwrap().send(asked).is_ok()
             },
-            move |id| gone.lock().unwrap().send(id).unwrap(),
+            move |_: &str, id| gone.lock().unwrap().send(id).unwrap(),
         )
         .unwrap();
         let runner = Runner::new(Arc::new(RepoLocks::default()), Arc::new(Console::default()));
@@ -216,7 +216,7 @@ impl Fixture {
         let (send, receive) = mpsc::channel();
         let id = self
             .runner
-            .start(repo, kind, "test".to_string(), move |ctx| {
+            .start("main", repo, kind, "test".to_string(), move |ctx| {
                 send.send(work(ctx)).unwrap();
                 Ok(())
             });
@@ -252,7 +252,7 @@ impl Fixture {
 
     // Launches the real client with a registration's environment, as git would.
     fn client(&self, handler: Arc<dyn EditorHandler>, git_dir: PathBuf, file: &Path) -> Command {
-        let registration = self.server.register(handler, git_dir);
+        let registration = self.server.register("main".to_string(), handler, git_dir);
         let mut command = Command::new(CLIENT);
         registration.apply(&mut command);
         command.arg("--ramify-editor").arg(file);
@@ -490,7 +490,7 @@ fn ask_asks_the_window_and_writes_the_answer() {
     );
     fixture
         .server
-        .answer(id, Some(change_action(&text, "A", "drop")));
+        .answer("main", id, Some(change_action(&text, "A", "drop")));
 
     done.recv_timeout(WAIT)
         .unwrap()
@@ -550,7 +550,7 @@ fn pull_rebase_interactive_does_not_wait_for_a_terminal() {
     let (id, kind, text) = fixture.requests.recv_timeout(WAIT).expect("no request");
     assert_eq!(kind, EditKind::Todo);
     assert!(text.contains("pick ") && text.contains("own"), "{text:?}");
-    fixture.server.answer(id, Some(text));
+    fixture.server.answer("main", id, Some(text));
 
     let result = done.recv_timeout(WAIT).expect("the pull did not finish");
     assert_eq!(result.outcome, Outcome::Success);
@@ -578,6 +578,7 @@ fn without_a_server_the_editor_refuses_and_git_fails() {
 
     let (send, done) = mpsc::channel();
     runner.start(
+        "main",
         repo.path(),
         TaskKind::Write,
         "test".to_string(),
@@ -644,13 +645,13 @@ fn cancelling_the_task_closes_the_pending_request() {
             .copied()
             .chain(["rebase", "-i", &base])
             .collect();
-        let handler = RewordThenAsk(Ask::new(Some(handle)));
+        let handler = RewordThenAsk(Ask::new(Some(handle), "main".to_string()));
         ctx.git_editing(&args, Arc::new(handler))
     });
     let (id, kind, _) = fixture.requests.recv_timeout(WAIT).expect("no request");
     assert_eq!(kind, EditKind::Message);
 
-    fixture.runner.cancel(task);
+    fixture.runner.cancel("main", task);
 
     assert_eq!(fixture.dismissed.recv_timeout(WAIT), Ok(id));
     assert_eq!(
@@ -658,7 +659,9 @@ fn cancelling_the_task_closes_the_pending_request() {
         GitError::Cancelled
     );
     // The window answers late, with the dialog still on screen: it writes nothing and does not hang.
-    fixture.server.answer(id, Some("late\n".to_string()));
+    fixture
+        .server
+        .answer("main", id, Some("late\n".to_string()));
     let message = repo.git_dir().join("COMMIT_EDITMSG");
     assert!(
         !message.exists() || !fs::read_to_string(message).unwrap().contains("late"),
@@ -693,7 +696,7 @@ fn cancelling_an_interactive_pull_with_the_todo_pending_leaves_no_rebase() {
     assert_eq!(kind, EditKind::Todo);
     let started = Instant::now();
 
-    fixture.runner.cancel(task);
+    fixture.runner.cancel("main", task);
 
     assert_eq!(fixture.dismissed.recv_timeout(WAIT), Ok(id));
     let result = done.recv_timeout(WAIT).expect("the pull did not finish");
@@ -722,7 +725,7 @@ fn cancelling_an_interactive_rebase_with_the_todo_pending_leaves_no_rebase() {
     let (id, kind, _) = fixture.requests.recv_timeout(WAIT).expect("no request");
     assert_eq!(kind, EditKind::Todo);
 
-    fixture.runner.cancel(task);
+    fixture.runner.cancel("main", task);
 
     assert_eq!(fixture.dismissed.recv_timeout(WAIT), Ok(id));
     assert_eq!(
@@ -756,7 +759,7 @@ fn cancelling_without_a_pending_request_kills_git_immediately() {
     std::thread::sleep(Duration::from_millis(500));
     let started = Instant::now();
 
-    fixture.runner.cancel(task);
+    fixture.runner.cancel("main", task);
 
     assert_eq!(
         done.recv_timeout(WAIT).unwrap().unwrap_err(),
@@ -841,7 +844,7 @@ fn continue_that_asks_for_a_message_asks_it() {
     );
     fixture
         .server
-        .answer(id, Some("clashes, already resolved\n".to_string()));
+        .answer("main", id, Some("clashes, already resolved\n".to_string()));
 
     assert_eq!(done.recv_timeout(WAIT).unwrap(), Ok(Rebase::Done));
     assert_eq!(
@@ -859,7 +862,7 @@ fn cancelling_the_continue_message_leaves_the_rebase_stopped() {
 
     let done = in_repo(&fixture, &repo, rebase::continue_rebase);
     let (id, ..) = fixture.requests.recv_timeout(WAIT).unwrap();
-    fixture.server.answer(id, None);
+    fixture.server.answer("main", id, None);
 
     assert_eq!(done.recv_timeout(WAIT).unwrap(), Ok(Rebase::Editing));
     assert!(repo.in_git_dir("rebase-merge"));
@@ -879,7 +882,7 @@ fn cancelling_the_list_does_not_start_the_rebase() {
     });
     let (id, kind, _) = fixture.requests.recv_timeout(WAIT).unwrap();
     assert_eq!(kind, EditKind::Todo);
-    fixture.server.answer(id, None);
+    fixture.server.answer("main", id, None);
 
     assert_eq!(done.recv_timeout(WAIT).unwrap(), Err(GitError::Cancelled));
     assert!(!repo.in_git_dir("rebase-merge"));
@@ -1361,7 +1364,7 @@ mod rewrite {
             })
             .collect();
         let answer = serde_json::json!({ "entries": entries, "messages": [] });
-        fixture.server.answer(id, Some(answer.to_string()));
+        fixture.server.answer("main", id, Some(answer.to_string()));
 
         let rebased = done
             .recv_timeout(WAIT)
@@ -1451,7 +1454,7 @@ mod rewrite {
             })
             .collect();
         let answer = serde_json::json!({ "entries": entries, "messages": [] });
-        fixture.server.answer(id, Some(answer.to_string()));
+        fixture.server.answer("main", id, Some(answer.to_string()));
 
         let result = done.recv_timeout(WAIT).unwrap();
         assert!(!repo.path().join("injected").exists(), "git ran the exec");
@@ -1546,7 +1549,9 @@ mod rewrite {
         assert_eq!(kind, EditKind::Message);
         assert_eq!(fixture.forms.recv_timeout(WAIT).unwrap(), Form::Text);
         assert!(text.starts_with("other\nC"), "{text:?}");
-        fixture.server.answer(id, Some("C by hand\n".to_string()));
+        fixture
+            .server
+            .answer("main", id, Some("C by hand\n".to_string()));
         let rebased = done
             .recv_timeout(WAIT)
             .unwrap()
@@ -1565,7 +1570,7 @@ mod rewrite {
         let done = interactive_in(&fixture, &repo, &hashes[1], None);
         let (id, kind, _) = fixture.requests.recv_timeout(WAIT).unwrap();
         assert_eq!(kind, EditKind::Todo);
-        fixture.server.answer(id, None);
+        fixture.server.answer("main", id, None);
 
         assert_eq!(done.recv_timeout(WAIT).unwrap(), Err(GitError::Cancelled));
         assert!(!repo.in_git_dir("rebase-merge"));
@@ -1614,7 +1619,7 @@ mod rewrite {
         let (id, kind, _) = fixture.requests.recv_timeout(WAIT).unwrap();
         assert_eq!(kind, EditKind::Todo);
         assert_eq!(fixture.forms.recv_timeout(WAIT).unwrap(), Form::Noop);
-        fixture.server.answer(id, None);
+        fixture.server.answer("main", id, None);
         assert_eq!(done.recv_timeout(WAIT).unwrap(), Err(GitError::Cancelled));
         assert_eq!(head(&repo), base);
 
@@ -1622,7 +1627,7 @@ mod rewrite {
         let done = rebase_onto(&fixture);
         let (id, ..) = fixture.requests.recv_timeout(WAIT).unwrap();
         assert_eq!(fixture.forms.recv_timeout(WAIT).unwrap(), Form::Noop);
-        fixture.server.answer(id, Some(String::new()));
+        fixture.server.answer("main", id, Some(String::new()));
         assert_eq!(done.recv_timeout(WAIT).unwrap(), Ok(Rebase::Done));
         assert_eq!(head(&repo), ahead);
     }

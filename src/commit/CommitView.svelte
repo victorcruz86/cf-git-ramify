@@ -203,10 +203,37 @@
     return { message, inclusion, lineSelections, places: new Map(places) };
   }
 
+  // The window closes or the app quits (§5.8): the message, to be kept as the active changelist's
+  // comment, where the Commit Changes dialog keeps its draft and where this view starts from. An
+  // emptied message (committed, say) empties the comment too, or the old draft would come back.
+  // Nothing when they already agree, nor with the staging area, which leaves the changelists alone.
+  // During a Fixup… or Squash Into… it is the draft from before the proposal: the proposed
+  // `fixup! …` text is not the user's.
+  export function changelistDraft(): { id: string; comment: string } | null {
+    if (stagingArea || !lists) return null;
+    const active = lists.active;
+    const comment = lists.lists.find((list) => list.id === active)?.comment ?? "";
+    const draft = proposal?.prior.message ?? message;
+    if (draft === comment || (!draft.trim() && !comment.trim())) return null;
+    return { id: active, comment: draft };
+  }
+
+  // `ChangeListCommitMessagePolicy`: the message starts from the active changelist's comment, and
+  // takes the new one's whenever the active list changes while the message is empty.
+  let commentListSeen: string | null = null;
+  function adoptComment(read: Changelists) {
+    if (stagingArea || read.active === commentListSeen) return;
+    commentListSeen = read.active;
+    if (message.trim() || proposal) return;
+    const comment = read.lists.find((list) => list.id === read.active)?.comment ?? "";
+    if (comment.trim()) message = comment;
+  }
+
   function refreshed({ status, lists: read, hunks }: Refreshed) {
     void proposeMergeMessage();
     void checkProposal();
     if (!read) return;
+    adoptComment(read);
     fileHunksKnown = hunks;
     const active = activePaths();
     if (initialized) {

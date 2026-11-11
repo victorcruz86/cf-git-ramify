@@ -908,6 +908,7 @@ mod tests {
             let path = self.path().to_path_buf();
             let data = self.data.path().to_path_buf();
             self.runner.start(
+                "main",
                 self.path(),
                 task_kind(&spec),
                 "Pushing…".to_string(),
@@ -930,6 +931,7 @@ mod tests {
             let path = self.path().to_path_buf();
             let data = self.data.path().to_path_buf();
             self.runner.start(
+                "main",
                 self.path(),
                 TaskKind::Read,
                 "Pushing…".to_string(),
@@ -988,14 +990,14 @@ mod tests {
 
         fn ran(&self, command: &str) -> bool {
             self.console
-                .lines()
+                .lines_of("main")
                 .iter()
                 .any(|line| line.command && line.text.ends_with(command))
         }
 
         fn ran_anything_with(&self, word: &str) -> bool {
             self.console
-                .lines()
+                .lines_of("main")
                 .iter()
                 .any(|line| line.command && line.text.split(' ').any(|part| part == word))
         }
@@ -1038,7 +1040,9 @@ mod tests {
     #[test]
     fn target_is_the_tracked_one() {
         let harness = Harness::new();
-        harness.repo.git(&["remote", "add", "another", "/does/not/matter"]);
+        harness
+            .repo
+            .git(&["remote", "add", "another", "/does/not/matter"]);
         harness.repo.git(&["branch", "-q", "local"]);
         harness
             .repo
@@ -1062,7 +1066,9 @@ mod tests {
     #[test]
     fn without_tracked_uses_origin_and_the_same_name() {
         let harness = Harness::new();
-        harness.repo.git(&["remote", "add", "aaa", "/does/not/matter"]);
+        harness
+            .repo
+            .git(&["remote", "add", "aaa", "/does/not/matter"]);
         harness.repo.git(&["branch", "-q", "new"]);
 
         let found = target(harness.path(), Some("new")).unwrap();
@@ -1340,10 +1346,7 @@ mod tests {
         assert_eq!(result.status, PushStatus::NewBranch);
         assert!(harness.ran("origin refs/heads/orphan:refs/heads/orphan --set-upstream"));
         assert_eq!(
-            harness
-                .repo
-                .git(&["config", "branch.orphan.remote"])
-                .trim(),
+            harness.repo.git(&["config", "branch.orphan.remote"]).trim(),
             "origin"
         );
     }
@@ -1701,7 +1704,7 @@ mod tests {
         assert!(!harness.ran_anything_with("--force"));
         assert!(!harness
             .console
-            .lines()
+            .lines_of("main")
             .iter()
             .any(|line| line.command && line.text.contains("--force-with-lease")));
     }
@@ -2385,7 +2388,9 @@ mod tests {
         harness.repo.git(&["checkout", "-q", "-b", "x"]);
         let mine = harness.repo.commit("b.txt", b"b\n", "two");
         // What is already on any branch of the remote does not go out, even if it is not the target one.
-        harness.repo.git(&["remote", "add", "another", "/does/not/matter"]);
+        harness
+            .repo
+            .git(&["remote", "add", "another", "/does/not/matter"]);
 
         let commits = harness.outgoing("x", "x").unwrap();
 
@@ -2535,7 +2540,11 @@ mod tests {
         write_tags(one.path(), Some(PushTags::CurrentBranch)).unwrap();
 
         assert_eq!(read_tags(one.path()), Some(PushTags::CurrentBranch));
-        assert_eq!(read_tags(other.path()), None, "the other's does not carry over");
+        assert_eq!(
+            read_tags(other.path()),
+            None,
+            "the other's does not carry over"
+        );
 
         write_tags(one.path(), None).unwrap();
         assert_eq!(read_tags(one.path()), None);
@@ -2568,9 +2577,12 @@ mod tests {
             let (send, receive) = mpsc::channel();
             let path = harness.path().to_path_buf();
             let data = harness.data.path().to_path_buf();
-            harness
-                .runner
-                .start(harness.path(), kind, "trace".to_string(), move |ctx| {
+            harness.runner.start(
+                "main",
+                harness.path(),
+                kind,
+                "trace".to_string(),
+                move |ctx| {
                     let repo = Repo {
                         ctx,
                         path: &path,
@@ -2578,7 +2590,8 @@ mod tests {
                     };
                     send.send(work(&repo)).unwrap();
                     Ok(())
-                });
+                },
+            );
             receive.recv_timeout(WAIT).unwrap()
         }
 

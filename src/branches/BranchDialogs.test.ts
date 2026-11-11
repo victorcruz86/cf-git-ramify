@@ -9,7 +9,10 @@ import { trackTasks } from "../lib/tasks";
 import BranchDialogs from "./BranchDialogs.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
 
 const HASH = "a1b2c3d4".repeat(5);
 const BRANCHES = { local: [{ name: "main", tracked: null }], remote: [] };

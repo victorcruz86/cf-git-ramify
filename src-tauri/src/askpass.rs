@@ -26,6 +26,7 @@ const SOCKET_FOLDER_PREFIX: &str = "ramify-askpass-";
 pub(crate) const SOCKET_FOLDER_RANDOM_CHARS: usize = 6;
 pub(crate) const SOCKET_NAME: &str = "s";
 pub(crate) const TOKEN_BYTES: usize = 32;
+const TOKEN_CHARS: usize = TOKEN_BYTES * 2;
 pub(crate) const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 // `sun_path` has 104 bytes on Darwin, including the final NUL.
 const SOCKET_PATH_LIMIT: usize = 103;
@@ -148,21 +149,123 @@ pub fn refuse_prompts(command: &mut Command) {
     use_program(command, Path::new(REFUSING_PROGRAM));
 }
 
-type OnPrompt = Box<dyn Fn(u64, PromptKind) -> bool + Send + Sync>;
-type OnDismissed = Box<dyn Fn(u64) + Send + Sync>;
+// The project window a question belongs to, its id, and what it asks.
+type OnPrompt = Box<dyn Fn(&str, u64, PromptKind) -> bool + Send + Sync>;
+type OnDismissed = Box<dyn Fn(&str, u64) + Send + Sync>;
+
+// A question waiting for its window's answer.
+struct Pending {
+    owner: String,
+    answer: Sender<Option<String>>,
+}
 
 struct Shared {
-    token: String,
+    program: PathBuf,
+    socket: PathBuf,
     closed: AtomicBool,
     next: AtomicU64,
-    pending: Mutex<HashMap<u64, Sender<Option<String>>>>,
+    // Each registration's token and the project window it asks for.
+    registered: Mutex<HashMap<String, String>>,
+    pending: Mutex<HashMap<u64, Pending>>,
     on_prompt: OnPrompt,
     on_dismissed: OnDismissed,
 }
 
-pub struct Server {
+impl Shared {
+    // The token is not looked up by equality: timing must not say how many bytes it got right.
+    fn owner_of(&self, received: &[u8]) -> Option<(String, String)> {
+        let registered = self
+            .registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        registered.iter().fold(None, |found, (token, owner)| {
+            // `same_token` only compares up to the shorter one: an empty token would accept any.
+            let same = received.len() == token.len() && same_token(received, token.as_bytes());
+            found.or(same.then(|| (token.clone(), owner.clone())))
+        })
+    }
+
+    fn is_registered(&self, token: &str) -> bool {
+        self.registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(token)
+    }
+
+    fn remove(&self, id: u64) -> Option<Pending> {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id)
+    }
+
+    // `false` only if the question belongs to another window: then it stays waiting for its own.
+    // If nobody waits anymore, nothing happens.
+    fn answer(&self, owner: &str, id: u64, answer: Option<String>) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        match pending.get(&id) {
+            None => true,
+            Some(waiting) if waiting.owner != owner => false,
+            Some(_) => {
+                if let Some(waiting) = pending.remove(&id) {
+                    let _ = waiting.answer.send(answer);
+                }
+                true
+            }
+        }
+    }
+}
+
+// What a task needs from the server: to register. It can be cloned; it does not keep the socket alive.
+#[derive(Clone)]
+pub struct Handle {
     shared: Arc<Shared>,
-    client: ClientEnv,
+}
+
+impl Handle {
+    // A token of its own for the git processes of one task (or one command), whose questions go to
+    // the project window `owner`. The token stops being accepted when the registration is dropped.
+    pub fn register(&self, owner: String) -> (ClientEnv, AskpassRegistration) {
+        // Without entropy there is no token: nothing is registered and every question is refused.
+        let token = random_token().unwrap_or_default();
+        if !token.is_empty() {
+            self.shared
+                .registered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(token.clone(), owner);
+        }
+        let client = ClientEnv {
+            program: self.shared.program.clone(),
+            socket: self.shared.socket.clone(),
+            token: token.clone(),
+        };
+        let registration = AskpassRegistration {
+            token,
+            shared: self.shared.clone(),
+        };
+        (client, registration)
+    }
+}
+
+// Without `Debug`: the token must not be able to end up in a message.
+pub struct AskpassRegistration {
+    token: String,
+    shared: Arc<Shared>,
+}
+
+impl Drop for AskpassRegistration {
+    fn drop(&mut self) {
+        self.shared
+            .registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.token);
+    }
+}
+
+pub struct Server {
+    handle: Handle,
     // Dropping it deletes the socket.
     _folder: TempDir,
 }
@@ -170,14 +273,21 @@ pub struct Server {
 impl Server {
     // `on_prompt` returns whether the question reached anyone: if not, nobody would ever answer and
     // it is rejected. `on_dismissed` reports that whoever asked no longer waits (the task was cancelled
-    // or died): that way the dialog does not stay open for nobody. The socket lives in a `0700`
-    // directory, the owner's alone.
+    // or died): that way the dialog does not stay open for nobody. Both receive the project window
+    // of the registration that asked. The socket lives in a `0700` directory, the owner's alone.
     pub fn start(
-        on_prompt: impl Fn(u64, PromptKind) -> bool + Send + Sync + 'static,
-        on_dismissed: impl Fn(u64) + Send + Sync + 'static,
+        on_prompt: impl Fn(&str, u64, PromptKind) -> bool + Send + Sync + 'static,
+        on_dismissed: impl Fn(&str, u64) + Send + Sync + 'static,
     ) -> io::Result<Self> {
-        let program = env::current_exe()?;
-        let token = random_token()?;
+        Self::start_with_program(env::current_exe()?, on_prompt, on_dismissed)
+    }
+
+    // The integration tests launch the app's binary, not the test's.
+    pub fn start_with_program(
+        program: PathBuf,
+        on_prompt: impl Fn(&str, u64, PromptKind) -> bool + Send + Sync + 'static,
+        on_dismissed: impl Fn(&str, u64) + Send + Sync + 'static,
+    ) -> io::Result<Self> {
         // The mode is given on creation: `tempfile` does not restrict it by itself.
         let folder = tempfile::Builder::new()
             .prefix(SOCKET_FOLDER_PREFIX)
@@ -187,52 +297,45 @@ impl Server {
         let socket = folder.path().join(SOCKET_NAME);
         let listener = UnixListener::bind(&socket)?;
         let shared = Arc::new(Shared {
-            token: token.clone(),
+            program,
+            socket,
             closed: AtomicBool::new(false),
             next: AtomicU64::new(1),
-            pending: Mutex::new(HashMap::new()),
+            registered: Mutex::default(),
+            pending: Mutex::default(),
             on_prompt: Box::new(on_prompt),
             on_dismissed: Box::new(on_dismissed),
         });
         let accepting = shared.clone();
         thread::spawn(move || accept(listener, accepting));
         Ok(Self {
-            shared,
-            client: ClientEnv {
-                program,
-                socket,
-                token,
-            },
+            handle: Handle { shared },
             _folder: folder,
         })
     }
 
-    pub fn client_env(&self) -> ClientEnv {
-        self.client.clone()
+    pub fn handle(&self) -> Handle {
+        self.handle.clone()
     }
 
-    // `None` cancels. If nobody waits anymore, nothing happens.
-    pub fn answer(&self, id: u64, answer: Option<String>) {
-        if let Some(waiting) = self.shared.remove(id) {
-            let _ = waiting.send(answer);
-        }
+    pub fn register(&self, owner: String) -> (ClientEnv, AskpassRegistration) {
+        self.handle.register(owner)
+    }
+
+    // `None` cancels. Only the project window `owner` the question belongs to may answer it:
+    // `false` if it belongs to another, and then it keeps waiting. If nobody waits anymore,
+    // nothing happens.
+    pub fn answer(&self, owner: &str, id: u64, answer: Option<String>) -> bool {
+        self.handle.shared.answer(owner, id, answer)
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.shared.closed.store(true, Ordering::SeqCst);
+        let shared = &self.handle.shared;
+        shared.closed.store(true, Ordering::SeqCst);
         // Wakes `accept`, which is blocked waiting for a connection.
-        let _ = UnixStream::connect(&self.client.socket);
-    }
-}
-
-impl Shared {
-    fn remove(&self, id: u64) -> Option<Sender<Option<String>>> {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id)
+        let _ = UnixStream::connect(&shared.socket);
     }
 }
 
@@ -284,20 +387,20 @@ pub(crate) fn same_token(received: &[u8], token: &[u8]) -> bool {
 
 // `<length, 4 bytes><token><question>`. The length goes first to reject a huge message without
 // reading it, and so that ssh's multi-line questions need no escaping.
-fn read_request(stream: &mut UnixStream, token: &str) -> io::Result<Option<String>> {
+fn read_request(stream: &mut UnixStream) -> io::Result<Option<(Vec<u8>, String)>> {
     let mut length = [0; size_of::<u32>()];
     stream.read_exact(&mut length)?;
     let length = u32::from_be_bytes(length) as usize;
-    if !(token.len()..=MAX_MESSAGE_BYTES).contains(&length) {
+    if !(TOKEN_CHARS..=MAX_MESSAGE_BYTES).contains(&length) {
         return Ok(None);
     }
     let mut message = vec![0; length];
     stream.read_exact(&mut message)?;
-    let (received, prompt) = message.split_at(token.len());
-    Ok(
-        same_token(received, token.as_bytes())
-            .then(|| String::from_utf8_lossy(prompt).into_owned()),
-    )
+    let prompt = message.split_off(TOKEN_CHARS);
+    Ok(Some((
+        message,
+        String::from_utf8_lossy(&prompt).into_owned(),
+    )))
 }
 
 enum Outcome {
@@ -307,13 +410,21 @@ enum Outcome {
 }
 
 // While waiting, the client sends nothing else: reading can only yield the close, and incidentally
-// it sets the pace of the wait.
-fn wait_answer(stream: &mut UnixStream, answers: &Receiver<Option<String>>) -> Outcome {
+// it sets the pace of the wait. A registration dropped meanwhile (its task ended) leaves nobody to
+// answer for.
+fn wait_answer(
+    stream: &mut UnixStream,
+    answers: &Receiver<Option<String>>,
+    still_registered: impl Fn() -> bool,
+) -> Outcome {
     loop {
         match answers.try_recv() {
             Ok(Some(answer)) => return Outcome::Answered(answer),
             Ok(None) | Err(TryRecvError::Disconnected) => return Outcome::Refused,
             Err(TryRecvError::Empty) => {}
+        }
+        if !still_registered() {
+            return Outcome::ClientGone;
         }
         match stream.read(&mut [0]) {
             Ok(0) => return Outcome::ClientGone,
@@ -330,10 +441,13 @@ fn wait_answer(stream: &mut UnixStream, answers: &Receiver<Option<String>>) -> O
     }
 }
 
-// Closing without writing anything is the rejection: a bad token gets no hint.
+// Closing without writing anything is the rejection: a bad or dropped token gets no hint.
 fn serve(mut stream: UnixStream, shared: &Shared) -> io::Result<()> {
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
-    let Some(prompt) = read_request(&mut stream, &shared.token)? else {
+    let Some((received, prompt)) = read_request(&mut stream)? else {
+        return Ok(());
+    };
+    let Some((token, owner)) = shared.owner_of(&received) else {
         return Ok(());
     };
     // Before asking: on macOS, with the client already closed, this fails with `EINVAL`.
@@ -344,12 +458,18 @@ fn serve(mut stream: UnixStream, shared: &Shared) -> io::Result<()> {
         .pending
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(id, send);
-    if !(shared.on_prompt)(id, classify(&prompt)) {
+        .insert(
+            id,
+            Pending {
+                owner: owner.clone(),
+                answer: send,
+            },
+        );
+    if !(shared.on_prompt)(&owner, id, classify(&prompt)) {
         shared.remove(id);
         return Ok(());
     }
-    let outcome = wait_answer(&mut stream, &answers);
+    let outcome = wait_answer(&mut stream, &answers, || shared.is_registered(&token));
     shared.remove(id);
     match outcome {
         Outcome::Answered(answer) => {
@@ -359,7 +479,7 @@ fn serve(mut stream: UnixStream, shared: &Shared) -> io::Result<()> {
         }
         Outcome::Refused => Ok(()),
         Outcome::ClientGone => {
-            (shared.on_dismissed)(id);
+            (shared.on_dismissed)(&owner, id);
             Ok(())
         }
     }
@@ -373,7 +493,8 @@ fn write_request(stream: &mut UnixStream, token: &str, prompt: &str) -> io::Resu
     stream.write_all(&message)
 }
 
-fn ask(socket: &Path, token: &str, prompt: &OsStr) -> io::Result<Vec<u8>> {
+// What the client does with git's question; the tests ask through it as git would.
+pub(crate) fn ask(socket: &Path, token: &str, prompt: &OsStr) -> io::Result<Vec<u8>> {
     let mut stream = UnixStream::connect(socket)?;
     write_request(&mut stream, token, &prompt.to_string_lossy())?;
     let mut answer = Vec::new();
@@ -482,7 +603,78 @@ mod tests {
     }
 
     fn silent_server() -> Server {
-        Server::start(|_, _| true, |_| {}).unwrap()
+        Server::start(|_: &str, _, _| true, |_: &str, _| {}).unwrap()
+    }
+
+    type Asked = Receiver<(String, u64, PromptKind)>;
+
+    fn owned_server() -> (Server, Asked) {
+        let (asked, prompts) = mpsc::channel();
+        let asked = Mutex::new(asked);
+        let server = Server::start(
+            move |owner: &str, id, kind| {
+                let prompt = (owner.to_string(), id, kind);
+                asked.lock().unwrap().send(prompt).is_ok()
+            },
+            |_: &str, _| {},
+        )
+        .unwrap();
+        (server, prompts)
+    }
+
+    fn ask_with(client: &ClientEnv, token: &str) -> UnixStream {
+        let mut stream = UnixStream::connect(&client.socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_request(&mut stream, token, "Password: ").unwrap();
+        stream
+    }
+
+    fn reply(mut stream: UnixStream) -> Vec<u8> {
+        let mut answer = Vec::new();
+        stream
+            .read_to_end(&mut answer)
+            .expect("the client keeps waiting");
+        answer
+    }
+
+    #[test]
+    fn a_prompt_reaches_the_owner_of_its_token() {
+        let (server, prompts) = owned_server();
+        let (first, _first) = server.register("main".to_string());
+        let (second, _second) = server.register("main-2".to_string());
+        assert_ne!(first.token, second.token);
+
+        let from_second = ask_with(&second, &second.token);
+        let (owner, id, _) = prompts.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(owner, "main-2");
+        // Another window cannot answer it, and the question keeps waiting for its own.
+        assert!(!server.answer("main", id, Some("wrong".to_string())));
+        assert!(server.answer("main-2", id, Some("right".to_string())));
+        assert_eq!(reply(from_second), b"right\n");
+
+        let from_first = ask_with(&first, &first.token);
+        let (owner, id, _) = prompts.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(owner, "main");
+        assert!(server.answer("main", id, None));
+        assert!(reply(from_first).is_empty());
+    }
+
+    #[test]
+    fn an_unknown_token_is_refused() {
+        let (server, prompts) = owned_server();
+        let (client, registration) = server.register("main".to_string());
+
+        let unknown = ask_with(&client, &"0".repeat(TOKEN_BYTES * 2));
+        assert!(reply(unknown).is_empty());
+
+        // A dropped registration is as unknown as one never made.
+        drop(registration);
+        let dropped = ask_with(&client, &client.token);
+        assert!(reply(dropped).is_empty());
+
+        assert!(prompts.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
     #[test]
@@ -519,14 +711,14 @@ mod tests {
         let (gone, dismissed) = mpsc::channel();
         let server = Server::start(
             // On macOS, changing options of a socket whose end already closed gives `EINVAL`.
-            move |_, _| {
+            move |_: &str, _, _| {
                 held.lock().unwrap().take();
                 true
             },
-            move |id| gone.send(id).unwrap(),
+            move |_: &str, id| gone.send(id).unwrap(),
         )
         .unwrap();
-        let env = server.client_env();
+        let (env, _registration) = server.register("main".to_string());
         let mut stream = UnixStream::connect(&env.socket).unwrap();
         *client.lock().unwrap() = Some(stream.try_clone().unwrap());
 
@@ -539,8 +731,12 @@ mod tests {
     #[test]
     fn question_that_cannot_be_shown_is_rejected() {
         let (gone, dismissed) = mpsc::channel();
-        let server = Server::start(|_, _| false, move |id| gone.send(id).unwrap()).unwrap();
-        let env = server.client_env();
+        let server = Server::start(
+            |_: &str, _, _| false,
+            move |_: &str, id| gone.send(id).unwrap(),
+        )
+        .unwrap();
+        let (env, _registration) = server.register("main".to_string());
         let mut stream = UnixStream::connect(&env.socket).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -559,7 +755,7 @@ mod tests {
     #[test]
     fn socket_only_for_the_owner() {
         let server = silent_server();
-        let client = server.client_env();
+        let (client, _registration) = server.register("main".to_string());
 
         let folder = client.socket.parent().unwrap();
         let mode = fs::metadata(folder).unwrap().permissions().mode();
@@ -568,9 +764,10 @@ mod tests {
     }
 
     #[test]
-    fn the_token_has_32_bytes_and_changes_on_every_run() {
-        let first = silent_server().client_env().token;
-        let second = silent_server().client_env().token;
+    fn the_token_has_32_bytes_and_changes_on_every_registration() {
+        let server = silent_server();
+        let first = server.register("main".to_string()).0.token;
+        let second = server.register("main".to_string()).0.token;
 
         assert_eq!(first.len(), 64);
         assert!(first.chars().all(|c| c.is_ascii_hexdigit()), "format");
@@ -580,7 +777,7 @@ mod tests {
     #[test]
     fn message_over_64_kb_is_rejected() {
         let server = silent_server();
-        let mut stream = UnixStream::connect(server.client_env().socket).unwrap();
+        let mut stream = UnixStream::connect(&server.handle.shared.socket).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -599,7 +796,7 @@ mod tests {
     #[test]
     fn dropping_the_server_deletes_the_socket() {
         let server = silent_server();
-        let folder = server.client_env().socket.parent().unwrap().to_path_buf();
+        let folder = server.handle.shared.socket.parent().unwrap().to_path_buf();
         assert!(folder.is_dir());
 
         drop(server);

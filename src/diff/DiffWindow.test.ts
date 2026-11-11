@@ -2,7 +2,7 @@ import { EditorView } from "@codemirror/view";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import type { DiffRequest, Hunk, RevisionPair, RevisionSides, WorktreeSides } from "../lib/api";
 import DiffWindow from "./DiffWindow.svelte";
 
@@ -11,7 +11,10 @@ import DiffWindow from "./DiffWindow.svelte";
 const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "diff" }),
+}));
 
 const HUNK: Hunk = { id: "h1", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 };
 const OTHER: Hunk = { id: "h2", oldStart: 3, oldLines: 1, newStart: 3, newLines: 1 };
@@ -79,16 +82,20 @@ function calls(command: string) {
   return vi.mocked(invoke).mock.calls.filter(([name]) => name === command);
 }
 
+// What the window sent to its project's windows: once per emission, as seen by its main window.
 function emitted(event: string) {
-  return vi.mocked(emit).mock.calls.filter(([name]) => name === event).map(([, payload]) => payload);
+  return vi
+    .mocked(emitTo)
+    .mock.calls.filter(([label, name]) => label === "main" && name === event)
+    .map(([, , payload]) => payload);
 }
 
 beforeEach(() => {
   localStorage.clear();
   handlers.clear();
   vi.mocked(invoke).mockReset();
-  vi.mocked(emit).mockReset();
-  vi.mocked(emit).mockResolvedValue(undefined);
+  vi.mocked(emitTo).mockReset();
+  vi.mocked(emitTo).mockResolvedValue(undefined);
   vi.mocked(listen).mockReset();
   vi.mocked(listen).mockImplementation(async (event, handler) => {
     handlers.set(event as string, (payload) =>

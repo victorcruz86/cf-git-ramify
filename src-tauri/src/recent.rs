@@ -87,6 +87,70 @@ pub fn menu_entries(projects: &[String], current: Option<&str>, home: Option<&Pa
         .collect()
 }
 
+// IntelliJ's `ProjectToolbarWidgetAction.MAX_RECENT_COUNT`.
+pub const MAX_WIDGET_RECENT: usize = 100;
+
+// A row of the project widget's popup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRow {
+    pub path: String,
+    // The folder's name.
+    pub name: String,
+    // The path from `~` if it is inside the home folder (`getLocationRelativeToUserHome`).
+    pub home_path: String,
+    // Whether the folder is still there; a recent row that is gone asks to remove it instead.
+    pub exists: bool,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProjectsList {
+    pub open: Vec<ProjectRow>,
+    pub recent: Vec<ProjectRow>,
+}
+
+fn row(path: &str, home: Option<&Path>) -> ProjectRow {
+    ProjectRow {
+        path: path.to_string(),
+        name: name(path),
+        home_path: from_home(path, home),
+        exists: Path::new(path).exists(),
+    }
+}
+
+// Two spellings of one folder: equal, or the same canonical path.
+fn same_project(a: &str, b: &str) -> bool {
+    a == b
+        || matches!(
+            (fs::canonicalize(a), fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+// The widget's popup (`ProjectToolbarWidgetAction.createActionGroup`) for the window `own`:
+// `open` is the repositories of the other windows (`windows`: label and repository, in opening
+// order); `recent` is the recent list without any open repository, the window's own included,
+// at most `MAX_WIDGET_RECENT`.
+pub fn projects_list(
+    windows: &[(String, String)],
+    own: &str,
+    recent: &[String],
+    home: Option<&Path>,
+) -> ProjectsList {
+    let open = windows
+        .iter()
+        .filter(|(label, _)| label != own)
+        .map(|(_, path)| row(path, home))
+        .collect();
+    let recent = recent
+        .iter()
+        .filter(|path| !windows.iter().any(|(_, open)| same_project(open, path)))
+        .take(MAX_WIDGET_RECENT)
+        .map(|path| row(path, home))
+        .collect();
+    ProjectsList { open, recent }
+}
+
 fn name(path: &str) -> String {
     match Path::new(path).file_name() {
         Some(name) => name.to_string_lossy().into_owned(),
@@ -206,5 +270,81 @@ mod tests {
             .map(|entry| entry.label)
             .collect();
         assert_eq!(labels, ["/Users/meow/app", "~/app"]);
+    }
+
+    // The project widget's popup: the other windows' repositories, then the recent list without
+    // any open one, the caller's own included.
+    #[test]
+    fn the_projects_list_splits_open_from_recent() {
+        let home = Path::new("/home/me");
+        let open = vec![
+            ("main".to_string(), "/home/me/work/a".to_string()),
+            ("main-2".to_string(), "/home/me/work/b".to_string()),
+            ("main-3".to_string(), "/srv/c".to_string()),
+        ];
+        let recent = paths(&[
+            "/home/me/work/a",
+            "/home/me/work/b",
+            "/home/me/work/d",
+            "/srv/c",
+            "/srv/e",
+        ]);
+        let list = projects_list(&open, "main", &recent, Some(home));
+        let row = |path: &str, name: &str, home_path: &str| ProjectRow {
+            path: path.to_string(),
+            name: name.to_string(),
+            home_path: home_path.to_string(),
+            // None of these folders is on disk.
+            exists: false,
+        };
+        assert_eq!(
+            list.open,
+            [
+                row("/home/me/work/b", "b", "~/work/b"),
+                row("/srv/c", "c", "/srv/c"),
+            ]
+        );
+        assert_eq!(
+            list.recent,
+            [
+                row("/home/me/work/d", "d", "~/work/d"),
+                row("/srv/e", "e", "/srv/e"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_recent_part_of_the_projects_list_keeps_at_most_a_hundred() {
+        let recent: Vec<String> = (0..150).map(|number| format!("/work/p{number}")).collect();
+        let list = projects_list(&[], "main", &recent, None);
+        assert_eq!(list.recent.len(), MAX_WIDGET_RECENT);
+        assert_eq!(list.recent[0].path, "/work/p0");
+        assert!(list.open.is_empty());
+    }
+
+    #[test]
+    fn a_path_equal_to_the_home_folder_or_outside_it_stays_whole() {
+        let home = Path::new("/home/me");
+        let list = projects_list(
+            &[],
+            "main",
+            &paths(&["/home/me", "/home/meow/x"]),
+            Some(home),
+        );
+        assert_eq!(list.recent[0].home_path, "/home/me");
+        assert_eq!(list.recent[1].home_path, "/home/meow/x");
+    }
+
+    // A recent row says whether its folder still exists, so the widget can ask about a missing one.
+    #[test]
+    fn a_missing_recent_project_is_reported_as_missing() {
+        let dir = TempDir::new().unwrap();
+        let there = dir.path().join("there");
+        fs::create_dir(&there).unwrap();
+        let gone = dir.path().join("gone");
+        let recent = paths(&[there.to_str().unwrap(), gone.to_str().unwrap()]);
+        let list = projects_list(&[], "main", &recent, None);
+        assert!(list.recent[0].exists);
+        assert!(!list.recent[1].exists);
     }
 }

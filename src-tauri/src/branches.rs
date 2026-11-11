@@ -914,8 +914,12 @@ mod tests {
             let data = self.data.path().to_path_buf();
             let (send, receive) = std::sync::mpsc::channel();
             let kind = crate::task::TaskKind::Remote("origin".to_string());
-            self.runner
-                .start(self.repo.path(), kind, "test".to_string(), move |ctx| {
+            self.runner.start(
+                "main",
+                self.repo.path(),
+                kind,
+                "test".to_string(),
+                move |ctx| {
                     let result = work(&Repo {
                         ctx,
                         path: &path,
@@ -923,7 +927,8 @@ mod tests {
                     });
                     send.send(result).unwrap();
                     Ok(())
-                });
+                },
+            );
             receive
         }
 
@@ -965,7 +970,7 @@ mod tests {
 
         fn commands(&self) -> Vec<String> {
             self.console
-                .lines()
+                .lines_of("main")
                 .into_iter()
                 .filter(|line| line.command)
                 .map(|line| line.text)
@@ -1069,7 +1074,10 @@ mod tests {
             text.starts_with("git checkout linked -- failed: fatal: 'linked' is already"),
             "{text}"
         );
-        assert!(text.contains(&linked.path().display().to_string()), "{text}");
+        assert!(
+            text.contains(&linked.path().display().to_string()),
+            "{text}"
+        );
         assert_eq!(harness.current(), "main");
         assert_eq!(harness.git(&["status", "--porcelain"]), "");
     }
@@ -1459,10 +1467,7 @@ mod tests {
 
         assert_eq!(outcome, Ok(CheckoutOutcome::Done));
         assert_eq!(harness.snapshots(), 0);
-        assert_eq!(
-            harness.git(&["show", ":a.txt"]),
-            "stage\n2\n3\n4\ntarget\n"
-        );
+        assert_eq!(harness.git(&["show", ":a.txt"]), "stage\n2\n3\n4\ntarget\n");
     }
 
     // The changes came back with conflicts: saying they have not come back would be false, and the failure counts.

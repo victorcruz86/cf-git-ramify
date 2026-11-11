@@ -1,11 +1,13 @@
 // Long tasks (fetch, pull, push...) off the interface thread: they are serialized according to what
 // they touch, can be cancelled, and report their progress and output while they run.
-use std::collections::HashMap;
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, TryLockError};
 use std::thread;
@@ -13,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::askpass::{self, ClientEnv};
-use crate::commands::{ApiError, RepoLocks};
+use crate::askpass::{self, AskpassRegistration, ClientEnv};
+use crate::commands::{ApiError, RepoLocks, MAIN_WINDOW};
 use crate::console::{self, Console, Listener};
 use crate::editor::{self, Ask, EditorHandler};
 use crate::git::{self, GitError};
@@ -74,6 +76,8 @@ pub enum TaskState {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TaskEvent {
     pub id: TaskId,
+    // The project window whose command started it: its events go to that window only.
+    pub owner: String,
     pub title: String,
     pub text: String,
     pub fraction: Option<f32>,
@@ -90,10 +94,17 @@ pub struct GitOutput {
 
 struct Task {
     id: TaskId,
+    // The project window whose command started it. Empty for a quiet task, which nobody sees.
+    owner: String,
     title: String,
+    // A `TaskKind::Remote`: closing its window waits for it, as for a write.
+    remote: bool,
     cancelled: AtomicBool,
     // Waits for the repository lock or holds it: quitting must wait for it.
     writing: AtomicBool,
+    // Remote turns (`on_remote`) it waits for or holds, like a fetch's: closing its window waits for
+    // them. A count, since a turn may hold another.
+    remoting: AtomicUsize,
     // Past this instant it counts as cancelled.
     deadline: Option<Instant>,
     progress: Mutex<(String, Option<f32>)>,
@@ -106,6 +117,7 @@ impl Task {
     fn event(&self, state: TaskState, text: String, fraction: Option<f32>) -> TaskEvent {
         TaskEvent {
             id: self.id,
+            owner: self.owner.clone(),
             title: self.title.clone(),
             text,
             fraction,
@@ -122,12 +134,15 @@ struct Shared {
     // `None` is the git from the settings. Only tests change it.
     binary: Option<PathBuf>,
     grace: Duration,
-    askpass: OnceLock<ClientEnv>,
+    askpass: OnceLock<askpass::Handle>,
     editor: OnceLock<editor::Handle>,
     credential_helper: AtomicBool,
     staging_area: AtomicBool,
     cherry_pick_suffix: AtomicBool,
     closing: AtomicBool,
+    // The project windows being closed: none of them starts a write anymore. Labels are not reused
+    // while the process lives, so a closed window's stays until `resume_writes_of`.
+    closing_owners: Mutex<HashSet<String>>,
     listener: Mutex<Option<Listener<TaskEvent>>>,
     running: Mutex<HashMap<TaskId, Arc<Task>>>,
     remotes: Mutex<RemoteLocks>,
@@ -146,6 +161,17 @@ impl Shared {
         }
     }
 
+    fn owner_closing(&self, owner: &str) -> bool {
+        self.closing_owners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(owner)
+    }
+
+    fn closing_for(&self, owner: &str) -> bool {
+        self.closing.load(Ordering::SeqCst) || self.owner_closing(owner)
+    }
+
     fn remote_lock(&self, repo: &Path, remote: String) -> Arc<Mutex<()>> {
         let mut remotes = self.remotes.lock().unwrap_or_else(PoisonError::into_inner);
         remotes
@@ -161,6 +187,9 @@ pub struct TaskContext {
     repo: PathBuf,
     // No one is waiting for it: it never asks the user anything.
     quiet: bool,
+    // The task's own askpass token, whose questions go to its window. `None` refuses them: a quiet
+    // task, or no server.
+    askpass: Option<(ClientEnv, AskpassRegistration)>,
 }
 
 impl TaskContext {
@@ -197,7 +226,7 @@ impl TaskContext {
 
     // A line of Ramify's own in the Console, among git's output.
     pub fn console_line(&self, text: &str) {
-        self.shared.console.output(text);
+        self.shared.console.output(&self.task.owner, text);
     }
 
     pub fn check_cancelled(&self) -> Result<(), GitError> {
@@ -264,18 +293,36 @@ impl TaskContext {
         };
         let output = self.git(&["rev-parse", "--absolute-git-dir"])?;
         let git_dir = PathBuf::from(output.stdout.trim_end_matches('\n'));
-        let registration = editor.register(handler, git_dir);
-        self.run_git(args, true, None, true, Editing::Registered(&registration), &[])
+        let registration = editor.register(self.task.owner.clone(), handler, git_dir);
+        self.run_git(
+            args,
+            true,
+            None,
+            true,
+            Editing::Registered(&registration),
+            &[],
+        )
     }
 
-    // The `git_editing` handler that asks the main window.
+    // The `git_editing` handler that asks the task's project window.
+    // A question to the task's askpass, as git asks it through the app's binary: the answer, or
+    // nothing if it was refused. Only for tests, which have no app binary to launch.
+    #[cfg(test)]
+    pub(crate) fn ask_as_git(&self, prompt: &str) -> io::Result<Vec<u8>> {
+        let (client, _) = self
+            .askpass
+            .as_ref()
+            .ok_or_else(|| io::Error::other("the task has no askpass"))?;
+        askpass::ask(&client.socket, &client.token, std::ffi::OsStr::new(prompt))
+    }
+
     pub fn asking_editor(&self) -> Arc<dyn EditorHandler> {
         Arc::new(self.asking())
     }
 
     // The same, for whoever chooses how the request is shown (`Ask::prompt`).
     pub fn asking(&self) -> Ask {
-        Ask::new(self.shared.editor.get().cloned())
+        Ask::new(self.shared.editor.get().cloned(), self.task.owner.clone())
     }
 
     fn run_git(
@@ -302,9 +349,12 @@ impl TaskContext {
         if input.is_some() {
             command.stdin(Stdio::piped());
         }
-        let prints = loud || console::writes(args);
+        // A quiet task shows nothing, not even in the console.
+        let prints = !self.quiet && (loud || console::writes(args));
         if prints {
-            self.shared.console.command(&self.repo, &full);
+            self.shared
+                .console
+                .command(&self.task.owner, &self.repo, &full);
         }
         let mut child = command
             .spawn()
@@ -313,7 +363,7 @@ impl TaskContext {
         let stdout = child.stdout.take().expect("stdout with pipe");
         let stderr = child.stderr.take().expect("stderr with pipe");
         let stdin = child.stdin.take();
-        let shows_stdout = loud || console::shows_stdout(args);
+        let shows_stdout = !self.quiet && (loud || console::shows_stdout(args));
         let (status, stdout, stderr) = thread::scope(|scope| {
             if let (Some(mut stdin), Some(input)) = (stdin, input) {
                 // If git is cancelled midway, the write error says nothing new.
@@ -379,8 +429,8 @@ impl TaskContext {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
-        match self.shared.askpass.get().filter(|_| !self.quiet) {
-            Some(askpass) => askpass.apply(&mut command),
+        match &self.askpass {
+            Some((askpass, _)) => askpass.apply(&mut command),
             None => askpass::refuse_prompts(&mut command),
         }
         if self.quiet {
@@ -452,11 +502,11 @@ impl TaskContext {
             }
             bytes.extend_from_slice(&buffer[..read]);
             if show {
-                lines.feed(&buffer[..read], |line| self.shared.console.output(line));
+                lines.feed(&buffer[..read], |line| self.console_line(line));
             }
         }
         if show {
-            lines.finish(|line| self.shared.console.output(line));
+            lines.finish(|line| self.console_line(line));
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
@@ -475,7 +525,7 @@ impl TaskContext {
             collected.push_str(line);
             collected.push('\n');
             if show {
-                self.shared.console.output(line);
+                self.console_line(line);
             }
         };
         loop {
@@ -607,6 +657,7 @@ impl Runner {
             staging_area: AtomicBool::new(false),
             cherry_pick_suffix: AtomicBool::new(true),
             closing: AtomicBool::new(false),
+            closing_owners: Mutex::default(),
             listener: Mutex::new(None),
             running: Mutex::new(HashMap::new()),
             remotes: Mutex::new(HashMap::new()),
@@ -615,20 +666,24 @@ impl Runner {
     }
 
     // Without this, the only thing visible would be git's error when asking for credentials, which does not say the cause.
+    // It happens on start, when only the first project window exists.
     pub fn askpass_unavailable(&self, error: &io::Error) {
-        self.0.console.output(&format!(
-            "Could not prepare the credentials dialog: {error}"
-        ));
+        self.0.console.output(
+            MAIN_WINDOW,
+            &format!("Could not prepare the credentials dialog: {error}"),
+        );
     }
 
-    pub fn use_askpass(&self, client: ClientEnv) {
-        let _ = self.0.askpass.set(client);
+    // Each task registers with it for a token of its own, so its questions go to its window.
+    pub fn use_askpass(&self, askpass: askpass::Handle) {
+        let _ = self.0.askpass.set(askpass);
     }
 
     pub fn editor_unavailable(&self, error: &io::Error) {
-        self.0
-            .console
-            .output(&format!("Could not prepare the git editor: {error}"));
+        self.0.console.output(
+            MAIN_WINDOW,
+            &format!("Could not prepare the git editor: {error}"),
+        );
     }
 
     pub fn use_editor(&self, editor: editor::Handle) {
@@ -659,9 +714,11 @@ impl Runner {
     }
 
     // The result of `work` does not leave from here: whoever needs the value delivers it from the task
-    // itself. Here we only report how it ended.
+    // itself. Here we only report how it ended. `owner` is the project window whose command starts
+    // it: its events, console lines and git's questions go there.
     pub fn start<T: Serialize>(
         &self,
+        owner: &str,
         repo: &Path,
         kind: TaskKind,
         title: String,
@@ -670,9 +727,12 @@ impl Runner {
         let shared = self.0.clone();
         let task = Arc::new(Task {
             id: shared.next.fetch_add(1, Ordering::SeqCst),
+            owner: owner.to_string(),
             title,
+            remote: matches!(kind, TaskKind::Remote(_)),
             cancelled: AtomicBool::new(false),
             writing: AtomicBool::new(false),
+            remoting: AtomicUsize::new(0),
             deadline: None,
             progress: Mutex::new((String::new(), None)),
         });
@@ -683,14 +743,22 @@ impl Runner {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(id, task.clone());
         shared.emit(task.event(TaskState::Running, String::new(), None));
+        let askpass = shared
+            .askpass
+            .get()
+            .map(|askpass| askpass.register(owner.to_string()));
         let context = TaskContext {
             shared,
             task,
             repo: repo.to_path_buf(),
             quiet: false,
+            askpass,
         };
         thread::spawn(move || {
-            let outcome = context.run(kind, work);
+            // A panic in `work` ends the task as Failed instead of leaving it running for ever:
+            // its window waits for its writes before closing.
+            let outcome = panic::catch_unwind(AssertUnwindSafe(|| context.run(kind, work)))
+                .unwrap_or_else(|payload| Some(Err(GitError::Io(panic_text(payload.as_ref())))));
             context.finish(outcome);
         });
         id
@@ -707,9 +775,12 @@ impl Runner {
         let shared = self.0.clone();
         let task = Arc::new(Task {
             id: shared.next.fetch_add(1, Ordering::SeqCst),
+            owner: String::new(),
             title: String::new(),
+            remote: false,
             cancelled: AtomicBool::new(false),
             writing: AtomicBool::new(false),
+            remoting: AtomicUsize::new(0),
             deadline: Some(Instant::now() + limit),
             progress: Mutex::new((String::new(), None)),
         });
@@ -718,6 +789,7 @@ impl Runner {
             task,
             repo: repo.to_path_buf(),
             quiet: true,
+            askpass: None,
         })
     }
 
@@ -751,16 +823,84 @@ impl Runner {
         }
     }
 
-    pub fn cancel(&self, id: TaskId) {
+    // On closing the project window `owner`: its reads are cancelled; its writes and its remote
+    // tasks (a `TaskKind::Remote`, or a read in a remote turn, like a fetch) are waited for until
+    // they finish, without cutting them off (a push may be waiting for a password, which still
+    // reaches the window); new writes and remote tasks (and remote turns) of that window are
+    // refused. Other windows' tasks go on as usual. `false` if the deadline passed. The refusal
+    // stays until `resume_writes_of`.
+    pub fn finish_writes_of(&self, owner: &str, limit: Duration) -> bool {
+        self.0
+            .closing_owners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(owner.to_string());
+        let deadline = Instant::now() + limit;
+        loop {
+            let waited = {
+                let running = self
+                    .0
+                    .running
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                running
+                    .values()
+                    .filter(|task| task.owner == owner)
+                    .filter(|task| {
+                        let waited = task.remote
+                            || task.writing.load(Ordering::SeqCst)
+                            || task.remoting.load(Ordering::SeqCst) > 0;
+                        if !waited {
+                            task.cancelled.store(true, Ordering::SeqCst);
+                        }
+                        waited
+                    })
+                    .count()
+            };
+            if waited == 0 {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(POLL);
+        }
+    }
+
+    // A close that did not go ahead: the window writes again.
+    pub fn resume_writes_of(&self, owner: &str) {
+        self.0
+            .closing_owners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(owner);
+    }
+
+    // Only a task of the project window `owner`: `false` for another window's, which goes on.
+    pub fn cancel(&self, owner: &str, id: TaskId) -> bool {
         let running = self
             .0
             .running
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(task) = running.get(&id) {
-            task.cancelled.store(true, Ordering::SeqCst);
+        match running.get(&id) {
+            Some(task) if task.owner == owner => {
+                task.cancelled.store(true, Ordering::SeqCst);
+                true
+            }
+            _ => false,
         }
     }
+}
+
+// What a task that panicked says: the panic's message.
+fn panic_text(payload: &(dyn Any + Send)) -> String {
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|text| text.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown error".to_string());
+    format!("The task failed unexpectedly: {message}")
 }
 
 impl TaskContext {
@@ -781,8 +921,8 @@ impl TaskContext {
     // Project must not keep commits stopped while it talks to the remote. `None`: it was cancelled
     // while waiting for its turn.
     pub fn exclusive<T>(&self, work: impl FnOnce() -> T) -> Option<T> {
-        // Before looking at `closing`: `finish_writes` sets it before looking at this, and one of the two sees
-        // the other.
+        // Before looking at `closing`: `finish_writes` (and `finish_writes_of`) sets it before looking at
+        // this, and one of the two sees the other.
         self.task.writing.store(true, Ordering::SeqCst);
         let ran = self.take_turn(work);
         self.task.writing.store(false, Ordering::SeqCst);
@@ -793,7 +933,7 @@ impl TaskContext {
         let mut work = Some(work);
         loop {
             self.check_cancelled().ok()?;
-            if self.shared.closing.load(Ordering::SeqCst) {
+            if self.shared.closing_for(&self.task.owner) {
                 return None;
             }
             let ran = self
@@ -806,11 +946,24 @@ impl TaskContext {
         }
     }
 
-    // The same with `TaskKind::Remote`, for a task that talks to several remotes.
+    // The same with `TaskKind::Remote`, for a task that talks to several remotes. `None` also when
+    // its window is closing: a closing window starts no remote turn.
     pub fn on_remote<T>(&self, remote: &str, work: impl FnOnce() -> T) -> Option<T> {
+        // Before looking at the closing windows, as `exclusive` does with `writing`.
+        self.task.remoting.fetch_add(1, Ordering::SeqCst);
+        let ran = self.remote_turn(remote, work);
+        self.task.remoting.fetch_sub(1, Ordering::SeqCst);
+        ran
+    }
+
+    // Quitting does not stop remote turns: reads, fetch included, are not waited for on quit.
+    fn remote_turn<T>(&self, remote: &str, work: impl FnOnce() -> T) -> Option<T> {
         let lock = self.shared.remote_lock(&self.repo, remote.to_string());
         loop {
             self.check_cancelled().ok()?;
+            if self.shared.owner_closing(&self.task.owner) {
+                return None;
+            }
             match lock.try_lock() {
                 Ok(_held) => return Some(work()),
                 Err(TryLockError::Poisoned(error)) => {
@@ -875,6 +1028,16 @@ mod tests {
 
     const WAIT: Duration = Duration::from_secs(10);
 
+    // A real server whose client is a program that does not exist: git's questions never arrive.
+    fn fake_askpass() -> askpass::Server {
+        askpass::Server::start_with_program(
+            PathBuf::from("/the/app"),
+            |_: &str, _, _| false,
+            |_: &str, _| {},
+        )
+        .unwrap()
+    }
+
     struct Harness {
         runner: Runner,
         locks: Arc<RepoLocks>,
@@ -937,7 +1100,7 @@ mod tests {
             let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
             let id = self
                 .runner
-                .start(self.repo(), kind, "test".to_string(), move |ctx| {
+                .start("main", self.repo(), kind, "test".to_string(), move |ctx| {
                     let args: Vec<&str> = args.iter().map(String::as_str).collect();
                     let output = ctx.git(&args);
                     let _ = send.send(output.clone());
@@ -978,15 +1141,19 @@ mod tests {
             .into_iter()
             .map(|kind| {
                 let (current, most) = (current.clone(), most.clone());
-                harness
-                    .runner
-                    .start(harness.repo(), kind, "wait".to_string(), move |_| {
+                harness.runner.start(
+                    "main",
+                    harness.repo(),
+                    kind,
+                    "wait".to_string(),
+                    move |_| {
                         let now = current.fetch_add(1, Ordering::SeqCst) + 1;
                         most.fetch_max(now, Ordering::SeqCst);
                         thread::sleep(Duration::from_millis(300));
                         current.fetch_sub(1, Ordering::SeqCst);
                         Ok(())
-                    })
+                    },
+                )
             })
             .collect();
         for id in &ids {
@@ -1018,6 +1185,7 @@ mod tests {
         ready.recv_timeout(WAIT).unwrap();
         let (ran, did_run) = mpsc::channel();
         let id = harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Write,
             "writes".to_string(),
@@ -1040,6 +1208,7 @@ mod tests {
         let (release, held) = mpsc::channel::<()>();
         let (started, ready) = mpsc::channel();
         let write = harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Write,
             "writes".to_string(),
@@ -1053,6 +1222,7 @@ mod tests {
         let (ran, did_run) = mpsc::channel();
 
         let read = harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Read,
             "reads".to_string(),
@@ -1091,13 +1261,17 @@ mod tests {
     fn holding(harness: &Harness, kind: TaskKind) -> (mpsc::Sender<()>, Receiver<()>) {
         let (release, released) = mpsc::channel::<()>();
         let (started, running) = mpsc::channel();
-        harness
-            .runner
-            .start(harness.repo(), kind, "test".to_string(), move |_| {
+        harness.runner.start(
+            "main",
+            harness.repo(),
+            kind,
+            "test".to_string(),
+            move |_| {
                 started.send(()).unwrap();
                 let _ = released.recv_timeout(WAIT);
                 Ok(())
-            });
+            },
+        );
         running.recv_timeout(WAIT).unwrap();
         (release, running)
     }
@@ -1108,6 +1282,7 @@ mod tests {
     ) -> (TaskId, Receiver<bool>) {
         let (send, reached) = mpsc::channel();
         let id = harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Read,
             "test".to_string(),
@@ -1128,6 +1303,7 @@ mod tests {
         let (entered, inside) = mpsc::channel();
         let (send, finished) = mpsc::channel();
         harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Read,
             "test".to_string(),
@@ -1165,6 +1341,7 @@ mod tests {
         let (entered, inside) = mpsc::channel();
         let (send, finished) = mpsc::channel();
         harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Write,
             "test".to_string(),
@@ -1216,6 +1393,321 @@ mod tests {
     }
 
     #[test]
+    fn a_task_event_carries_its_owner() {
+        let harness = Harness::new();
+
+        let id = harness.runner.start(
+            "main-2",
+            harness.repo(),
+            TaskKind::Read,
+            "owned".to_string(),
+            |ctx| {
+                ctx.set_text("working");
+                Ok(())
+            },
+        );
+
+        let events = harness.until_finished(id);
+        assert!(events.len() >= 3, "{events:?}");
+        assert!(
+            events.iter().all(|event| event.owner == "main-2"),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn cancel_refuses_another_windows_task() {
+        let harness = Harness::new();
+        let (release, released) = mpsc::channel::<()>();
+        let (started, running) = mpsc::channel();
+        let id = harness.runner.start(
+            "main",
+            harness.repo(),
+            TaskKind::Read,
+            "test".to_string(),
+            move |ctx| {
+                started.send(()).unwrap();
+                let _ = released.recv_timeout(WAIT);
+                ctx.check_cancelled()
+            },
+        );
+        running.recv_timeout(WAIT).unwrap();
+
+        assert!(!harness.runner.cancel("main-2", id));
+        release.send(()).unwrap();
+        assert_eq!(
+            harness.until_finished(id).last().unwrap().state,
+            TaskState::Done,
+            "another window cancelled it"
+        );
+
+        let (_release, released) = mpsc::channel::<()>();
+        let own = harness.runner.start(
+            "main",
+            harness.repo(),
+            TaskKind::Read,
+            "test".to_string(),
+            move |ctx| {
+                while released.recv_timeout(POLL).is_err() {
+                    ctx.check_cancelled()?;
+                }
+                Ok(())
+            },
+        );
+        assert!(harness.runner.cancel("main", own));
+        assert_eq!(
+            harness.until_finished(own).last().unwrap().state,
+            TaskState::Cancelled
+        );
+    }
+
+    // A task whose work panics still ends, as Failed: otherwise it stays running for ever and
+    // its window, which waits for its writes before closing, could never close.
+    #[test]
+    fn a_panicking_task_ends_failed_and_does_not_hold_its_window() {
+        let harness = Harness::new();
+        let panicked = harness.runner.start(
+            "main-2",
+            harness.repo(),
+            TaskKind::Write,
+            "panics".to_string(),
+            |_| -> Result<(), GitError> { panic!("a bug in the task") },
+        );
+
+        let last = harness.until_finished(panicked).last().unwrap().clone();
+        assert_eq!(last.state, TaskState::Failed);
+        assert!(last.text.contains("a bug in the task"), "{}", last.text);
+        assert!(harness
+            .runner
+            .finish_writes_of("main-2", Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn finish_writes_of_waits_for_its_writes_and_leaves_others_running() {
+        let harness = Harness::new();
+        let other_repo = TempDir::new().unwrap();
+        // A write of `main-2` that only ends when the test says so.
+        let (release, released) = mpsc::channel::<()>();
+        let (entered, inside) = mpsc::channel();
+        let write = harness.runner.start(
+            "main-2",
+            harness.repo(),
+            TaskKind::Write,
+            "writes".to_string(),
+            move |ctx| {
+                entered.send(()).unwrap();
+                released.recv_timeout(WAIT).unwrap();
+                ctx.check_cancelled()
+            },
+        );
+        inside.recv_timeout(WAIT).unwrap();
+        // A read of `main-2` that goes on until it is cancelled.
+        let read = harness.runner.start(
+            "main-2",
+            harness.repo(),
+            TaskKind::Read,
+            "reads".to_string(),
+            |ctx| {
+                let deadline = Instant::now() + WAIT;
+                while Instant::now() < deadline {
+                    ctx.check_cancelled()?;
+                    thread::sleep(POLL);
+                }
+                Ok(())
+            },
+        );
+
+        let runner = &harness.runner;
+        thread::scope(|scope| {
+            let waiting = scope.spawn(move || runner.finish_writes_of("main-2", WAIT));
+            assert_eq!(
+                harness.until_finished(read).last().unwrap().state,
+                TaskState::Cancelled
+            );
+            // Another window writes while `main-2` waits.
+            let other = runner.start(
+                "main",
+                other_repo.path(),
+                TaskKind::Write,
+                "other".to_string(),
+                |_| Ok(()),
+            );
+            assert_eq!(
+                harness.until_finished(other).last().unwrap().state,
+                TaskState::Done
+            );
+            assert!(!waiting.is_finished(), "it did not wait for the write");
+            release.send(()).unwrap();
+            assert!(waiting.join().unwrap());
+        });
+        assert_eq!(
+            harness.until_finished(write).last().unwrap().state,
+            TaskState::Done,
+            "the write was cut off"
+        );
+
+        // From now on `main-2` starts no write; `main` still does.
+        let refused = harness.runner.start(
+            "main-2",
+            harness.repo(),
+            TaskKind::Write,
+            "refused".to_string(),
+            |_| Ok(()),
+        );
+        assert_eq!(
+            harness.until_finished(refused).last().unwrap().state,
+            TaskState::Cancelled
+        );
+        let allowed = harness.runner.start(
+            "main",
+            harness.repo(),
+            TaskKind::Write,
+            "allowed".to_string(),
+            |_| Ok(()),
+        );
+        assert_eq!(
+            harness.until_finished(allowed).last().unwrap().state,
+            TaskState::Done
+        );
+    }
+
+    // A task blocked until the test releases it, which reports at the end whether it was cancelled.
+    fn blocked(
+        harness: &Harness,
+        owner: &str,
+        repo: &Path,
+        kind: TaskKind,
+    ) -> (TaskId, mpsc::Sender<()>) {
+        let (release, released) = mpsc::channel::<()>();
+        let (entered, inside) = mpsc::channel();
+        let id = harness
+            .runner
+            .start(owner, repo, kind, "blocked".to_string(), move |ctx| {
+                entered.send(()).unwrap();
+                released.recv_timeout(WAIT).unwrap();
+                ctx.check_cancelled()
+            });
+        inside.recv_timeout(WAIT).unwrap();
+        (id, release)
+    }
+
+    #[test]
+    fn finish_writes_of_waits_for_a_remote_task_of_its_owner() {
+        let harness = Harness::new();
+        let other_repo = TempDir::new().unwrap();
+        let remote = TaskKind::Remote("origin".into());
+        let (push, release) = blocked(&harness, "main-2", harness.repo(), remote);
+
+        let runner = &harness.runner;
+        thread::scope(|scope| {
+            let waiting = scope.spawn(move || runner.finish_writes_of("main-2", WAIT));
+            // Another window works as usual during the wait.
+            let other = runner.start(
+                "main",
+                other_repo.path(),
+                TaskKind::Write,
+                "other".to_string(),
+                |_| Ok(()),
+            );
+            assert_eq!(
+                harness.until_finished(other).last().unwrap().state,
+                TaskState::Done
+            );
+            assert!(
+                !waiting.is_finished(),
+                "it did not wait for the remote task"
+            );
+            release.send(()).unwrap();
+            assert!(waiting.join().unwrap());
+        });
+        assert_eq!(
+            harness.until_finished(push).last().unwrap().state,
+            TaskState::Done,
+            "the remote task was cut off"
+        );
+    }
+
+    // A fetch is a read whose remotes take their turns inside the task: the turn it is in is waited
+    // for, like a remote task.
+    #[test]
+    fn finish_writes_of_waits_for_a_reads_remote_turn() {
+        let harness = Harness::new();
+        let (release, released) = mpsc::channel::<()>();
+        let (entered, inside) = mpsc::channel();
+        let (send, outcome) = mpsc::channel();
+        let fetch = harness.runner.start(
+            "main-2",
+            harness.repo(),
+            TaskKind::Read,
+            "fetch".to_string(),
+            move |ctx| {
+                let turn = ctx.on_remote("origin", || {
+                    entered.send(()).unwrap();
+                    released.recv_timeout(WAIT).unwrap();
+                    ctx.check_cancelled().is_ok()
+                });
+                send.send(turn).unwrap();
+                Ok(())
+            },
+        );
+        inside.recv_timeout(WAIT).unwrap();
+
+        let runner = &harness.runner;
+        thread::scope(|scope| {
+            let waiting = scope.spawn(move || runner.finish_writes_of("main-2", WAIT));
+            thread::sleep(Duration::from_millis(100));
+            assert!(
+                !waiting.is_finished(),
+                "it did not wait for the remote turn"
+            );
+            release.send(()).unwrap();
+            assert!(waiting.join().unwrap());
+        });
+        assert_eq!(
+            outcome.recv_timeout(WAIT),
+            Ok(Some(true)),
+            "the fetch was cut off"
+        );
+        harness.until_finished(fetch);
+    }
+
+    #[test]
+    fn a_closing_window_cannot_start_a_remote_task() {
+        let harness = Harness::new();
+        let remote = || TaskKind::Remote("origin".into());
+        let run = |owner: &str, kind: TaskKind| {
+            let id = harness
+                .runner
+                .start(owner, harness.repo(), kind, "test".to_string(), |_| Ok(()));
+            harness.until_finished(id).last().unwrap().state
+        };
+
+        assert!(harness.runner.finish_writes_of("main-2", WAIT));
+
+        assert_eq!(run("main-2", remote()), TaskState::Cancelled);
+        // Nor a remote turn inside a read, like a fetch's.
+        let (send, turn) = mpsc::channel();
+        let fetch = harness.runner.start(
+            "main-2",
+            harness.repo(),
+            TaskKind::Read,
+            "fetch".to_string(),
+            move |ctx| {
+                send.send(ctx.on_remote("origin", || ())).unwrap();
+                Ok(())
+            },
+        );
+        assert_eq!(turn.recv_timeout(WAIT), Ok(None));
+        harness.until_finished(fetch);
+        assert_eq!(run("main", remote()), TaskState::Done);
+
+        // A close that did not go ahead lifts the refusal.
+        harness.runner.resume_writes_of("main-2");
+        assert_eq!(run("main-2", remote()), TaskState::Done);
+        assert_eq!(run("main-2", TaskKind::Write), TaskState::Done);
+    }
+
+    #[test]
     fn a_task_piece_shares_its_turn_with_the_tasks_of_that_remote() {
         let harness = Harness::new();
         let (release, _running) = holding(&harness, TaskKind::Remote("origin".into()));
@@ -1245,7 +1737,7 @@ mod tests {
         let (release, _running) = holding(&harness, TaskKind::Write);
 
         let (id, reached) = turn(&harness, |ctx, work| ctx.exclusive(work));
-        harness.runner.cancel(id);
+        harness.runner.cancel("main", id);
 
         assert_eq!(reached.recv_timeout(WAIT), Ok(false));
         release.send(()).unwrap();
@@ -1257,6 +1749,7 @@ mod tests {
         let (release, held) = mpsc::channel::<()>();
         let (started, ready) = mpsc::channel();
         let id = harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Remote("origin".into()),
             "fetch".to_string(),
@@ -1278,18 +1771,22 @@ mod tests {
     #[test]
     fn state_arrives_through_events() {
         let harness = Harness::new();
-        let done = harness
-            .runner
-            .start(harness.repo(), TaskKind::Read, "good".to_string(), |_| {
-                Ok(())
-            });
-        let failed =
-            harness
-                .runner
-                .start(harness.repo(), TaskKind::Read, "bad".to_string(), |_| {
-                    Err::<(), _>(GitError::Io("no disk".to_string()))
-                });
+        let done = harness.runner.start(
+            "main",
+            harness.repo(),
+            TaskKind::Read,
+            "good".to_string(),
+            |_| Ok(()),
+        );
+        let failed = harness.runner.start(
+            "main",
+            harness.repo(),
+            TaskKind::Read,
+            "bad".to_string(),
+            |_| Err::<(), _>(GitError::Io("no disk".to_string())),
+        );
         let cancelled = harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Read,
             "cancels".to_string(),
@@ -1324,6 +1821,7 @@ mod tests {
         ];
         for (error, kind) in errors {
             let id = harness.runner.start(
+                "main",
                 harness.repo(),
                 TaskKind::Read,
                 "fails".to_string(),
@@ -1343,14 +1841,18 @@ mod tests {
             names: Vec<&'static str>,
         }
         let harness = Harness::new();
-        let id = harness
-            .runner
-            .start(harness.repo(), TaskKind::Read, "update".to_string(), |_| {
+        let id = harness.runner.start(
+            "main",
+            harness.repo(),
+            TaskKind::Read,
+            "update".to_string(),
+            |_| {
                 Ok(Updated {
                     files: 2,
                     names: vec!["a", "b"],
                 })
-            });
+            },
+        );
 
         let events = harness.until_finished(id);
 
@@ -1370,12 +1872,16 @@ mod tests {
     #[test]
     fn a_partial_result_travels_as_ok_even_if_git_failed() {
         let harness = Harness::fake("echo 'rejected' >&2\nexit 1");
-        let id = harness
-            .runner
-            .start(harness.repo(), TaskKind::Read, "push".to_string(), |ctx| {
+        let id = harness.runner.start(
+            "main",
+            harness.repo(),
+            TaskKind::Read,
+            "push".to_string(),
+            |ctx| {
                 let rejected = ctx.git(&["push"]).is_err();
                 Ok(serde_json::json!({ "rejected": rejected }))
-            });
+            },
+        );
 
         let last = harness.until_finished(id).pop().unwrap();
 
@@ -1406,6 +1912,7 @@ mod tests {
         let (release, held) = mpsc::channel::<()>();
         let (started, ready) = mpsc::channel();
         let first = harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Write,
             "first".to_string(),
@@ -1418,6 +1925,7 @@ mod tests {
         ready.recv_timeout(WAIT).unwrap();
         let (ran, did_run) = mpsc::channel();
         let second = harness.runner.start(
+            "main",
             harness.repo(),
             TaskKind::Write,
             "second".to_string(),
@@ -1427,7 +1935,7 @@ mod tests {
             },
         );
 
-        harness.runner.cancel(second);
+        harness.runner.cancel("main", second);
 
         let events = harness.until_finished(second);
         assert_eq!(events.last().unwrap().state, TaskState::Cancelled);
@@ -1469,7 +1977,7 @@ mod tests {
         wait_for_file(&ready);
 
         let started = Instant::now();
-        harness.runner.cancel(id);
+        harness.runner.cancel("main", id);
 
         let result = result.recv_timeout(WAIT).unwrap();
         assert_eq!(result, Err(GitError::Cancelled));
@@ -1503,7 +2011,7 @@ mod tests {
             .unwrap();
         assert!(alive(pid));
 
-        harness.runner.cancel(id);
+        harness.runner.cancel("main", id);
 
         assert_eq!(result.recv_timeout(WAIT).unwrap(), Err(GitError::Cancelled));
         assert!(wait_until_dead(pid), "the grandchild is still alive");
@@ -1525,7 +2033,7 @@ mod tests {
         wait_for_file(&ready);
 
         let started = Instant::now();
-        harness.runner.cancel(id);
+        harness.runner.cancel("main", id);
 
         assert_eq!(result.recv_timeout(WAIT).unwrap(), Err(GitError::Cancelled));
         let elapsed = started.elapsed();
@@ -1549,7 +2057,7 @@ mod tests {
             .iter()
             .any(|event| event.text == "Receiving objects:  45%"));
         assert_eq!(output.stderr, "done\n");
-        let lines = harness.console.lines();
+        let lines = harness.console.lines_of("main");
         assert!(
             lines.iter().all(|line| !line.text.contains("Receiving")),
             "{lines:?}"
@@ -1634,7 +2142,7 @@ mod tests {
         let (_, result) = harness.git(TaskKind::Read, &["push"]);
         result.recv_timeout(WAIT).unwrap().unwrap();
 
-        let lines = harness.console.lines();
+        let lines = harness.console.lines_of("main");
         assert!(
             lines[0].text.ends_with(
                 "git -c credential.helper= -c core.quotepath=false -c log.showSignature=false push"
@@ -1646,11 +2154,8 @@ mod tests {
     #[test]
     fn quiet_task_does_not_ask_nor_show() {
         let harness = Harness::fake(r#"echo "$GIT_ASKPASS|$SSH_ASKPASS|$GCM_INTERACTIVE""#);
-        harness.runner.use_askpass(ClientEnv {
-            program: PathBuf::from("/the/app"),
-            socket: PathBuf::from("/socket"),
-            token: "token".to_string(),
-        });
+        let server = fake_askpass();
+        harness.runner.use_askpass(server.handle());
 
         let output = harness
             .runner
@@ -1665,17 +2170,14 @@ mod tests {
             "no question reaches the app"
         );
         assert!(harness.events.try_recv().is_err(), "nothing in the bar");
-        assert!(harness.console.lines().is_empty());
+        assert!(harness.console.lines_of("main").is_empty());
     }
 
     #[test]
     fn a_normal_task_does_use_askpass() {
         let harness = Harness::fake(r#"echo "$GIT_ASKPASS""#);
-        harness.runner.use_askpass(ClientEnv {
-            program: PathBuf::from("/the/app"),
-            socket: PathBuf::from("/socket"),
-            token: "token".to_string(),
-        });
+        let server = fake_askpass();
+        harness.runner.use_askpass(server.handle());
         let repo = harness.repo().to_path_buf();
 
         let output =
@@ -1708,7 +2210,7 @@ mod tests {
             .runner
             .askpass_unavailable(&io::Error::other("no room"));
 
-        let lines = harness.console.lines();
+        let lines = harness.console.lines_of("main");
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(!lines[0].command);
         assert!(lines[0].text.contains("no room"), "{lines:?}");
@@ -1736,6 +2238,7 @@ mod tests {
         repo.git(&["remote", "add", "origin", &remote_path]);
         let (send, result) = mpsc::channel();
         let id = harness.runner.start(
+            "main",
             repo.path(),
             TaskKind::Remote("origin".into()),
             "fetch".to_string(),
@@ -1759,7 +2262,7 @@ mod tests {
             .into_owned();
         let commands: Vec<_> = harness
             .console
-            .lines()
+            .lines_of("main")
             .into_iter()
             .filter(|line| line.command)
             .collect();
@@ -1770,7 +2273,7 @@ mod tests {
                 "[{folder}] git -c core.quotepath=false -c log.showSignature=false fetch origin"
             )
         );
-        let all = harness.console.lines();
+        let all = harness.console.lines_of("main");
         assert!(
             all.iter().all(|line| !line.text.contains("rev-list")),
             "{all:?}"

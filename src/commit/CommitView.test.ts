@@ -8,6 +8,9 @@ import CommitView from "./CommitView.svelte";
 import { signOffKey } from "./options";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const REPO: RepoInfo = {
@@ -1842,6 +1845,20 @@ test("after_the_commit_amend_does_not_come_back_and_the_previous_draft_remains",
   });
 });
 
+// Final review: closing the window during a Fixup… or Squash Into… keeps the user's own draft as
+// the changelist comment, not the proposed `fixup! …`, which comes back nowhere else.
+test("closing_during_a_proposal_keeps_the_prior_draft", async () => {
+  mockCommands();
+  const view = await open({ onrebase: vi.fn(async () => {}) });
+  await typed("my draft");
+  view.component.propose(proposal());
+  await waitFor(() => expect(text()).toBe("fixup! one"));
+
+  const draft = view.component.changelistDraft();
+
+  expect(draft?.comment).toBe("my draft");
+});
+
 test("deleting_the_proposed_message_abandons_the_proposal_and_returns_the_draft", async () => {
   mockCommands();
   const view = await open({ onrebase: vi.fn(async () => {}) });
@@ -2106,3 +2123,43 @@ test("with every file gone while a warning is open nothing is committed", async 
   expect(calls("commit_changes")).toHaveLength(0);
   expect(calls("commit_changes_selected")).toHaveLength(0);
 });
+
+// `ChangeListCommitMessagePolicy`: the message starts from the active changelist's comment, where
+// a closed window left its draft, and again when the active list changes while it is empty.
+test("the message starts from the active changelist's comment", async () => {
+  mockCommands({
+    changelists_get: () => ({
+      ...LISTS,
+      lists: [{ ...LISTS.lists[0], comment: "kept draft" }, LISTS.lists[1]],
+    }),
+  });
+  await open();
+
+  await vi.waitFor(() => expect((messageField() as HTMLTextAreaElement).value).toBe("kept draft"));
+});
+
+test("another active list brings its comment only into an empty message", async () => {
+  let lists: Changelists = LISTS;
+  mockCommands({ changelists_get: () => lists });
+  await open();
+  expect((messageField() as HTMLTextAreaElement).value).toBe("");
+
+  lists = {
+    ...LISTS,
+    active: "other",
+    lists: [LISTS.lists[0], { ...LISTS.lists[1], comment: "other draft" }],
+  };
+  repoChanged();
+  await vi.waitFor(() => expect((messageField() as HTMLTextAreaElement).value).toBe("other draft"));
+
+  await fireEvent.input(messageField(), { target: { value: "typed" } });
+  lists = {
+    ...LISTS,
+    lists: [{ ...LISTS.lists[0], comment: "default draft" }, LISTS.lists[1]],
+  };
+  repoChanged();
+  await vi.waitFor(() => expect(calls("changelists_get").length).toBeGreaterThan(2));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect((messageField() as HTMLTextAreaElement).value).toBe("typed");
+});
+

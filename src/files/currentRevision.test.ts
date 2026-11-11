@@ -12,7 +12,7 @@ import {
 import { revisionNumbersText } from "../lib/revisions";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 const HASH = "a".repeat(40);
 const NOW = Date.UTC(2026, 10, 8, 12, 0, 0);

@@ -6,9 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, State, WebviewWindow};
 
-use crate::commands::{blocking_api, current_repo, failed, repo_data_dir, ApiError, AppState};
+use crate::commands::{
+    blocking_api, current_repo, failed, repo_data_dir, session_of, ApiError, AppState,
+};
 use crate::git::{self, GitError};
 use crate::history;
 use crate::log::cherry::{self, NotPicked};
@@ -36,7 +38,7 @@ const CLIPBOARD: &str = "/usr/bin/pbcopy";
 const CLIPBOARD_READER: &str = "/usr/bin/pbpaste";
 
 // What does not change while the log is open. A task keeps this to work without holding
-// `state.log` locked, which the scroll depends on.
+// the session's `log` locked, which the scroll depends on.
 struct LogData {
     store: CommitStore,
     permanent: Arc<Permanent>,
@@ -346,6 +348,7 @@ fn open_view(
 pub fn start_view(
     log: &SharedLog,
     runner: &Runner,
+    owner: &str,
     repo: &Path,
     tab: u32,
     spec: ViewSpec,
@@ -355,11 +358,12 @@ pub fn start_view(
         .as_mut()
         .ok_or_else(|| failed("The log is not open".to_string()))?;
     if let Some(previous) = open.pending.get(&tab) {
-        runner.cancel(*previous);
+        runner.cancel(owner, *previous);
     }
     let data = open.data.clone();
     let shared = log.clone();
     let id = runner.start(
+        owner,
         repo,
         TaskKind::Read,
         FILTERING.to_string(),
@@ -370,9 +374,9 @@ pub fn start_view(
 }
 
 // What the tab was still computing is cancelled with it: a history walk does not go on for nothing.
-pub fn close_view(repo: &mut OpenRepo, runner: &Runner, tab: u32) {
+pub fn close_view(repo: &mut OpenRepo, runner: &Runner, owner: &str, tab: u32) {
     if let Some(pending) = repo.pending.remove(&tab) {
-        runner.cancel(pending);
+        runner.cancel(owner, pending);
     }
     if let Some(view) = repo.tabs.remove(&tab) {
         repo.views.remove(&view);
@@ -445,6 +449,7 @@ fn open_history(
 pub fn start_history(
     log: &SharedLog,
     runner: &Runner,
+    owner: &str,
     repo: &Path,
     tab: u32,
     spec: ViewSpec,
@@ -455,11 +460,12 @@ pub fn start_history(
         .as_mut()
         .ok_or_else(|| failed("The log is not open".to_string()))?;
     if let Some(previous) = open.pending.get(&tab) {
-        runner.cancel(*previous);
+        runner.cancel(owner, *previous);
     }
     let data = open.data.clone();
     let shared = log.clone();
     let id = runner.start(
+        owner,
         repo,
         TaskKind::Read,
         FILTERING.to_string(),
@@ -573,11 +579,13 @@ fn adjacent_rows(view: &View, row: u32, parent: bool) -> Vec<u32> {
 
 pub fn start_selected_changes(
     runner: &Runner,
+    owner: &str,
     repo: &Path,
     hashes: Vec<String>,
     limit: Option<u32>,
 ) -> TaskId {
     runner.start(
+        owner,
         repo,
         TaskKind::Read,
         LOADING_CHANGES.to_string(),
@@ -595,6 +603,7 @@ pub fn start_selected_changes(
 pub fn start_not_picked(
     repo: &OpenRepo,
     runner: &Runner,
+    owner: &str,
     path: &Path,
     branch: &str,
 ) -> Option<TaskId> {
@@ -611,6 +620,7 @@ pub fn start_not_picked(
     let current_hash = store.get(head.commit).hash.to_string();
     let compared_hash = store.get(compared.commit).hash.to_string();
     Some(runner.start(
+        owner,
         path,
         TaskKind::Read,
         COMPARING.to_string(),
@@ -680,13 +690,16 @@ fn paste_with(program: &str) -> io::Result<String> {
 }
 
 #[tauri::command]
-pub async fn log_open(state: State<'_, AppState>) -> Result<LogSummary, ApiError> {
-    let path = current_repo(&state)?;
+pub async fn log_open(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<LogSummary, ApiError> {
+    let path = current_repo(&state, &window)?;
     let open = tauri::async_runtime::spawn_blocking(move || open_repo(&path))
         .await
         .map_err(|error| failed(error.to_string()))??;
     let result = summary(&open);
-    *state.log.lock().unwrap() = Some(open);
+    *log_of(&state, &window)?.lock().unwrap() = Some(open);
     Ok(result)
 }
 
@@ -695,13 +708,20 @@ pub fn log_rows(
     view_id: u32,
     start: u32,
     count: u32,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<LogRow>, ApiError> {
-    let log = state.log.lock().unwrap();
+    let log = log_of(&state, &window)?;
+    let log = log.lock().unwrap();
     Ok(log
         .as_ref()
         .map(|log| rows_in(log, view_id, start, count))
         .unwrap_or_default())
+}
+
+// The log of `window`'s project window.
+fn log_of(state: &AppState, window: &WebviewWindow) -> Result<SharedLog, ApiError> {
+    Ok(session_of(state, window.label())?.log.clone())
 }
 
 fn with_log<T>(
@@ -719,9 +739,10 @@ fn with_log<T>(
 pub async fn log_view_set(
     view_id: u32,
     patch: ViewPatch,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<LogSummary, ApiError> {
-    let log = state.log.clone();
+    let log = log_of(&state, &window)?;
     blocking_api(move || set_view(&log, view_id, &patch)).await
 }
 
@@ -729,9 +750,10 @@ pub async fn log_view_set(
 pub async fn log_graph_click(
     view_id: u32,
     target: GraphTarget,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<GraphClicked, ApiError> {
-    let log = state.log.clone();
+    let log = log_of(&state, &window)?;
     blocking_api(move || graph_click(&log, view_id, target)).await
 }
 
@@ -740,9 +762,10 @@ pub async fn log_graph_click(
 pub async fn log_graph_hover(
     view_id: u32,
     target: GraphTarget,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<Vec<u32>>, ApiError> {
-    let view = with_log(&state.log, |repo| view_of(repo, view_id))?;
+    let view = with_log(&log_of(&state, &window)?, |repo| view_of(repo, view_id))?;
     blocking_api(move || Ok(collapse::hover(&view, target))).await
 }
 
@@ -750,31 +773,57 @@ pub async fn log_graph_hover(
 pub async fn log_view_open(
     tab: u32,
     spec: ViewSpec,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let path = current_repo(&state)?;
-    start_view(&state.log, &state.tasks, &path, tab, spec)
+    let path = current_repo(&state, &window)?;
+    start_view(
+        &log_of(&state, &window)?,
+        &state.tasks,
+        &crate::commands::owner_label(&window),
+        &path,
+        tab,
+        spec,
+    )
 }
 
 #[tauri::command]
-pub async fn log_users(state: State<'_, AppState>) -> Result<Vec<Person>, ApiError> {
-    with_log(&state.log, |repo| Ok(users_of(repo)))
+pub async fn log_users(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<Person>, ApiError> {
+    with_log(&log_of(&state, &window)?, |repo| Ok(users_of(repo)))
 }
 
 #[tauri::command]
-pub async fn log_refs(state: State<'_, AppState>) -> Result<Vec<LogRef>, ApiError> {
-    with_log(&state.log, |repo| Ok(refs_of(repo)))
+pub async fn log_refs(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<LogRef>, ApiError> {
+    with_log(&log_of(&state, &window)?, |repo| Ok(refs_of(repo)))
 }
 
 #[tauri::command]
-pub async fn log_current_branch(state: State<'_, AppState>) -> Result<Option<String>, ApiError> {
-    with_log(&state.log, |repo| Ok(current_branch(repo)))
+pub async fn log_current_branch(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    with_log(&log_of(&state, &window)?, |repo| Ok(current_branch(repo)))
 }
 
 #[tauri::command]
-pub async fn log_view_close(tab: u32, state: State<'_, AppState>) -> Result<(), ApiError> {
-    with_log(&state.log, |repo| {
-        close_view(repo, &state.tasks, tab);
+pub async fn log_view_close(
+    tab: u32,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    with_log(&log_of(&state, &window)?, |repo| {
+        close_view(
+            repo,
+            &state.tasks,
+            &crate::commands::owner_label(&window),
+            tab,
+        );
         Ok(())
     })
 }
@@ -784,19 +833,29 @@ pub async fn log_history_open(
     tab: u32,
     spec: ViewSpec,
     request: HistoryRequest,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let path = current_repo(&state)?;
-    start_history(&state.log, &state.tasks, &path, tab, spec, request)
+    let path = current_repo(&state, &window)?;
+    start_history(
+        &log_of(&state, &window)?,
+        &state.tasks,
+        &crate::commands::owner_label(&window),
+        &path,
+        tab,
+        spec,
+        request,
+    )
 }
 
 #[tauri::command]
 pub async fn log_history_entries(
     view_id: u32,
     hashes: Vec<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<Option<HistoryEntry>>, ApiError> {
-    let (data, paths) = with_log(&state.log, |repo| {
+    let (data, paths) = with_log(&log_of(&state, &window)?, |repo| {
         Ok((repo.data.clone(), history_of(repo, view_id)?.1))
     })?;
     blocking_api(move || Ok(history_entries(&data, &paths, &hashes))).await
@@ -806,9 +865,10 @@ pub async fn log_history_entries(
 pub async fn log_history_change(
     view_id: u32,
     hashes: Vec<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<HistoryChange>, ApiError> {
-    let (data, (view, paths)) = with_log(&state.log, |repo| {
+    let (data, (view, paths)) = with_log(&log_of(&state, &window)?, |repo| {
         Ok((repo.data.clone(), history_of(repo, view_id)?))
     })?;
     blocking_api(move || {
@@ -827,9 +887,10 @@ pub async fn log_history_change(
 pub async fn log_find_rows(
     view_id: u32,
     hashes: Vec<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<Option<u32>>, ApiError> {
-    let (data, view) = with_log(&state.log, |repo| {
+    let (data, view) = with_log(&log_of(&state, &window)?, |repo| {
         Ok((repo.data.clone(), view_of(repo, view_id)?))
     })?;
     blocking_api(move || Ok(find_rows(&data, &view, &hashes))).await
@@ -839,9 +900,10 @@ pub async fn log_find_rows(
 pub async fn log_row_of(
     view_id: u32,
     target: JumpTarget,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<RowOf, ApiError> {
-    let (data, view) = with_log(&state.log, |repo| {
+    let (data, view) = with_log(&log_of(&state, &window)?, |repo| {
         Ok((repo.data.clone(), view_of(repo, view_id)?))
     })?;
     blocking_api(move || Ok(row_of(&data.store, &view, &target))).await
@@ -852,9 +914,10 @@ pub async fn log_adjacent_rows(
     view_id: u32,
     row: u32,
     parent: bool,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<u32>, ApiError> {
-    let view = with_log(&state.log, |repo| view_of(repo, view_id))?;
+    let view = with_log(&log_of(&state, &window)?, |repo| view_of(repo, view_id))?;
     Ok(adjacent_rows(&view, row, parent))
 }
 
@@ -900,9 +963,11 @@ pub async fn patch_clipboard(limit: Option<usize>) -> Result<ClipboardPatch, Api
 
 // Without an open log there is nothing to refresh.
 #[tauri::command]
-pub async fn log_refs_changed(state: State<'_, AppState>) -> Result<bool, ApiError> {
-    let known = state
-        .log
+pub async fn log_refs_changed(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<bool, ApiError> {
+    let known = log_of(&state, &window)?
         .lock()
         .unwrap()
         .as_ref()
@@ -910,7 +975,7 @@ pub async fn log_refs_changed(state: State<'_, AppState>) -> Result<bool, ApiErr
     let Some(known) = known else {
         return Ok(false);
     };
-    let path = current_repo(&state)?;
+    let path = current_repo(&state, &window)?;
     blocking_api(move || Ok(refs_changed(&path, known)?)).await
 }
 
@@ -933,10 +998,11 @@ where
 #[tauri::command]
 pub async fn commit_details(
     hashes: Vec<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<CommitDetails>, ApiError> {
-    let path = current_repo(&state)?;
-    let read = with_store(&state.log, move |store| {
+    let path = current_repo(&state, &window)?;
+    let read = with_store(&log_of(&state, &window)?, move |store| {
         Ok(details::commit_details(&path, store, &hashes)?)
     });
     blocking_api(read).await
@@ -945,9 +1011,10 @@ pub async fn commit_details(
 #[tauri::command]
 pub async fn branches_containing(
     hash: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
-    let data = with_log(&state.log, |repo| Ok(repo.data.clone()))?;
+    let data = with_log(&log_of(&state, &window)?, |repo| Ok(repo.data.clone()))?;
     blocking_api(move || {
         Ok(details::branches_containing(
             &data.store,
@@ -962,10 +1029,11 @@ pub async fn branches_containing(
 pub async fn commit_changes_of(
     hash: String,
     mode: ChangeMode,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChangeGroup>, ApiError> {
-    let path = current_repo(&state)?;
-    let read = with_store(&state.log, move |store| {
+    let path = current_repo(&state, &window)?;
+    let read = with_store(&log_of(&state, &window)?, move |store| {
         Ok(details::commit_changes(&path, store, &hash, mode)?)
     });
     blocking_api(read).await
@@ -975,19 +1043,27 @@ pub async fn commit_changes_of(
 pub async fn commit_changes_start(
     hashes: Vec<String>,
     limit: Option<u32>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let path = current_repo(&state)?;
-    Ok(start_selected_changes(&state.tasks, &path, hashes, limit))
+    let path = current_repo(&state, &window)?;
+    Ok(start_selected_changes(
+        &state.tasks,
+        &crate::commands::owner_label(&window),
+        &path,
+        hashes,
+        limit,
+    ))
 }
 
 // `DeepComparator.getComparedBranchFromFilters`, for the filters a tab has now.
 #[tauri::command]
 pub async fn log_compared_branch(
     filter: LogFilter,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    with_log(&state.log, |repo| {
+    with_log(&log_of(&state, &window)?, |repo| {
         Ok(cherry::compared_branch(&repo.data.store, &filter))
     })
 }
@@ -996,38 +1072,48 @@ pub async fn log_compared_branch(
 #[tauri::command]
 pub async fn log_not_picked(
     branch: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<TaskId>, ApiError> {
-    let path = current_repo(&state)?;
-    with_log(&state.log, |repo| {
-        Ok(start_not_picked(repo, &state.tasks, &path, &branch))
+    let path = current_repo(&state, &window)?;
+    with_log(&log_of(&state, &window)?, |repo| {
+        Ok(start_not_picked(
+            repo,
+            &state.tasks,
+            &crate::commands::owner_label(&window),
+            &path,
+            &branch,
+        ))
     })
 }
 
 #[tauri::command]
 pub async fn log_options_get(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Value, ApiError> {
-    Ok(options::read(&repo_data_dir(&app, &state)?))
+    Ok(options::read(&repo_data_dir(&app, &state, &window)?))
 }
 
 #[tauri::command]
 pub async fn log_options_set(
     options: Value,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    self::options::write(&repo_data_dir(&app, &state)?, &options)
+    self::options::write(&repo_data_dir(&app, &state, &window)?, &options)
         .map_err(|error| failed(error.to_string()))
 }
 
 #[tauri::command]
 pub async fn log_recent_filters(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<RecentFilters, ApiError> {
-    Ok(recent::all(&repo_data_dir(&app, &state)?))
+    Ok(recent::all(&repo_data_dir(&app, &state, &window)?))
 }
 
 #[tauri::command]
@@ -1035,9 +1121,10 @@ pub async fn log_remember_filter(
     filter: String,
     values: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<RecentFilters, ApiError> {
-    recent::remember(&repo_data_dir(&app, &state)?, &filter, &values)
+    recent::remember(&repo_data_dir(&app, &state, &window)?, &filter, &values)
         .map_err(|error| failed(error.to_string()))
 }
 
@@ -1465,6 +1552,7 @@ mod tests {
         let id = start_view(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             7,
             by_branch("main"),
@@ -1476,7 +1564,7 @@ mod tests {
 
         let mut log = harness.log.lock().unwrap();
         let open = log.as_mut().unwrap();
-        close_view(open, &harness.runner, 7);
+        close_view(open, &harness.runner, "main", 7);
 
         assert!(rows_in(open, view, 0, 10).is_empty());
         assert_eq!(rows_in(open, FIRST_VIEW, 0, 10).len(), 4);
@@ -1608,7 +1696,13 @@ mod tests {
         );
         let start = |branch: &str| {
             let log = harness.log.lock().unwrap();
-            start_not_picked(log.as_ref().unwrap(), &harness.runner, repo.path(), branch)
+            start_not_picked(
+                log.as_ref().unwrap(),
+                &harness.runner,
+                "main",
+                repo.path(),
+                branch,
+            )
         };
 
         // `getRepositories`: a tag, a hash or a name the log does not know is no branch.
@@ -1642,6 +1736,7 @@ mod tests {
         let id = start_view(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             0,
             by_branch("side"),
@@ -1670,7 +1765,7 @@ mod tests {
         );
         let hashes = vec!["a".repeat(40), "b".repeat(40)];
 
-        let id = start_selected_changes(&harness.runner, repo.path(), hashes, Some(10));
+        let id = start_selected_changes(&harness.runner, "main", repo.path(), hashes, Some(10));
 
         let event = harness.finished(id);
         assert_eq!(event.state, TaskState::Done, "{}", event.text);
@@ -1689,6 +1784,7 @@ mod tests {
         let id = start_view(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             0,
             by_branch("main"),
@@ -1709,6 +1805,7 @@ mod tests {
         let id = start_view(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             7,
             by_branch("main"),
@@ -1721,6 +1818,7 @@ mod tests {
         let id = start_view(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             7,
             by_branch("main"),
@@ -1753,7 +1851,15 @@ mod tests {
             ),
         );
 
-        let id = start_view(&harness.log, &harness.runner, repo.path(), 0, by_text("x")).unwrap();
+        let id = start_view(
+            &harness.log,
+            &harness.runner,
+            "main",
+            repo.path(),
+            0,
+            by_text("x"),
+        )
+        .unwrap();
         wait_for(&started);
 
         {
@@ -1785,6 +1891,7 @@ mod tests {
         let id = start_history(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             5,
             ViewSpec::default(),
@@ -1796,6 +1903,7 @@ mod tests {
         close_view(
             harness.log.lock().unwrap().as_mut().unwrap(),
             &harness.runner,
+            "main",
             5,
         );
 
@@ -1825,6 +1933,7 @@ mod tests {
             let id = start_history(
                 &harness.log,
                 &harness.runner,
+                "main",
                 repo.path(),
                 tab,
                 ViewSpec::default(),
@@ -1857,6 +1966,7 @@ mod tests {
         let id = start_history(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             5,
             ViewSpec::default(),
@@ -1902,14 +2012,30 @@ mod tests {
             &repo,
             &format!("touch '{}'\nexec sleep 30", started.display()),
         );
-        let slow = start_view(&harness.log, &harness.runner, repo.path(), 3, by_text("x")).unwrap();
+        let slow = start_view(
+            &harness.log,
+            &harness.runner,
+            "main",
+            repo.path(),
+            3,
+            by_text("x"),
+        )
+        .unwrap();
         wait_for(&started);
 
-        let other_tab =
-            start_view(&harness.log, &harness.runner, repo.path(), 4, by_text("x")).unwrap();
+        let other_tab = start_view(
+            &harness.log,
+            &harness.runner,
+            "main",
+            repo.path(),
+            4,
+            by_text("x"),
+        )
+        .unwrap();
         let next = start_view(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             3,
             by_branch("main"),
@@ -1918,7 +2044,7 @@ mod tests {
 
         assert_eq!(harness.finished(slow).state, TaskState::Cancelled);
         assert_eq!(harness.finished(next).state, TaskState::Done);
-        harness.runner.cancel(other_tab);
+        harness.runner.cancel("main", other_tab);
     }
 
     #[test]
@@ -1935,7 +2061,15 @@ mod tests {
                 release.display()
             ),
         );
-        let id = start_view(&harness.log, &harness.runner, repo.path(), 0, by_text("x")).unwrap();
+        let id = start_view(
+            &harness.log,
+            &harness.runner,
+            "main",
+            repo.path(),
+            0,
+            by_text("x"),
+        )
+        .unwrap();
         wait_for(&started);
 
         *harness.log.lock().unwrap() = Some(open_repo(repo.path()).unwrap());
@@ -1953,6 +2087,7 @@ mod tests {
         let error = start_view(
             &harness.log,
             &harness.runner,
+            "main",
             repo.path(),
             0,
             ViewSpec::default(),

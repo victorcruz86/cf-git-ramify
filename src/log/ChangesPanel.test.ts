@@ -13,7 +13,7 @@ vi.mock("../compare/actions", () => ({
   compareChangesWithLocal: vi.fn(async () => {}),
 }));
 vi.mock("../changes/get", () => ({ getRevision: vi.fn(async () => null) }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 const HASH = "a".repeat(40);
 

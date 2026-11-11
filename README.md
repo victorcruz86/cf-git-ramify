@@ -8,6 +8,7 @@ What it does, by phase:
 - **Phase 2:** the log with its graph, filters, details and context menu; the branches popup and panel; branch, tag and reset operations; fetch, Update Project and Pull; the push dialog with force push and protected branches; remotes, clone and init.
 - **Phase 3:** conflicts (the Conflicts dialog and the three-pane merge window); Merge and Rebase; continue, skip and abort; cherry-pick and revert; Edit Commit Message, Drop, Squash, Undo Commit, Fixup and Squash Into; interactive rebase.
 - **Phase 4:** the modal commit dialog; patches, stash and shelf, with the import of IntelliJ's shelf; annotate, file history, the selection history and comparisons; GitHub accounts, protected branches and the Pull Requests tool window; commit signing, linked worktrees and submodules.
+- **Several project windows:** each repository in its own window of the same process, `This Window` / `New Window`, closing, quitting and reopening projects, the menu bar following the focused window, and the project widget.
 
 Credentials are git's own (credential helper and ssh), with a dialog of its own when git asks for them; GitHub tokens live only in the Keychain. What is missing and what differs from IntelliJ is in `docs/parity-matrix.md` and in the reports in `docs/reports/` (`phase-1-validation.md` to `phase-4-validation.md`, plus the commands and decisions of each phase).
 
@@ -41,10 +42,10 @@ The result is left in `src-tauri/target/release/bundle/macos/Ramify.app`. It car
 ## Opening a repository
 
 ```bash
-open -n src-tauri/target/release/bundle/macos/Ramify.app --args /path/to/the/repository
+open -a src-tauri/target/release/bundle/macos/Ramify.app /path/to/the/repository
 ```
 
-`-n` opens a new window even if the app is already running, and it is what `Git > Clone…` uses to open the cloned repository in another window. It can also be opened with a double click from Finder, typing the path in the bar.
+If Ramify is running, the path goes to the last focused window and through the same question as `File > Open…`; if it is not, it should start with that repository. Neither case has been seen in a real run yet. To open another repository while Ramify runs, use `File > Open…`, `File > Recent Projects` or the project widget in the toolbar: each asks `This Window` or `New Window` (the setting `Open project in` keeps the answer), and a repository already open in a window is focused instead of opened twice. `open -n …/Ramify.app --args /path/to/the/repository` also works but is a known gap: it starts a second Ramify process that knows nothing about the first (the open and recent project lists are shared files, and the last writer wins). Ramify reopens the projects that were open at the last quit, unless `Reopen projects on startup` is off in the Settings. Double-clicking Ramify in Finder also works: start it, then type the path in the bar or use File > Open….
 
 ## License and attribution
 

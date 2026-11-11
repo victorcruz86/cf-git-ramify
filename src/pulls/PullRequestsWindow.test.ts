@@ -22,6 +22,9 @@ import {
 } from "./store";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("../lib/tasks", () => ({ taskResult: vi.fn() }));
 vi.mock("../hosting/accounts", async (original) => ({
   ...(await original<typeof import("../hosting/accounts")>()),

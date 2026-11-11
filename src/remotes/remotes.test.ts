@@ -20,7 +20,7 @@ import {
 import RemotesDialog from "./RemotesDialog.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 afterEach(() => {
   cleanup();
@@ -40,7 +40,6 @@ function api(overrides: Partial<RemotesApi> = {}): RemotesApi {
     clone: vi.fn(async () => ({ path: "/work/copy", warning: null })),
     init: vi.fn(async (path: string) => ({ kind: "created" as const, path })),
     openExclude: vi.fn(async () => true),
-    openInNewWindow: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -253,17 +252,16 @@ test("clone_opens_the_repository_when_done", async () => {
 
   expect(fake.clone).toHaveBeenCalledWith("https://example.com/a.git", "/work/copy");
   expect(open).toHaveBeenCalledWith("/work/copy");
-  expect(fake.openInNewWindow).not.toHaveBeenCalled();
 });
 
-test("clone_with_an_open_repository_asks_for_another_window", async () => {
+// The open flow decides between this window and a new one.
+test("clone_with_an_open_repository_also_goes_through_the_open_flow", async () => {
   const fake = api();
   const open = vi.fn(async () => {});
 
   await cloneFlow({ current: () => "/repo/a", open }, fake)("/srv/a.git", "/work/copy");
 
-  expect(fake.openInNewWindow).toHaveBeenCalledWith("/work/copy");
-  expect(open).not.toHaveBeenCalled();
+  expect(open).toHaveBeenCalledWith("/work/copy");
 });
 
 test("a_failing_clone_warns_and_opens_nothing", async () => {
@@ -362,15 +360,14 @@ test("init_and_saying_no_creates_nothing", async () => {
   expect(open).not.toHaveBeenCalled();
 });
 
-test("init_with_another_repository_open_asks_for_another_window_and_on_the_same_does_nothing", async () => {
-  const fake = api();
+test("init_with_another_repository_open_goes_through_the_open_flow_and_on_the_same_does_nothing", async () => {
+  const open = vi.fn(async () => {});
+  await initFlow({ current: () => "/repo/a", open }, { confirm: vi.fn() }, api())("/work/b");
+  expect(open).toHaveBeenCalledWith("/work/b");
 
-  await initFlow({ current: () => "/repo/a", open: vi.fn() }, { confirm: vi.fn() }, fake)("/work/b");
-  expect(fake.openInNewWindow).toHaveBeenCalledWith("/work/b");
-
-  const same = api();
-  await initFlow({ current: () => "/repo/a", open: vi.fn() }, { confirm: vi.fn() }, same)("/repo/a");
-  expect(same.openInNewWindow).not.toHaveBeenCalled();
+  const same = vi.fn(async () => {});
+  await initFlow({ current: () => "/repo/a", open: same }, { confirm: vi.fn() }, api())("/repo/a");
+  expect(same).not.toHaveBeenCalled();
 });
 
 test("the_init_dialog_proposes_the_current_repository", async () => {

@@ -8,7 +8,7 @@ import { annotationOptions, DEFAULT_OPTIONS, prettyDate } from "./annotation";
 import { createViewerEditor } from "./editor";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
 
 // jsdom does no layout: CodeMirror measures with this.
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;

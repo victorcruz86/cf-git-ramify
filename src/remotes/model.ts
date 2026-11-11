@@ -2,7 +2,6 @@ import {
   cloneRepository,
   initRepository,
   openExcludeFile,
-  openInNewWindow,
   remoteAdd,
   remoteEdit,
   remoteList,
@@ -29,7 +28,6 @@ export interface RemotesApi {
   clone(url: string, directory: string): Promise<Cloned>;
   init(path: string, confirmed: boolean): Promise<InitOutcome>;
   openExclude(): Promise<boolean>;
-  openInNewWindow(path: string): Promise<void>;
 }
 
 const run = async <T>(id: Promise<number>) => taskResult<T>(await id);
@@ -43,7 +41,6 @@ export const remotesApi: RemotesApi = {
   clone: async (url, directory) => run<Cloned>(cloneRepository(url, directory)),
   init: async (path, confirmed) => run<InitOutcome>(initRepository(path, confirmed)),
   openExclude: openExcludeFile,
-  openInNewWindow,
 };
 
 // `GitBundle`: remotes.define.*.validation.message.
@@ -127,18 +124,17 @@ export const removeRemote = (api: RemotesApi, remote: Remote) =>
     api.remove(remote.name),
   );
 
-// One repository per window. With an empty window it opens in it; with another one open, another
-// system window.
+// What was cloned or created goes through the open flow (`openProject`): this window if it has no
+// repository, else where `Open project in` says.
 export interface OpenDeps {
   // The root of the open repository, if any.
   current(): string | null;
   open(path: string): Promise<void>;
 }
 
-async function openRepository(deps: OpenDeps, api: RemotesApi, path: string) {
+async function openRepository(deps: OpenDeps, path: string) {
   try {
-    if (deps.current() === null) await deps.open(path);
-    else await api.openInNewWindow(path);
+    await deps.open(path);
   } catch (failure) {
     notify({ kind: "error", title: "Cannot open repository", body: errorText(failure) });
   }
@@ -161,7 +157,7 @@ export function cloneFlow(deps: OpenDeps, api: RemotesApi = remotesApi) {
     if (cloned.warning) {
       notify({ kind: "warning", title: "Cloned, but a submodule failed", body: cloned.warning });
     }
-    await openRepository(deps, api, cloned.path);
+    await openRepository(deps, cloned.path);
   };
 }
 
@@ -194,7 +190,7 @@ export function initFlow(
       return;
     }
     if (outcome.kind !== "created" || outcome.path === deps.current()) return;
-    await openRepository(deps, api, outcome.path);
+    await openRepository(deps, outcome.path);
   };
 }
 

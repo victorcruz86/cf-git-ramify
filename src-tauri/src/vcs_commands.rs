@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 use crate::apply_commits::{self, Kind, PathsResult, Selection};
 use crate::branch_info::{self, BranchKind, BranchList, FavoriteSet, Sync};
@@ -14,9 +14,10 @@ use crate::branches::{
     RemoteOptions, Repo, ResetMode,
 };
 use crate::commands::{
-    base_dir, blocking_api, current_repo, current_settings, data_dir_of, failed, flush_diff_window,
-    repo_changed, repo_data_dir, ApiError, AppState, RepoLocks, MAIN_WINDOW, SAVE_ACTION,
+    base_dir, blocking_api, current_settings, data_dir_of, emit_to_owner, failed, owner_label,
+    repo_changed, ApiError, AppState, RepoLocks, SAVE_ACTION,
 };
+use crate::commands::{current_repo, flush_diff_window, repo_data_dir, repo_of};
 use crate::commit;
 use crate::conflicts;
 use crate::fetch::{self, FetchResult};
@@ -101,64 +102,75 @@ const SHELVING_SILENTLY: &str = "Shelving Changes";
 fn start<T: Serialize + 'static>(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
     kind: TaskKind,
     title: String,
     work: impl FnOnce(&Repo) -> Result<T, GitError> + Send + 'static,
 ) -> Result<TaskId, ApiError> {
-    let path = current_repo(state)?;
-    let data = repo_data_dir(app, state)?;
+    let path = current_repo(state, window)?;
+    let data = repo_data_dir(app, state, window)?;
     let app = app.clone();
+    let owner = owner_label(window);
     let root = path.clone();
-    Ok(state.tasks.start(&path, kind, title, move |ctx| {
-        let result = work(&Repo {
-            ctx,
-            path: &root,
-            data: &data,
-        });
-        repo_changed(&app);
-        result
-    }))
+    Ok(state
+        .tasks
+        .start(&owner.clone(), &path, kind, title, move |ctx| {
+            let result = work(&Repo {
+                ctx,
+                path: &root,
+                data: &data,
+            });
+            repo_changed(&app, &owner);
+            result
+        }))
 }
 
 // A read with `Repo`: it changes nothing, so it does not announce that the repository changed.
 fn read<T: Serialize + 'static>(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
     title: &str,
     work: impl FnOnce(&Repo) -> Result<T, GitError> + Send + 'static,
 ) -> Result<TaskId, ApiError> {
-    read_as(app, state, TaskKind::Read, title, work)
+    read_as(app, state, window, TaskKind::Read, title, work)
 }
 
 // A read that waits for the repository's writes, as they do: what it reads is never half written.
 fn read_locked<T: Serialize + 'static>(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
     title: &str,
     work: impl FnOnce(&Repo) -> Result<T, GitError> + Send + 'static,
 ) -> Result<TaskId, ApiError> {
-    read_as(app, state, TaskKind::Write, title, work)
+    read_as(app, state, window, TaskKind::Write, title, work)
 }
 
 fn read_as<T: Serialize + 'static>(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
     kind: TaskKind,
     title: &str,
     work: impl FnOnce(&Repo) -> Result<T, GitError> + Send + 'static,
 ) -> Result<TaskId, ApiError> {
-    let path = current_repo(state)?;
-    let data = repo_data_dir(app, state)?;
+    let path = current_repo(state, window)?;
+    let data = repo_data_dir(app, state, window)?;
     let root = path.clone();
-    Ok(state
-        .tasks
-        .start(&root, kind, title.to_string(), move |ctx| {
+    Ok(state.tasks.start(
+        &owner_label(window),
+        &root,
+        kind,
+        title.to_string(),
+        move |ctx| {
             work(&Repo {
                 ctx,
                 path: &path,
                 data: &data,
             })
-        }))
+        },
+    ))
 }
 
 #[tauri::command]
@@ -166,16 +178,18 @@ pub async fn branch_checkout(
     target: String,
     mode: CheckoutMode,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Checkout {target}");
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         branches::checkout(repo, &target, mode)
     })
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn branch_checkout_remote(
     remote_branch: String,
     name: Option<String>,
@@ -183,11 +197,12 @@ pub async fn branch_checkout_remote(
     drop_commits: bool,
     mode: CheckoutMode,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Checkout {remote_branch}");
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         let options = RemoteOptions {
             name: name.as_deref(),
             suggested: suggested.as_deref(),
@@ -203,11 +218,12 @@ pub async fn branch_rebase_onto(
     start_point: String,
     branch: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Rebasing {branch}");
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         rebase::rebase_onto(repo, &start_point, &branch)
     })
 }
@@ -220,12 +236,13 @@ pub async fn branch_merge(
     smart: bool,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     // `branch.merging.process`.
     let title = format!("Merging {branch}…");
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         merge::merge_into(repo, &branch, &kind, smart, &expected_head)
     })
 }
@@ -237,16 +254,17 @@ pub async fn branch_rebase(
     branch: Option<String>,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = match &branch {
         // `branches.checkout.and.rebase.onto.current.process`.
         Some(branch) => format!("Checking out {branch} out and rebasing onto current"),
         // `branch.rebasing.onto.process`.
         None => format!("Rebasing onto {onto}…"),
     };
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         rebase::branch_rebase(repo, &onto, branch.as_deref(), &expected_head)
     })
 }
@@ -259,11 +277,12 @@ pub async fn branch_rebase_remote(
     drop_commits: bool,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Checking out {remote_branch} out and rebasing onto current");
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         rebase::rebase_remote(
             repo,
             &remote_branch,
@@ -281,27 +300,34 @@ pub async fn rebase_published(
     upstream: Option<String>,
     branch: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let path = current_repo(&state)?;
-    let data = repo_data_dir(&app, &state)?;
+    let path = current_repo(&state, &window)?;
+    let data = repo_data_dir(&app, &state, &window)?;
     let title = LOADING_COMMITS.to_string();
     let root = path.clone();
-    Ok(state.tasks.start(&root, TaskKind::Read, title, move |ctx| {
-        let repo = Repo {
-            ctx,
-            path: &path,
-            data: &data,
-        };
-        let branch = match branch {
-            Some(branch) => branch,
-            None => match branches::current_name(&path)? {
+    Ok(state.tasks.start(
+        &owner_label(&window),
+        &root,
+        TaskKind::Read,
+        title,
+        move |ctx| {
+            let repo = Repo {
+                ctx,
+                path: &path,
+                data: &data,
+            };
+            let branch = match branch {
                 Some(branch) => branch,
-                None => return Ok(None),
-            },
-        };
-        rebase::published(&repo, upstream.as_deref(), &branch)
-    }))
+                None => match branches::current_name(&path)? {
+                    Some(branch) => branch,
+                    None => return Ok(None),
+                },
+            };
+            rebase::published(&repo, upstream.as_deref(), &branch)
+        },
+    ))
 }
 
 // `Git > Merge…`. `expected_head` is the HEAD the dialog saw: if it no longer matches, nothing is touched.
@@ -312,13 +338,17 @@ pub async fn git_merge(
     message: Option<String>,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let paths = current_settings(&app)?.update_paths;
     // `merging.title`.
-    let title = format!("Merging changes to {}", current_repo(&state)?.display());
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    let title = format!(
+        "Merging changes to {}",
+        current_repo(&state, &window)?.display()
+    );
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         let outcome = merge::merge(repo, &branch, &options, message.as_deref(), &expected_head)?;
         Ok(merge::with_matching(repo.ctx, outcome, &paths))
     })
@@ -330,12 +360,14 @@ pub async fn git_rebase(
     params: RebaseParams,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         REBASING.to_string(),
         move |repo| rebase::rebase(repo, &params, &expected_head),
@@ -348,47 +380,64 @@ pub async fn merge_summary(
     branch: String,
     before_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     let paths = current_settings(&app)?.update_paths;
-    let path = current_repo(&state)?;
+    let path = current_repo(&state, &window)?;
     let title = LOADING_COMMITS.to_string();
-    Ok(state.tasks.start(&path, TaskKind::Read, title, move |ctx| {
-        let outcome = merge::summary(ctx, &before_head, &branch)?;
-        Ok(merge::with_matching(ctx, outcome, &paths))
-    }))
+    Ok(state.tasks.start(
+        &owner_label(&window),
+        &path,
+        TaskKind::Read,
+        title,
+        move |ctx| {
+            let outcome = merge::summary(ctx, &before_head, &branch)?;
+            Ok(merge::with_matching(ctx, outcome, &paths))
+        },
+    ))
 }
 
 // The branches that are not yet in HEAD: the Merge… dialog warns about those that already are.
 #[tauri::command]
-pub async fn unmerged_branches(state: State<'_, AppState>) -> Result<TaskId, ApiError> {
-    let path = current_repo(&state)?;
+pub async fn unmerged_branches(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    let path = current_repo(&state, &window)?;
     let title = LOADING_UNMERGED.to_string();
-    Ok(state
-        .tasks
-        .start(&path, TaskKind::Read, title, merge::unmerged_branches))
+    Ok(state.tasks.start(
+        &owner_label(&window),
+        &path,
+        TaskKind::Read,
+        title,
+        merge::unmerged_branches,
+    ))
 }
 
 // Which of these revisions git resolves: the validation of the Rebase… dialog.
 #[tauri::command]
 pub async fn revisions_valid(
     revisions: Vec<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<bool>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(rebase::valid_revisions(&repo, &revisions)?)).await
 }
 
 #[tauri::command]
 pub async fn operation_continue(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = "Continue Rebase".to_string();
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         title,
         rebase::continue_rebase,
@@ -398,11 +447,12 @@ pub async fn operation_continue(
 #[tauri::command]
 pub async fn operation_skip(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = "Skip commit during rebase…".to_string();
-    start(&app, &state, TaskKind::Write, title, rebase::skip)
+    start(&app, &state, &window, TaskKind::Write, title, rebase::skip)
 }
 
 // `expected_head` is the HEAD the confirmation dialog saw: if it no longer matches, nothing is touched.
@@ -411,11 +461,12 @@ pub async fn operation_abort(
     kind: Operation,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Aborting {} Process", operation::name(kind));
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         operation::abort_expecting(repo, kind, &expected_head)
     })
 }
@@ -424,18 +475,20 @@ pub async fn operation_abort(
 #[tauri::command]
 pub async fn conflicts_session(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, LOADING_CONFLICTS, conflicts::session)
+    read(&app, &state, &window, LOADING_CONFLICTS, conflicts::session)
 }
 
 #[tauri::command]
 pub async fn conflict_sides(
     path: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, LOADING_REVISIONS, move |repo| {
+    read(&app, &state, &window, LOADING_REVISIONS, move |repo| {
         conflicts::sides(repo, &path)
     })
 }
@@ -447,9 +500,10 @@ pub async fn merge_range_commits(
     to: String,
     path: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, COLLECTING_DETAILS, move |repo| {
+    read(&app, &state, &window, COLLECTING_DETAILS, move |repo| {
         conflicts::range_commits(repo, &from, &to, &path)
     })
 }
@@ -460,11 +514,12 @@ pub async fn conflicts_accept(
     paths: Vec<String>,
     side: conflicts::Side,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = RESOLVING_CONFLICTS.to_string();
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         conflicts::accept(repo, &paths, side)
     })
 }
@@ -476,11 +531,12 @@ pub async fn conflict_resolve(
     content: String,
     expected_hash: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = RESOLVING_CONFLICTS.to_string();
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         conflicts::resolve(repo, &path, content.as_bytes(), &expected_hash).map_err(GitError::from)
     })
 }
@@ -489,17 +545,24 @@ pub async fn conflict_resolve(
 // changes and the sides only read (`stash list` and `stash show` are reading forms for the console),
 // so they do not wait for the repository's lock.
 #[tauri::command]
-pub async fn stash_list(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
-    read(&app, &state, LOADING_STASHES, |repo| stash::list(repo.ctx))
+pub async fn stash_list(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, &window, LOADING_STASHES, |repo| {
+        stash::list(repo.ctx)
+    })
 }
 
 #[tauri::command]
 pub async fn stash_changes(
     sha: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, LOADING_STASH, move |repo| {
+    read(&app, &state, &window, LOADING_STASH, move |repo| {
         stash::changes(repo.ctx, &sha)
     })
 }
@@ -510,9 +573,10 @@ pub async fn stash_file_sides(
     path: String,
     old_path: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, LOADING_REVISIONS, move |repo| {
+    read(&app, &state, &window, LOADING_REVISIONS, move |repo| {
         stash::file_sides(repo.ctx, &sha, &path, old_path.as_deref())
     })
 }
@@ -523,12 +587,14 @@ pub async fn stash_save(
     message: String,
     keep_index: bool,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         STASHING.to_string(),
         move |repo| stash::save(repo.ctx, &message, keep_index),
@@ -540,17 +606,19 @@ pub async fn stash_save(
 pub async fn stash_push_paths(
     paths: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = STASHING_FILES.to_string();
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         stash::push_paths(repo.ctx, &paths)
     })
 }
 
 // `expected_head` is the HEAD the dialog saw. A recoverable copy is taken before anything is written.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn stash_unstash(
     sha: String,
     pop: bool,
@@ -558,12 +626,14 @@ pub async fn stash_unstash(
     branch: Option<String>,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         UNSTASHING.to_string(),
         move |repo| {
@@ -583,27 +653,33 @@ pub async fn stash_unstash(
 pub async fn stash_drop(
     sha: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let path = current_repo(&state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let path = current_repo(&state, &window)?;
     let looked = sha.clone();
     let label = blocking_api(move || Ok(stash::label_of(&path, &looked))).await?;
     let title = match label {
         Some(label) => format!("Removing Stash {label}…"),
         None => REMOVING_STASH.to_string(),
     };
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         stash::drop(repo, &sha)
     })
 }
 
 #[tauri::command]
-pub async fn stash_clear(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+pub async fn stash_clear(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         CLEARING_STASHES.to_string(),
         stash::clear,
@@ -617,10 +693,11 @@ pub async fn patch_plan(
     source: PatchInput,
     mapping: Option<PathMapping>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    read_locked(&app, &state, LOADING_PATCH, move |repo| {
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    read_locked(&app, &state, &window, LOADING_PATCH, move |repo| {
         crate::patch_apply::plan_input(repo.path, repo.data, &source, &mapping.unwrap_or_default())
     })
 }
@@ -632,10 +709,11 @@ pub async fn patch_preview(
     mapping: Option<PathMapping>,
     index: usize,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    read_locked(&app, &state, LOADING_PATCH, move |repo| {
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    read_locked(&app, &state, &window, LOADING_PATCH, move |repo| {
         crate::patch_apply::preview_input(
             repo.path,
             repo.data,
@@ -657,11 +735,12 @@ pub async fn patch_apply(
     choice: ApplyChoice,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = APPLYING_PATCH.to_string();
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         crate::patch_apply::apply_input(repo, &source, &mapping, &choice, &expected_head)
     })
 }
@@ -669,6 +748,7 @@ pub async fn patch_apply(
 // The merge window's result for a conflict of `patch_apply`, written only over the content it
 // was shown (`local_hash`); `moved_to` and `new_mode` come from the conflict.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn patch_conflict_resolve(
     path: String,
     content: String,
@@ -676,11 +756,12 @@ pub async fn patch_conflict_resolve(
     moved_to: Option<String>,
     new_mode: Option<u32>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = RESOLVING_CONFLICTS.to_string();
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         crate::patch_apply::resolve_conflict(
             repo.path,
             &path,
@@ -698,21 +779,33 @@ pub async fn patch_conflict_resolve(
 pub async fn patch_rollback(
     snapshot: SnapshotId,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = ROLLING_BACK_PATCH.to_string();
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         crate::patch_apply::rollback(repo.data, repo.path, &snapshot)
     })
 }
 
 // The commit of a merge that has just been resolved (`GitMerger.mergeCommit`).
 #[tauri::command]
-pub async fn merge_commit(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+pub async fn merge_commit(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = COMMITTING_MERGE.to_string();
-    start(&app, &state, TaskKind::Write, title, commit::merge_commit)
+    start(
+        &app,
+        &state,
+        &window,
+        TaskKind::Write,
+        title,
+        commit::merge_commit,
+    )
 }
 
 // Cherry-Pick and Revert Commit of the log. `hashes` are in the log's order; the cherry-pick applies them
@@ -723,9 +816,10 @@ pub async fn apply_commits(
     hashes: Vec<String>,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = match kind {
         // `cherry.picking.process`.
         Kind::CherryPick => "Cherry-Picking".to_string(),
@@ -733,7 +827,7 @@ pub async fn apply_commits(
         Kind::Revert if hashes.len() == 1 => "Reverting commit".to_string(),
         Kind::Revert => "Reverting commits".to_string(),
     };
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         apply_commits::run(repo, kind, &hashes, &expected_head)
     })
 }
@@ -744,12 +838,14 @@ pub async fn apply_commit_after_conflicts(
     kind: Kind,
     hash: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         COMMITTING.to_string(),
         move |repo| apply_commits::commit_after_conflicts(repo, kind, &hash),
@@ -764,9 +860,10 @@ pub async fn apply_paths(
     reverse: bool,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     // `changes.progress.title.choice.revert.apply.changes`.
     let title = if reverse {
         "Revert Changes"
@@ -776,6 +873,7 @@ pub async fn apply_paths(
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         title.to_string(),
         move |repo| -> Result<PathsResult, GitError> {
@@ -792,10 +890,11 @@ pub async fn changes_add(
     repo: String,
     paths: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    if current_repo(&state)? != Path::new(&repo) {
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    if current_repo(&state, &window)? != Path::new(&repo) {
         return Err(failed(
             "Another repository was opened before the files were added".to_string(),
         ));
@@ -803,6 +902,7 @@ pub async fn changes_add(
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         ADDING_FILES.to_string(),
         move |repo| -> Result<Option<SnapshotId>, GitError> { staging::add_to_vcs(repo, &paths) },
@@ -814,11 +914,13 @@ pub async fn changes_add(
 pub async fn rewrite_menu(
     hashes: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     read(
         &app,
         &state,
+        &window,
         CHECKING_EDITING,
         move |repo| -> Result<MenuChecks, GitError> { Ok(rewrite::menu_checks(repo, &hashes)) },
     )
@@ -830,11 +932,13 @@ pub async fn rewrite_check(
     hashes: Vec<String>,
     kind: rewrite::Kind,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     read(
         &app,
         &state,
+        &window,
         CHECKING_EDITING,
         move |repo| -> Result<Option<String>, GitError> {
             Ok(rewrite::check(repo, &hashes, kind).err())
@@ -848,11 +952,13 @@ pub async fn rewrite_check_single(
     hash: String,
     action: rewrite::Single,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     read(
         &app,
         &state,
+        &window,
         CHECKING_EDITING,
         move |repo| -> Result<Option<String>, GitError> {
             Ok(rewrite::check_single(repo, &hash, action).err())
@@ -867,13 +973,15 @@ pub async fn rewrite_uncommit(
     hash: String,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     // `git.undo.action.undoing.last.commit.process`.
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         "Undoing Last Commit…".to_string(),
         move |repo| rewrite::uncommit(repo, &hash, &expected_head),
@@ -885,13 +993,15 @@ pub async fn rewrite_uncommit(
 pub async fn rewrite_autosquash(
     base: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     // `rebase.progress.indicator.title`.
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         "Rebasing…".to_string(),
         move |repo| rewrite::autosquash(repo, &base),
@@ -904,12 +1014,17 @@ pub async fn rewrite_autosquash(
 pub async fn rewrite_interactive_start(
     hash: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     // `rebase.progress.indicator.preparing.title`.
-    read(&app, &state, "Preparing to rebase…", move |repo| {
-        rewrite::interactive_start(repo, &hash)
-    })
+    read(
+        &app,
+        &state,
+        &window,
+        "Preparing to rebase…",
+        move |repo| rewrite::interactive_start(repo, &hash),
+    )
 }
 
 // The interactive rebase from the commit: with `plan`, what the dialog chose over the log's list;
@@ -920,12 +1035,14 @@ pub async fn rewrite_interactive(
     plan: Option<rewrite::Plan>,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         REBASING.to_string(),
         move |repo| rewrite::interactive(repo, &hash, plan, &expected_head),
@@ -938,9 +1055,10 @@ pub async fn rewrite_validate(
     hashes: Vec<String>,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, CHECKING_EDITING, move |repo| {
+    read(&app, &state, &window, CHECKING_EDITING, move |repo| {
         rewrite::dialog_problem(repo, &hashes, &expected_head)
     })
 }
@@ -952,13 +1070,15 @@ pub async fn rewrite_reword(
     message: String,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     // `rebase.log.reword.action.progress.indicator.title`.
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         "Rewording…".to_string(),
         move |repo| rewrite::reword(repo, &hash, &message, &expected_head),
@@ -971,9 +1091,10 @@ pub async fn rewrite_drop(
     hashes: Vec<String>,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     // `rebase.log.drop.progress.indicator.title`.
     let title = if hashes.len() == 1 {
         "Dropping commit…"
@@ -983,6 +1104,7 @@ pub async fn rewrite_drop(
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         title.to_string(),
         move |repo| rewrite::drop(repo, &hashes, &expected_head),
@@ -996,13 +1118,15 @@ pub async fn rewrite_squash(
     message: String,
     expected_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     // `rebase.log.squash.progress.indicator.title`.
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         "Squashing…".to_string(),
         move |repo| rewrite::squash(repo, &hashes, &message, &expected_head),
@@ -1016,9 +1140,10 @@ pub async fn rewrite_undo(
     old_head: String,
     new_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     // `rebase.log.reword.action.progress.indicator.undo.title` and its siblings.
     let title = match kind {
         rewrite::Kind::Reword => "Undoing reword…",
@@ -1028,6 +1153,7 @@ pub async fn rewrite_undo(
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         title.to_string(),
         move |repo| -> Result<Undone, GitError> {
@@ -1042,9 +1168,10 @@ pub async fn rewrite_undo_check(
     old_head: String,
     new_head: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, CHECKING_EDITING, move |repo| {
+    read(&app, &state, &window, CHECKING_EDITING, move |repo| {
         rewrite::undo_impossible(repo, &Rewritten::between(old_head, new_head))
     })
 }
@@ -1054,10 +1181,11 @@ pub async fn rewrite_undo_check(
 #[tauri::command]
 pub async fn merge_message(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    let repo = current_repo(&state)?;
-    let data = repo_data_dir(&app, &state)?;
+    let repo = current_repo(&state, &window)?;
+    let data = repo_data_dir(&app, &state, &window)?;
     let suffix = current_settings(&app)?.cherry_pick_suffix;
     blocking_api(move || {
         if let Some(text) = apply_commits::proposal_in_progress(&repo, &data, suffix)? {
@@ -1126,9 +1254,10 @@ pub fn revert_range_locked(
 #[tauri::command]
 pub async fn staging_three_sides(
     path: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<ThreeSides, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(worktree_diff::three_sides(&repo, &path)?)).await
 }
 
@@ -1140,10 +1269,11 @@ pub async fn index_write(
     content: String,
     expected_hash: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Written, ApiError> {
-    let repo = current_repo(&state)?;
-    let dir = repo_data_dir(&app, &state)?;
+    let repo = current_repo(&state, &window)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || index_write_locked(&locks, &repo, &dir, &path, &content, &expected_hash))
         .await
@@ -1156,16 +1286,18 @@ pub async fn staging_revert_range(
     content: String,
     expected_hash: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Written, ApiError> {
-    let repo = current_repo(&state)?;
-    let dir = repo_data_dir(&app, &state)?;
+    let repo = current_repo(&state, &window)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || revert_range_locked(&locks, &repo, &dir, &path, &content, &expected_hash))
         .await
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn branch_create(
     name: String,
     start_point: Option<String>,
@@ -1173,11 +1305,12 @@ pub async fn branch_create(
     overwrite: Overwrite,
     mode: CheckoutMode,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("New Branch {name}");
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         branches::create(
             repo,
             &name,
@@ -1194,11 +1327,12 @@ pub async fn branch_rename(
     old: String,
     new: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Rename {old}");
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         branches::rename(repo, &old, &new)
     })
 }
@@ -1207,11 +1341,12 @@ pub async fn branch_rename(
 pub async fn branch_delete(
     name: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Deleting {name}");
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         branches::delete(repo, &name)
     })
 }
@@ -1220,11 +1355,12 @@ pub async fn branch_delete(
 pub async fn branch_restore(
     deleted: Deleted,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Restoring Branch {}…", deleted.name);
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         branches::restore(repo, &deleted)
     })
 }
@@ -1239,19 +1375,20 @@ pub async fn branch_delete_remote(
     remote_branch: String,
     also_local: bool,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let path = current_repo(&state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let path = current_repo(&state, &window)?;
     let name = remote_branch.clone();
     let split = blocking_api(move || Ok(branches::split_remote(&path, &name)?)).await?;
-    let (remote, branch) =
-        split.ok_or_else(|| failed(remote_not_found(&remote_branch)))?;
+    let (remote, branch) = split.ok_or_else(|| failed(remote_not_found(&remote_branch)))?;
     let title = format!("Deleting {remote_branch}");
     let kind = TaskKind::Remote(remote.clone());
     start(
         &app,
         &state,
+        &window,
         kind,
         title,
         move |repo| -> Result<DeletedRemote, GitError> {
@@ -1266,13 +1403,15 @@ pub async fn branch_reset(
     mode: ResetMode,
     how: CheckoutMode,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = "Git Reset".to_string();
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         title,
         move |repo| -> Result<CheckoutOutcome, GitError> {
@@ -1288,11 +1427,12 @@ pub async fn tag_create(
     message: String,
     force: bool,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = "Tagging…".to_string();
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         branches::tag(repo, &name, &target, &message, force)
     })
 }
@@ -1301,13 +1441,15 @@ pub async fn tag_create(
 pub async fn tag_delete(
     name: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Deleting {name}");
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         title,
         move |repo| -> Result<DeletedTag, GitError> { branches::delete_tag(repo, &name) },
@@ -1318,11 +1460,12 @@ pub async fn tag_delete(
 pub async fn tag_restore(
     deleted: DeletedTag,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = format!("Restoring Tag {}…", deleted.name);
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         branches::restore_tag(repo, &deleted)
     })
 }
@@ -1330,11 +1473,16 @@ pub async fn tag_restore(
 // Each remote takes its turn inside the task, like `TaskKind::Remote`: there are several, and a commit does not
 // have to wait for any.
 #[tauri::command]
-pub async fn fetch_all(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
+pub async fn fetch_all(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
     let handle = app.clone();
     start(
         &app,
         &state,
+        &window,
         TaskKind::Read,
         FETCHING.to_string(),
         move |repo| -> Result<FetchResult, GitError> {
@@ -1349,12 +1497,14 @@ pub async fn fetch_all(app: AppHandle, state: State<'_, AppState>) -> Result<Tas
 pub async fn fetch_remote(
     remote: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     let handle = app.clone();
     start(
         &app,
         &state,
+        &window,
         TaskKind::Read,
         FETCHING.to_string(),
         move |repo| -> Result<Vec<String>, GitError> {
@@ -1365,8 +1515,11 @@ pub async fn fetch_remote(
 }
 
 #[tauri::command]
-pub async fn pull_info(state: State<'_, AppState>) -> Result<PullInfo, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn pull_info(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<PullInfo, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(pull::info(&repo)?)).await
 }
 
@@ -1379,22 +1532,30 @@ pub async fn git_pull(
     branch: String,
     options: Vec<PullOption>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let paths = current_settings(&app)?.update_paths;
     let handle = app.clone();
+    let own_window = window.clone();
     let title = format!("Pulling changes from {remote}");
     start(
         &app,
         &state,
+        &window,
         TaskKind::Read,
         title,
         move |repo| -> Result<UpdateResult, GitError> {
             let state = handle.state::<AppState>();
             let flush = || {
-                tauri::async_runtime::block_on(flush_diff_window(&handle, &state, SAVE_ACTION))
-                    .map_err(|error| GitError::Io(error.message))
+                tauri::async_runtime::block_on(flush_diff_window(
+                    &handle,
+                    &state,
+                    &own_window,
+                    SAVE_ACTION,
+                ))
+                .map_err(|error| GitError::Io(error.message))
             };
             let result = pull::pull(repo, &state.branch_sync, &remote, &branch, &options, flush);
             Ok(update::with_matching(repo.ctx, result, &paths))
@@ -1406,10 +1567,11 @@ pub async fn git_pull(
 pub async fn push_info(
     branch: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<PushInfo, ApiError> {
-    let repo = current_repo(&state)?;
-    let data = repo_data_dir(&app, &state)?;
+    let repo = current_repo(&state, &window)?;
+    let data = repo_data_dir(&app, &state, &window)?;
     // The dialog greys out what `check_force` refuses: the user's patterns and GitHub's.
     let repo_settings = RepoSettings {
         protected_branches: settings::effective_protected(&data),
@@ -1422,9 +1584,10 @@ pub async fn push_info(
 #[tauri::command]
 pub async fn push_branch_of(
     hash: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(push::branch_of_commit(&repo, &hash)?)).await
 }
 
@@ -1435,26 +1598,33 @@ pub async fn push_outgoing(
     source: String,
     remote: String,
     target: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let path = current_repo(&state)?;
+    let path = current_repo(&state, &window)?;
     let title = LOADING_COMMITS.to_string();
-    Ok(state.tasks.start(&path, TaskKind::Read, title, move |ctx| {
-        push::outgoing(ctx, &source, &remote, &target)
-    }))
+    Ok(state.tasks.start(
+        &owner_label(&window),
+        &path,
+        TaskKind::Read,
+        title,
+        move |ctx| push::outgoing(ctx, &source, &remote, &target),
+    ))
 }
 
 #[tauri::command]
 pub async fn git_push(
     spec: PushSpec,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let handle = app.clone();
     start(
         &app,
         &state,
+        &window,
         push::task_kind(&spec),
         PUSHING.to_string(),
         move |repo| -> Result<PushResult, GitError> {
@@ -1472,21 +1642,29 @@ pub async fn git_push_update(
     options: UpdateOptions,
     attempts: u32,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let paths = current_settings(&app)?.update_paths;
     let handle = app.clone();
+    let own_window = window.clone();
     start(
         &app,
         &state,
+        &window,
         TaskKind::Read,
         PUSHING.to_string(),
         move |repo| -> Result<UpdatedPush, GitError> {
             let state = handle.state::<AppState>();
             let flush = || {
-                tauri::async_runtime::block_on(flush_diff_window(&handle, &state, SAVE_ACTION))
-                    .map_err(|error| GitError::Io(error.message))
+                tauri::async_runtime::block_on(flush_diff_window(
+                    &handle,
+                    &state,
+                    &own_window,
+                    SAVE_ACTION,
+                ))
+                .map_err(|error| GitError::Io(error.message))
             };
             let sync = &state.branch_sync;
             let result = push::update_and_push(repo, sync, &spec, method, options, attempts, flush);
@@ -1507,21 +1685,29 @@ pub async fn update_project(
     method: UpdateMethod,
     options: UpdateOptions,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let paths = current_settings(&app)?.update_paths;
     let handle = app.clone();
+    let own_window = window.clone();
     start(
         &app,
         &state,
+        &window,
         TaskKind::Read,
         UPDATING.to_string(),
         move |repo| -> Result<UpdateResult, GitError> {
             let state = handle.state::<AppState>();
             let flush = || {
-                tauri::async_runtime::block_on(flush_diff_window(&handle, &state, SAVE_ACTION))
-                    .map_err(|error| GitError::Io(error.message))
+                tauri::async_runtime::block_on(flush_diff_window(
+                    &handle,
+                    &state,
+                    &own_window,
+                    SAVE_ACTION,
+                ))
+                .map_err(|error| GitError::Io(error.message))
             };
             let result = update::update_project(repo, &state.branch_sync, method, options, flush);
             Ok(update::with_matching(repo.ctx, result, &paths))
@@ -1536,21 +1722,29 @@ pub async fn branch_pull_into(
     remote_branch: String,
     method: UpdateMethod,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let paths = current_settings(&app)?.update_paths;
     let handle = app.clone();
+    let own_window = window.clone();
     start(
         &app,
         &state,
+        &window,
         TaskKind::Read,
         UPDATING.to_string(),
         move |repo| -> Result<UpdateResult, GitError> {
             let state = handle.state::<AppState>();
             let flush = || {
-                tauri::async_runtime::block_on(flush_diff_window(&handle, &state, SAVE_ACTION))
-                    .map_err(|error| GitError::Io(error.message))
+                tauri::async_runtime::block_on(flush_diff_window(
+                    &handle,
+                    &state,
+                    &own_window,
+                    SAVE_ACTION,
+                ))
+                .map_err(|error| GitError::Io(error.message))
             };
             let sync = &state.branch_sync;
             let result = pull::pull_into(repo, sync, &remote_branch, method, flush);
@@ -1564,10 +1758,11 @@ pub async fn branch_pull_into(
 pub async fn update_branch(
     local: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let path = current_repo(&state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let path = current_repo(&state, &window)?;
     let name = local.clone();
     let tracked = blocking_api(move || Ok(update::tracked_branch(&path, &name)?)).await?;
     let (remote, branch) =
@@ -1577,6 +1772,7 @@ pub async fn update_branch(
     start(
         &app,
         &state,
+        &window,
         kind,
         UPDATING_BRANCHES.to_string(),
         move |repo| -> Result<(), GitError> {
@@ -1587,11 +1783,16 @@ pub async fn update_branch(
 }
 
 #[tauri::command]
-pub async fn update_abort(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+pub async fn update_abort(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         "Aborting…".to_string(),
         |repo| -> Result<Aborted, GitError> { update::abort(repo) },
@@ -1603,12 +1804,14 @@ pub async fn update_abort(app: AppHandle, state: State<'_, AppState>) -> Result<
 pub async fn update_restore(
     saved: Saved,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start(
         &app,
         &state,
+        &window,
         TaskKind::Write,
         "Restoring Changes…".to_string(),
         move |repo| -> Result<RestoreOutcome, GitError> {
@@ -1618,17 +1821,21 @@ pub async fn update_restore(
 }
 
 #[tauri::command]
-pub async fn branch_current(state: State<'_, AppState>) -> Result<Option<String>, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn branch_current(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(branches::current_name(&repo)?)).await
 }
 
 #[tauri::command]
 pub async fn branch_trackers(
     remote_branch: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(branches::trackers(&repo, &remote_branch)?)).await
 }
 
@@ -1636,32 +1843,40 @@ pub async fn branch_trackers(
 pub async fn branch_unmerged_commits(
     base: String,
     tip: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<LostCommit>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(branches::unmerged_commits(&repo, &base, &tip)?)).await
 }
 
 #[tauri::command]
-pub async fn branch_list(state: State<'_, AppState>) -> Result<BranchList, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn branch_list(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<BranchList, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(branch_info::list(&repo)?)).await
 }
 
 #[tauri::command]
 pub async fn branch_incoming_outgoing(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<HashMap<String, Sync>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let strategy = current_settings(&app)?.incoming_check;
     let seen = state.branch_sync.seen(&repo);
     blocking_api(move || Ok(branch_info::incoming_outgoing(&repo, strategy, &seen)?)).await
 }
 
 #[tauri::command]
-pub async fn remote_list(state: State<'_, AppState>) -> Result<Vec<Remote>, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn remote_list(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<Remote>, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(remotes::list(&repo)?)).await
 }
 
@@ -1672,13 +1887,19 @@ pub async fn remote_add(
     name: String,
     url: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let kind = TaskKind::Remote(name.clone());
-    start(&app, &state, kind, ADDING_REMOTE.to_string(), move |repo| {
-        remotes::add(repo.ctx, &name, &url)
-    })
+    start(
+        &app,
+        &state,
+        &window,
+        kind,
+        ADDING_REMOTE.to_string(),
+        move |repo| remotes::add(repo.ctx, &name, &url),
+    )
 }
 
 #[tauri::command]
@@ -1687,13 +1908,15 @@ pub async fn remote_edit(
     new_name: String,
     url: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let kind = TaskKind::Remote(name.clone());
     start(
         &app,
         &state,
+        &window,
         kind,
         CHANGING_REMOTE.to_string(),
         move |repo| remotes::edit(repo.ctx, &name, &new_name, &url),
@@ -1704,13 +1927,15 @@ pub async fn remote_edit(
 pub async fn remote_remove(
     name: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let kind = TaskKind::Remote(name.clone());
     start(
         &app,
         &state,
+        &window,
         kind,
         REMOVING_REMOTE.to_string(),
         move |repo| remotes::remove(repo.ctx, &name),
@@ -1720,14 +1945,20 @@ pub async fn remote_remove(
 // `Configure GPG Key…`: the repository's signing config and the keys gpg can sign with. Both only
 // read, and listing the keys runs gpg, never git.
 #[tauri::command]
-pub async fn gpg_config(state: State<'_, AppState>) -> Result<SigningConfig, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn gpg_config(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<SigningConfig, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(gpg::config(&repo)?)).await
 }
 
 #[tauri::command]
-pub async fn gpg_keys(state: State<'_, AppState>) -> Result<Vec<GpgKey>, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn gpg_keys(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<GpgKey>, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || {
         let program = gpg::program(&repo)?.ok_or_else(gpg::not_found)?;
         Ok(gpg::secret_keys(&program)?)
@@ -1741,12 +1972,20 @@ pub async fn gpg_keys(state: State<'_, AppState>) -> Result<Vec<GpgKey>, ApiErro
 pub async fn log_signatures(
     hashes: Vec<String>,
     requester: u32,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
+    // Each project window has its own requesters: window 2's table 1 is not window 1's.
+    let owner = crate::windows::owner_of(window.label()).ok_or_else(|| {
+        failed(format!(
+            "The window \"{}\" belongs to no project window",
+            window.label()
+        ))
+    })?;
     Ok(state
         .signatures
-        .start(&state.tasks, &repo, requester, hashes)?)
+        .start(&state.tasks, &repo, &owner, requester, hashes)?)
 }
 
 // It writes `.git/config`, which every worktree of the repository shares.
@@ -1754,11 +1993,12 @@ pub async fn log_signatures(
 pub async fn gpg_config_set(
     key: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let title = CONFIGURING_GPG.to_string();
-    start(&app, &state, TaskKind::Write, title, move |repo| {
+    start(&app, &state, &window, TaskKind::Write, title, move |repo| {
         gpg::write(repo.ctx, key.as_deref())
     })
 }
@@ -1769,14 +2009,22 @@ pub async fn remote_test_url(
     url: String,
     remote: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     let handle = app.clone();
     let kind = remote.clone().map_or(TaskKind::Read, TaskKind::Remote);
-    start(&app, &state, kind, TESTING_URL.to_string(), move |repo| {
-        let sync = &handle.state::<AppState>().branch_sync;
-        remotes::test_url(repo.ctx, sync, &url, remote.as_deref())
-    })
+    start(
+        &app,
+        &state,
+        &window,
+        kind,
+        TESTING_URL.to_string(),
+        move |repo| {
+            let sync = &handle.state::<AppState>().branch_sync;
+            remotes::test_url(repo.ctx, sync, &url, remote.as_deref())
+        },
+    )
 }
 
 // The folder of a task that does not belong to the open repository: in its parent, or in the directory itself.
@@ -1798,6 +2046,7 @@ pub async fn clone_repository(
     url: String,
     directory: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     let dir = working_dir(&directory)?;
@@ -1821,6 +2070,7 @@ pub async fn clone_repository(
     };
     let handle = app.clone();
     Ok(state.tasks.start(
+        &owner_label(&window),
         &parent,
         TaskKind::Write,
         title,
@@ -1836,6 +2086,7 @@ pub async fn clone_repository(
 pub async fn init_repository(
     path: String,
     confirmed: bool,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     let dir = working_dir(&path)?;
@@ -1843,6 +2094,7 @@ pub async fn init_repository(
         return Err(failed(format!("The folder \"{path}\" does not exist")));
     }
     Ok(state.tasks.start(
+        &owner_label(&window),
         &dir,
         TaskKind::Write,
         "Refreshing files".to_string(),
@@ -1852,8 +2104,11 @@ pub async fn init_repository(
 
 // `true` if it opened the file; if it does not exist, it does nothing.
 #[tauri::command]
-pub async fn open_exclude_file(state: State<'_, AppState>) -> Result<bool, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn open_exclude_file(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<bool, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || {
         Ok(remotes::open_exclude_file(
             &repo,
@@ -1863,22 +2118,25 @@ pub async fn open_exclude_file(state: State<'_, AppState>) -> Result<bool, ApiEr
     .await
 }
 
-// The app has one repository per window and does not yet open several: another window is another process.
-#[tauri::command]
-pub fn open_in_new_window(path: String) -> Result<(), ApiError> {
-    remotes::open_in_new_window(&working_dir(&path)?).map_err(failed)
-}
-
 // As text: a `u64` does not fit in a JavaScript number.
 #[tauri::command]
-pub async fn branch_refs_fingerprint(state: State<'_, AppState>) -> Result<String, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn branch_refs_fingerprint(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<String, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(refs_fingerprint(&repo)?.to_string())).await
 }
 
 #[tauri::command]
-pub fn favorites_get(app: AppHandle, state: State<'_, AppState>) -> Result<FavoriteSet, ApiError> {
-    Ok(branch_info::favorites(&repo_data_dir(&app, &state)?))
+pub fn favorites_get(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<FavoriteSet, ApiError> {
+    Ok(branch_info::favorites(&repo_data_dir(
+        &app, &state, &window,
+    )?))
 }
 
 #[tauri::command]
@@ -1886,27 +2144,30 @@ pub fn favorites_toggle(
     name: String,
     kind: BranchKind,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<FavoriteSet, ApiError> {
-    branch_info::toggle_favorite(&repo_data_dir(&app, &state)?, &name, kind)
+    branch_info::toggle_favorite(&repo_data_dir(&app, &state, &window)?, &name, kind)
         .map_err(|error| failed(error.to_string()))
 }
 
 #[tauri::command]
 pub fn pull_options_get(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<PullOption>, ApiError> {
-    Ok(pull::read_options(&repo_data_dir(&app, &state)?))
+    Ok(pull::read_options(&repo_data_dir(&app, &state, &window)?))
 }
 
 #[tauri::command]
 pub fn pull_options_set(
     options: Vec<PullOption>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    pull::write_options(&repo_data_dir(&app, &state)?, &options)
+    pull::write_options(&repo_data_dir(&app, &state, &window)?, &options)
         .map_err(|error| failed(error.to_string()))
 }
 
@@ -1916,9 +2177,10 @@ pub fn merge_settings_set(
     branch: Option<String>,
     options: Vec<MergeOption>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    settings::save_merge(&repo_data_dir(&app, &state)?, branch, options)
+    settings::save_merge(&repo_data_dir(&app, &state, &window)?, branch, options)
         .map_err(|error| failed(error.to_string()))
 }
 
@@ -1927,35 +2189,42 @@ pub fn rebase_settings_set(
     options: Vec<String>,
     new_base: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    settings::save_rebase(&repo_data_dir(&app, &state)?, options, new_base)
+    settings::save_rebase(&repo_data_dir(&app, &state, &window)?, options, new_base)
         .map_err(|error| failed(error.to_string()))
 }
 
 #[tauri::command]
 pub fn push_tags_get(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<PushTags>, ApiError> {
-    Ok(push::read_tags(&repo_data_dir(&app, &state)?))
+    Ok(push::read_tags(&repo_data_dir(&app, &state, &window)?))
 }
 
 #[tauri::command]
 pub fn push_tags_set(
     tags: Option<PushTags>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    push::write_tags(&repo_data_dir(&app, &state)?, tags).map_err(|error| failed(error.to_string()))
+    push::write_tags(&repo_data_dir(&app, &state, &window)?, tags)
+        .map_err(|error| failed(error.to_string()))
 }
 
 #[tauri::command]
 pub fn repo_settings_get(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<settings::RepoSettingsView, ApiError> {
-    Ok(settings::load_repo_view(&repo_data_dir(&app, &state)?))
+    Ok(settings::load_repo_view(&repo_data_dir(
+        &app, &state, &window,
+    )?))
 }
 
 // The user's patterns and `Load branch protection rules from GitHub`. The patterns that are not
@@ -1965,9 +2234,10 @@ pub fn protected_branches_set(
     patterns: Vec<String>,
     load_github_protection: bool,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
-    let dir = repo_data_dir(&app, &state)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     settings::save_protected_branches(&dir, patterns.clone())
         .and_then(|()| settings::save_load_github_protection(&dir, load_github_protection))
         .map_err(|error| failed(error.to_string()))?;
@@ -1979,9 +2249,10 @@ pub fn protected_branches_set(
 pub fn clean_tree_set(
     clean_tree: settings::CleanTree,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    settings::save_clean_tree(&repo_data_dir(&app, &state)?, clean_tree)
+    settings::save_clean_tree(&repo_data_dir(&app, &state, &window)?, clean_tree)
         .map_err(|error| failed(error.to_string()))
 }
 
@@ -1990,9 +2261,10 @@ pub fn clean_tree_set(
 pub fn shelf_settings_set(
     shelf: settings::ShelfSettings,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    settings::save_shelf_settings(&repo_data_dir(&app, &state)?, shelf)
+    settings::save_shelf_settings(&repo_data_dir(&app, &state, &window)?, shelf)
         .map_err(|error| failed(error.to_string()))
 }
 
@@ -2008,69 +2280,109 @@ pub fn force_push_target_remember(
     remote: String,
     branch: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    settings::remember_force_target(&repo_data_dir(&app, &state)?, &remote, &branch)
+    settings::remember_force_target(&repo_data_dir(&app, &state, &window)?, &remote, &branch)
         .map_err(|error| failed(error.to_string()))
 }
 
 #[tauri::command]
 pub fn reset_mode_get(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<ResetMode>, ApiError> {
-    Ok(branch_info::read_reset_mode(&repo_data_dir(&app, &state)?))
+    Ok(branch_info::read_reset_mode(&repo_data_dir(
+        &app, &state, &window,
+    )?))
 }
 
 #[tauri::command]
 pub fn reset_mode_set(
     mode: ResetMode,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    branch_info::write_reset_mode(&repo_data_dir(&app, &state)?, mode)
+    branch_info::write_reset_mode(&repo_data_dir(&app, &state, &window)?, mode)
         .map_err(|error| failed(error.to_string()))
 }
 
 #[tauri::command]
 pub fn branch_options_get(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, ApiError> {
-    Ok(branch_info::read_options(&repo_data_dir(&app, &state)?))
+    Ok(branch_info::read_options(&repo_data_dir(
+        &app, &state, &window,
+    )?))
 }
 
 #[tauri::command]
 pub fn branch_options_set(
     options: serde_json::Value,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    branch_info::write_options(&repo_data_dir(&app, &state)?, &options)
+    branch_info::write_options(&repo_data_dir(&app, &state, &window)?, &options)
         .map_err(|error| failed(error.to_string()))
 }
 
-fn app_visible(app: &AppHandle) -> bool {
-    app.get_webview_window(MAIN_WINDOW).is_some_and(|window| {
+// Whether the main window `owner` is on screen: visible and not minimised.
+fn window_shown(app: &AppHandle, owner: &str) -> bool {
+    app.get_webview_window(owner).is_some_and(|window| {
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
     })
 }
 
+// The remotes are only asked while some project window is on screen.
+fn app_visible(app: &AppHandle) -> bool {
+    open_windows(app)
+        .iter()
+        .any(|owner| window_shown(app, owner))
+}
+
+// The project windows that have a session, by label.
+fn open_windows(app: &AppHandle) -> Vec<String> {
+    let mut owners: Vec<String> = app
+        .state::<AppState>()
+        .sessions
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    owners.sort();
+    owners
+}
+
+// Every project window that is on screen and has a repository, in turn; each one's result goes
+// to that window. The sessions map is not held while git works.
 fn check_remotes(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let (Ok(repo), Ok(settings)) = (current_repo(&state), current_settings(app)) else {
+    let Ok(settings) = current_settings(app) else {
         return;
     };
-    let found = branch_info::check_remotes(
-        &state.tasks,
-        &repo,
-        settings.incoming_check,
-        &state.branch_sync,
-        CHECK_LIMIT,
-    );
-    if let Ok(found) = found {
-        state.branch_sync.store(&repo, found);
-        let _ = app.emit_to(MAIN_WINDOW, BRANCH_SYNC_EVENT, ());
+    let targets: Vec<(String, PathBuf)> = open_windows(app)
+        .into_iter()
+        .filter(|owner| window_shown(app, owner))
+        .filter_map(|owner| repo_of(&state, &owner).ok().map(|repo| (owner, repo)))
+        .collect();
+    for (owner, repo) in targets {
+        let found = branch_info::check_remotes(
+            &state.tasks,
+            &repo,
+            settings.incoming_check,
+            &state.branch_sync,
+            CHECK_LIMIT,
+        );
+        if let Ok(found) = found {
+            state.branch_sync.store(&repo, found);
+            emit_to_owner(app, &owner, BRANCH_SYNC_EVENT, ());
+        }
     }
 }
 
@@ -2216,6 +2528,7 @@ fn expand_home(path: &str) -> String {
 // the repository the changes were read from, which may no longer be the open one: the patch is
 // still made from it.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn patch_create(
     entries: Vec<PatchEntry>,
     options: CreateOptions,
@@ -2223,9 +2536,10 @@ pub async fn patch_create(
     remember: bool,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let repo = PathBuf::from(&expected_repo);
     let data = data_dir_of(&app, &repo)?;
     let base = base_dir(&app)?;
@@ -2235,18 +2549,20 @@ pub async fn patch_create(
         PatchTarget::File { .. } => TaskKind::Write,
         PatchTarget::Clipboard => TaskKind::Read,
     };
-    Ok(state.tasks.start(&root, kind, title, move |_| {
-        create_patch(
-            &base,
-            &repo,
-            &data,
-            &entries,
-            &options,
-            &to,
-            remember,
-            crate::log::commands::copy_to_clipboard,
-        )
-    }))
+    Ok(state
+        .tasks
+        .start(&owner_label(&window), &root, kind, title, move |_| {
+            create_patch(
+                &base,
+                &repo,
+                &data,
+                &entries,
+                &options,
+                &to,
+                remember,
+                crate::log::commands::copy_to_clipboard,
+            )
+        }))
 }
 
 // What Patch File Settings starts with, for the repository the changes are in.
@@ -2311,13 +2627,17 @@ fn shelf_io(error: std::io::Error) -> GitError {
 }
 
 // Whether `repo` is still the open repository, for a task that started on it.
-fn still_open(app: &AppHandle, repo: &Path) -> bool {
-    is_open(&app.state::<AppState>(), repo)
+fn still_open(app: &AppHandle, window: &WebviewWindow, repo: &Path) -> bool {
+    is_open(&app.state::<AppState>(), window, repo)
 }
 
-fn is_open(state: &AppState, repo: &Path) -> bool {
-    let open = state.repo.lock().unwrap();
-    open.as_ref().is_some_and(|open| open.path == repo)
+fn is_open(state: &AppState, window: &WebviewWindow, repo: &Path) -> bool {
+    is_open_in(state, window.label(), repo)
+}
+
+// By label, so that a test needs no real window.
+fn is_open_in(state: &AppState, label: &str, repo: &Path) -> bool {
+    repo_of(state, label).is_ok_and(|open| open == repo)
 }
 
 // `Shelve Changes...` (`ShelveChangesCommitExecutor`). It saves the diff window first and works
@@ -2330,23 +2650,27 @@ pub async fn shelf_shelve(
     rollback: bool,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let repo = PathBuf::from(&expected_repo);
-    if current_repo(&state)? != repo {
+    if current_repo(&state, &window)? != repo {
         return Err(failed(SWITCHED_BEFORE_SHELVING.to_string()));
     }
     let data = data_dir_of(&app, &repo)?;
     let root = repo.clone();
     let title = SHELVING.to_string();
-    Ok(state.tasks.start(&root, TaskKind::Write, title, move |_| {
-        let result = shelve(&repo, &data, &entries, &description, rollback, || {
-            still_open(&app, &repo)
-        });
-        repo_changed(&app);
-        result
-    }))
+    let owner = owner_label(&window);
+    Ok(state
+        .tasks
+        .start(&owner.clone(), &root, TaskKind::Write, title, move |_| {
+            let result = shelve(&repo, &data, &entries, &description, rollback, || {
+                still_open(&app, &window, &repo)
+            });
+            repo_changed(&app, &owner);
+            result
+        }))
 }
 
 // `Shelve Silently` (rollback) and `Save To Shelf` (none): one list per changelist, named after it
@@ -2357,21 +2681,27 @@ pub async fn shelf_shelve_silently(
     rollback: bool,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let repo = PathBuf::from(&expected_repo);
-    if current_repo(&state)? != repo {
+    if current_repo(&state, &window)? != repo {
         return Err(failed(SWITCHED_BEFORE_SHELVING.to_string()));
     }
     let data = data_dir_of(&app, &repo)?;
     let root = repo.clone();
     let title = SHELVING_SILENTLY.to_string();
-    Ok(state.tasks.start(&root, TaskKind::Write, title, move |_| {
-        let result = shelve_silently(&repo, &data, &lists, rollback, || still_open(&app, &repo));
-        repo_changed(&app);
-        result
-    }))
+    let owner = owner_label(&window);
+    Ok(state
+        .tasks
+        .start(&owner.clone(), &root, TaskKind::Write, title, move |_| {
+            let result = shelve_silently(&repo, &data, &lists, rollback, || {
+                still_open(&app, &window, &repo)
+            });
+            repo_changed(&app, &owner);
+            result
+        }))
 }
 
 // The Shelf tab. Every command that changes the store saves the diff window first and works under
@@ -2397,33 +2727,44 @@ const SWITCHED_BEFORE_SHELF: &str =
 fn start_on_shelf<T: Serialize + 'static>(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
     expected_repo: &str,
     title: &str,
     work: impl FnOnce(&Path, &Path) -> Result<T, GitError> + Send + 'static,
 ) -> Result<TaskId, ApiError> {
     let repo = PathBuf::from(expected_repo);
-    if current_repo(state)? != repo {
+    if current_repo(state, window)? != repo {
         return Err(failed(SWITCHED_BEFORE_SHELF.to_string()));
     }
     let data = data_dir_of(app, &repo)?;
     let app = app.clone();
+    let window = window.clone();
+    let owner = owner_label(&window);
     let root = repo.clone();
-    Ok(state
-        .tasks
-        .start(&root, TaskKind::Write, title.to_string(), move |_| {
-            if !still_open(&app, &repo) {
+    Ok(state.tasks.start(
+        &owner.clone(),
+        &root,
+        TaskKind::Write,
+        title.to_string(),
+        move |_| {
+            if !still_open(&app, &window, &repo) {
                 return Err(GitError::Io(SWITCHED_BEFORE_SHELF.to_string()));
             }
             let result = work(&repo, &data);
-            repo_changed(&app);
+            repo_changed(&app, &owner);
             result
-        }))
+        },
+    ))
 }
 
 // Every list with its changes, newest first. Only the app's own store is read.
 #[tauri::command]
-pub async fn shelf_lists(app: AppHandle, state: State<'_, AppState>) -> Result<TaskId, ApiError> {
-    read(&app, &state, LOADING_SHELF, |repo| {
+pub async fn shelf_lists(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    read(&app, &state, &window, LOADING_SHELF, |repo| {
         Ok(shelf::tab::entries(repo.data))
     })
 }
@@ -2435,9 +2776,10 @@ pub async fn shelf_sides(
     file: ShelfFile,
     with_local: bool,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, LOADING_REVISIONS, move |repo| {
+    read(&app, &state, &window, LOADING_REVISIONS, move |repo| {
         shelf::tab::sides(repo.data, repo.path, &name, &file, with_local).map_err(GitError::Io)
     })
 }
@@ -2447,9 +2789,10 @@ pub async fn shelf_sides(
 pub async fn shelf_find_patches(
     paths: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    read(&app, &state, LOOKING_FOR_PATCHES, move |_| {
+    read(&app, &state, &window, LOOKING_FOR_PATCHES, move |_| {
         let chosen: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         let found = shelf::tab::find_patches(&chosen);
         Ok(found
@@ -2466,12 +2809,14 @@ pub async fn shelf_delete(
     files: Vec<ListFiles>,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start_on_shelf(
         &app,
         &state,
+        &window,
         &expected_repo,
         DELETING_SHELF,
         move |_, data| {
@@ -2486,12 +2831,14 @@ pub async fn shelf_undo_delete(
     lists: Vec<Restorable>,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start_on_shelf(
         &app,
         &state,
+        &window,
         &expected_repo,
         UNDOING_SHELF_DELETION,
         move |_, data| shelf::tab::undo_delete(data, &lists).map_err(shelf_io),
@@ -2504,12 +2851,14 @@ pub async fn shelf_restore(
     names: Vec<String>,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start_on_shelf(
         &app,
         &state,
+        &window,
         &expected_repo,
         RESTORING_SHELF,
         move |_, data| shelf::tab::restore(data, &names, SystemTime::now()).map_err(shelf_io),
@@ -2523,12 +2872,14 @@ pub async fn shelf_rename(
     description: String,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start_on_shelf(
         &app,
         &state,
+        &window,
         &expected_repo,
         RENAMING_SHELF,
         move |_, data| shelf::rename(data, &name, &description).map_err(shelf_io),
@@ -2543,12 +2894,18 @@ pub async fn shelf_recycle(
     files: Vec<ShelfFile>,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    start_on_shelf(&app, &state, &expected_repo, UNSHELVING, move |_, data| {
-        shelf::unshelve::recycle_applied(data, &name, &files, SystemTime::now())
-    })
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    start_on_shelf(
+        &app,
+        &state,
+        &window,
+        &expected_repo,
+        UNSHELVING,
+        move |_, data| shelf::unshelve::recycle_applied(data, &name, &files, SystemTime::now()),
+    )
 }
 
 // `Import Patches…`: the patch files found, each one copied into a new list.
@@ -2557,12 +2914,14 @@ pub async fn shelf_import_patches(
     files: Vec<String>,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start_on_shelf(
         &app,
         &state,
+        &window,
         &expected_repo,
         IMPORTING_PATCHES,
         move |_, data| {
@@ -2578,12 +2937,14 @@ pub async fn shelf_import_patches(
 pub async fn shelf_import_idea(
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start_on_shelf(
         &app,
         &state,
+        &window,
         &expected_repo,
         IMPORTING_IDEA_SHELF,
         move |repo, data| shelf::import(data, repo).map_err(shelf_io),
@@ -2598,12 +2959,14 @@ pub async fn shelf_import_to_shelf(
     selected: Vec<String>,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     start_on_shelf(
         &app,
         &state,
+        &window,
         &expected_repo,
         IMPORTING_TO_SHELF,
         move |repo, data| {
@@ -2615,6 +2978,7 @@ pub async fn shelf_import_to_shelf(
 
 // `Create Patch...` and `Copy as Patch to Clipboard` of the tab, as `patch_create` does them.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn shelf_patch_create(
     chosen: Vec<ListFiles>,
     options: CreateOptions,
@@ -2622,9 +2986,10 @@ pub async fn shelf_patch_create(
     remember: bool,
     expected_repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
     let repo = PathBuf::from(&expected_repo);
     let data = data_dir_of(&app, &repo)?;
     let base = base_dir(&app)?;
@@ -2634,28 +2999,34 @@ pub async fn shelf_patch_create(
         PatchTarget::File { .. } => TaskKind::Write,
         PatchTarget::Clipboard => TaskKind::Read,
     };
-    Ok(state.tasks.start(&root, kind, title, move |_| {
-        let text = || {
-            let sources = shelf::tab::patch_sources(&data, &repo, &chosen).map_err(GitError::Io)?;
-            create::text_of_sources(&repo, &sources, &options).map_err(patch_failure)
-        };
-        deliver_patch(
-            &base,
-            &repo,
-            &data,
-            &to,
-            remember,
-            text,
-            crate::log::commands::copy_to_clipboard,
-        )
-    }))
+    Ok(state
+        .tasks
+        .start(&owner_label(&window), &root, kind, title, move |_| {
+            let text = || {
+                let sources =
+                    shelf::tab::patch_sources(&data, &repo, &chosen).map_err(GitError::Io)?;
+                create::text_of_sources(&repo, &sources, &options).map_err(patch_failure)
+            };
+            deliver_patch(
+                &base,
+                &repo,
+                &data,
+                &to,
+                remember,
+                text,
+                crate::log::commands::copy_to_clipboard,
+            )
+        }))
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn a_missing_remote_says_could_not_find_it() {
-        assert_eq!(super::remote_not_found("origin/main"), "Could not find remote by name: origin/main");
+        assert_eq!(
+            super::remote_not_found("origin/main"),
+            "Could not find remote by name: origin/main"
+        );
     }
 
     // Reads change nothing: there is nothing to save beforehand.
@@ -2733,7 +3104,7 @@ mod tests {
     // They are called by the diff window while it saves, like `file_write`: waiting for it to save would be
     // waiting for themselves.
     const WHILE_SAVING: [&str; 2] = ["index_write", "staging_revert_range"];
-    const FLUSH: &str = "flush_diff_window(&app, &state, SAVE_ACTION).await?;";
+    const FLUSH: &str = "flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;";
 
     #[test]
     fn mutating_without_saving_the_diff_is_not_allowed() {
@@ -2758,7 +3129,8 @@ mod tests {
                 && !APP_DATA.contains(name)
         };
         for name in commands.iter().filter(unsaved) {
-            let start = source.find(&format!("pub async fn {name}(")).unwrap();
+            let header = format!("pub async fn {name}(");
+            let start = source.find(&header).unwrap();
             let mut lines = source[start..].lines();
             lines.find(|line| line.ends_with(" {")).unwrap();
             assert_eq!(lines.next().unwrap().trim(), FLUSH, "{name}");
@@ -3086,6 +3458,7 @@ mod tests {
     #[test]
     fn a_shelve_started_before_another_repository_was_opened_writes_nothing() {
         use super::*;
+        use crate::commands::MAIN_WINDOW;
         use crate::test_support::TempRepo;
         use tempfile::TempDir;
         let repo = TempRepo::new();
@@ -3095,7 +3468,8 @@ mod tests {
         let data = TempDir::new().unwrap();
         let state = AppState::default();
         let open = |path: &Path| {
-            *state.repo.lock().unwrap() = Some(crate::commands::RepoSession {
+            let session = crate::commands::session_of(&state, MAIN_WINDOW).unwrap();
+            *session.repo.lock().unwrap() = Some(crate::commands::RepoSession {
                 path: path.to_path_buf(),
             });
         };
@@ -3105,11 +3479,11 @@ mod tests {
             selection: None,
         };
         open(repo.path());
-        assert!(is_open(&state, repo.path()));
+        assert!(is_open_in(&state, MAIN_WINDOW, repo.path()));
 
         open(other.path());
         let shelved = shelve(repo.path(), data.path(), &[entry], "Work", true, || {
-            is_open(&state, repo.path())
+            is_open_in(&state, MAIN_WINDOW, repo.path())
         });
 
         assert_eq!(
@@ -3129,8 +3503,11 @@ mod tests {
             let body = &source[start..];
             let body = &body[..body.find("\n}\n").unwrap()];
             assert!(body.contains("TaskKind::Write"), "{name}");
-            assert!(body.contains("current_repo(&state)? != repo"), "{name}");
-            assert!(body.contains("still_open(&app, &repo)"), "{name}");
+            assert!(
+                body.contains("current_repo(&state, &window)? != repo"),
+                "{name}"
+            );
+            assert!(body.contains("still_open(&app, &window, &repo)"), "{name}");
         }
     }
 }

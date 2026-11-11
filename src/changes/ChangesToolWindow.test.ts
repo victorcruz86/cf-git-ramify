@@ -16,7 +16,7 @@ import { answerGetQuestion, getQuestion } from "./get";
 import { changesTab, showChanges } from "./tab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 // jsdom has no ResizeObserver, which the changes tree needs.
 vi.stubGlobal(

@@ -8,7 +8,10 @@ import { dismiss, notifications } from "../lib/notifications";
 import SettingsView from "./SettingsView.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 const SETTINGS: Settings = {
   gitPath: null,
@@ -33,6 +36,8 @@ const SETTINGS: Settings = {
   clearInitialCommitMessage: false,
   showDropCommitDialog: true,
   githubConnectionTimeoutMs: 5000,
+  openProjectIn: "ask",
+  reopenProjects: true,
 };
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
@@ -779,4 +784,26 @@ test("the_old_sign_commits_fields_are_gone", async () => {
   expect(screen.queryByText("Signing key")).toBeNull();
   expect(screen.queryByLabelText(/Signing key/)).toBeNull();
   expect(screen.getByRole("button", { name: "Configure GPG Key…" })).toBeTruthy();
+});
+
+test("the System group sets where projects open and whether they reopen", async () => {
+  mockCommands();
+  open();
+  expect(screen.getByRole("heading", { level: 3, name: "System" })).toBeTruthy();
+  const group = screen.getByRole("group", { name: "Open project in" });
+  expect(group).toBeTruthy();
+  expect((screen.getByLabelText("Ask") as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByLabelText("New window")).toBeTruthy();
+  expect(screen.getByLabelText("Current window")).toBeTruthy();
+  const reopen = screen.getByLabelText("Reopen projects on startup") as HTMLInputElement;
+  expect(reopen.checked).toBe(true);
+
+  await fireEvent.click(screen.getByLabelText("New window"));
+  await fireEvent.click(reopen);
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
+  expect(saved.openProjectIn).toBe("new");
+  expect(saved.reopenProjects).toBe(false);
 });

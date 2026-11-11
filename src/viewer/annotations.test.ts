@@ -6,7 +6,7 @@ import type { ViewerTab } from "./model";
 import { TabAnnotations } from "./annotations.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
 // The task's result arrives at once.
 vi.mock("../lib/tasks", () => ({ taskResult: vi.fn() }));
 

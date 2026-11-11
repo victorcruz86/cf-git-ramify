@@ -15,9 +15,12 @@ import { defaultOptions, historyOptions } from "./options";
 const NOT_PICKED = "Not Cherry-Picked Commits";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
-  emit: vi.fn(async () => {}),
+  emitTo: vi.fn(async () => {}),
 }));
 // What the table paints with: jsdom has no canvas, and the painting itself is `draw.test.ts`'s.
 vi.mock("./draw", async (original) => ({

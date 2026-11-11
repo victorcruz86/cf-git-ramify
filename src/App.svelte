@@ -4,6 +4,8 @@
     appVersion,
     branchList,
     changelistsGet,
+    changelistsSetComment,
+    commitDraftSaved,
     diffWindowOpen,
     commitMode,
     effectiveStaging,
@@ -15,16 +17,23 @@
     initialTarget,
     notifyRepoChanged,
     onAppActivated,
+    onMenuOwnerGained,
     onAnnotationShowInLog,
     onSelectionHistoryShowAffected,
     onAppDeactivated,
     onDiffReady,
     onGitAction,
     onGitFileAction,
+    onCommitDraftSave,
     onLeaveRefused,
     onOpenSettings,
     onOpenProjectChooser,
+    onOpenPath,
     onOpenRecent,
+    openProjectsReopen,
+    projectFocusOpen,
+    projectNewWindow,
+    projectResolve,
     recentProjectsRemove,
     type RecentProject,
     onRepoChanged,
@@ -35,6 +44,7 @@
     repoSettingsGet,
     repoState,
     settingsGet,
+    settingsSave,
     shelfLists,
     shelfSides,
     showWindow,
@@ -56,6 +66,7 @@
     type ShelfSides,
     type StashEntry,
   } from "./lib/api";
+  import { labelFor, ownerOf, ownLabel } from "./lib/windows";
   import AskpassDialog from "./lib/AskpassDialog.svelte";
   import MessageEditorDialog from "./editor/MessageEditorDialog.svelte";
   import { homeDir } from "@tauri-apps/api/path";
@@ -140,6 +151,15 @@
   import { framesRunning, runPerf } from "./perf/run";
   import SettingsView from "./settings/SettingsView.svelte";
   import MissingProjectDialog from "./recent/MissingProjectDialog.svelte";
+  import OpenProjectDialog from "./project/OpenProjectDialog.svelte";
+  import ProjectWidget from "./project/ProjectWidget.svelte";
+  import {
+    isOpenElsewhere,
+    openProject,
+    projectName,
+    type OpenAnswer,
+    type OpenProjectDeps,
+  } from "./project/open";
   import { showTabStep } from "./stash/flow";
   import StashTab from "./stash/StashTab.svelte";
   import VersionControlWindow from "./vcs/VersionControlWindow.svelte";
@@ -258,7 +278,18 @@
   let settingsOpen = $state(false);
   // A recent project whose path no longer exists, while its dialog asks what to do.
   let missingProject = $state<string | null>(null);
+  // The Open Project dialog of the open flow, while it asks where the project goes.
+  let openQuestion = $state.raw<{ name: string; answer: (answer: OpenAnswer) => void } | null>(null);
   let branchWidget = $state<HTMLButtonElement>();
+  // The home folder, for the project widget's tooltip.
+  let home = $state<string | null>(null);
+  void (async () => {
+    try {
+      home = (await homeDir()).replace(/\/$/, "");
+    } catch {
+      // Without it the tooltip shows the whole path.
+    }
+  })();
   // `null` means in the center of the window, as from the Git menu.
   let branchesPopup = $state.raw<{ anchor: { x: number; y: number } | null } | null>(null);
 
@@ -277,42 +308,87 @@
     branchesPopup = { anchor: bounds ? { x: bounds.left, y: bounds.bottom } : null };
   }
 
+  // The start opens its initial target here, without the open flow.
   async function open() {
     if (opening || !repoPath.trim()) return;
     opening = true;
     try {
-      // If it does not open, we stay in the current repository, with whatever was half done.
-      const opened = await repoOpen(repoPath.trim());
-      select("commit");
-      projectShown = false;
-      forgetToolWindows();
-      stashes = [];
-      stashError = null;
-      shelfEntries = [];
-      resetShelfSettings();
-      closeCommitDialog();
-      commitDraft = null;
-      diffWindow = false;
-      commitViewSelection = null;
-      status = undefined;
-      hasConflicts = false;
-      branchesPopup = null;
-      info = opened;
-      syncMenu(opened.state);
-      treeFiles = [];
-      treeChanges = false;
-      void readBranchesToCompare();
-      branchDialogs?.repositoryChanged(opened);
-      void loadStashes();
-      void loadShelf();
-      await loadBranchState();
-      void checkDefaultAccount(
-        () => (settingsOpen = true),
-        () => info?.path === opened.path,
-      );
-      void checkPullRequestsWindow(() => info?.path === opened.path);
+      await openHere(repoPath.trim());
     } catch (failure) {
       showError(failure);
+    } finally {
+      opening = false;
+    }
+  }
+
+  // This Window: today's `repo_open` path. If it does not open, we stay in the current
+  // repository, with whatever was half done.
+  async function openHere(path: string) {
+    repoPath = path;
+    const opened = await repoOpen(path);
+    select("commit");
+    projectShown = false;
+    forgetToolWindows();
+    stashes = [];
+    stashError = null;
+    shelfEntries = [];
+    resetShelfSettings();
+    closeCommitDialog();
+    commitDraft = null;
+    diffWindow = false;
+    commitViewSelection = null;
+    status = undefined;
+    hasConflicts = false;
+    branchesPopup = null;
+    info = opened;
+    syncMenu(opened.state);
+    treeFiles = [];
+    treeChanges = false;
+    void readBranchesToCompare();
+    branchDialogs?.repositoryChanged(opened);
+    void loadStashes();
+    void loadShelf();
+    await loadBranchState();
+    void checkDefaultAccount(
+      () => (settingsOpen = true),
+      () => info?.path === opened.path,
+    );
+    void checkPullRequestsWindow(() => info?.path === opened.path);
+  }
+
+  const projectDeps: OpenProjectDeps = {
+    resolve: projectResolve,
+    focusOpen: projectFocusOpen,
+    current: () => info?.path ?? null,
+    setting: () => settings?.openProjectIn ?? "ask",
+    openHere,
+    newWindow: projectNewWindow,
+    ask: (name) =>
+      new Promise((resolve) => {
+        openQuestion = {
+          name,
+          answer: (answer) => {
+            openQuestion = null;
+            resolve(answer);
+          },
+        };
+      }),
+    remember: async (openProjectIn) => {
+      await settingsSave({ ...(await settingsGet()), openProjectIn });
+    },
+    focusHere: () => showWindow(),
+  };
+
+  // Open, a typed path, Recent Projects, Clone, Create Git Repository and a folder handed to the
+  // app: the open flow (`openProject`), one at a time.
+  async function openTarget(target: string) {
+    if (opening || !target.trim()) return;
+    opening = true;
+    try {
+      await openProject(target.trim(), projectDeps);
+    } catch (failure) {
+      // Another window started opening it meanwhile, and has come to the front.
+      if (!isOpenElsewhere(failure)) showError(failure);
     } finally {
       opening = false;
     }
@@ -392,13 +468,22 @@
   });
 
   // `GitFileActionGroup.update`: while this window has the focus it says what Current File is.
-  $effect(() => {
-    if (!windowFocused) return;
+  function sendCurrentFile() {
     const selection = mainFileSelection;
     const state = fileMenuState();
     gitMenuCurrentFile(currentFileTitle(selection), currentFileItems(selection, state)).catch(
       () => {},
     );
+  }
+  function sendNoCurrentFile() {
+    const selection: GitFileSelection = { files: [], editor: false };
+    gitMenuCurrentFile(currentFileTitle(selection), currentFileItems(selection, fileMenuState())).catch(
+      () => {},
+    );
+  }
+  $effect(() => {
+    if (!windowFocused) return;
+    sendCurrentFile();
   });
 
   // On open and on each `repo-changed`: what arrives for an earlier request is dropped.
@@ -745,14 +830,16 @@
   }
 
   // `PatchClipboardListener`: the clipboard is looked at when the app becomes active (the backend
-  // says so; moving between Ramify's own windows is not), with a repository open and nothing modal.
+  // says so; moving between Ramify's own windows is not), with a repository open and nothing modal,
+  // only in the project window that was activated (IntelliJ asks in the activated frame).
   const onTheFly = clipboardWatcher(defaultApplyApi, (text) => {
     if (modalOpen()) return;
     void applyContext().then((context) => context && applies.applyText(context, text));
   });
 
-  function appActivated() {
+  function appActivated(owner: string | null) {
     appFocused = true;
+    if (owner !== ownerOf(ownLabel())) return;
     if (info && !modalOpen()) void onTheFly.activated();
   }
 
@@ -772,26 +859,18 @@
     run();
   }
 
-  // `open` reads the path from the toolbar field: that is how Clone and Create Git Repository open it too.
-  async function openRepository(path: string) {
-    repoPath = path;
-    await open();
-  }
-
   function submit(event: SubmitEvent) {
     event.preventDefault();
-    open();
+    void openTarget(repoPath);
   }
 
-  // File > Recent Projects: an existing path opens like a typed one.
+  // File > Recent Projects: an existing path goes through the open flow like a typed one.
   function openRecent({ path, exists }: RecentProject) {
     if (!exists) {
       missingProject = path;
       return;
     }
-    if (opening) return;
-    repoPath = path;
-    void open();
+    void openTarget(path);
   }
 
   async function answerMissingProject(remove: boolean) {
@@ -806,7 +885,7 @@
   }
 
   // Open and File > Open…: IntelliJ's `Open File or Project` chooser, for folders only. It starts in
-  // the typed folder, or in the home folder; the chosen folder is opened like a typed one.
+  // the typed folder, or in the home folder; the chosen folder goes through the open flow.
   async function chooseAndOpen() {
     if (opening) return;
     try {
@@ -816,8 +895,7 @@
         defaultPath: typed || (await homeDir().catch(() => undefined)),
       });
       if (chosen === null) return;
-      repoPath = chosen;
-      await open();
+      await openTarget(chosen);
     } catch (failure) {
       showError(failure);
     }
@@ -931,6 +1009,7 @@
         }
       }),
       onLeaveRefused(showError),
+      onCommitDraftSave(() => void saveDraftBeforeClose()),
       onDiffReady(() => {
         diffWindow = true;
         emitSelectionState(currentSelection());
@@ -945,11 +1024,15 @@
       onOpenRecent((project) => {
         if (!modalOpen()) openRecent(project);
       }),
+      onOpenPath((path) => {
+        if (!modalOpen()) void openTarget(path);
+      }),
       onGitAction(gitAction),
       onGitFileAction(fileActionFromViewer),
       onAnnotationShowInLog(annotationInLog),
       onSelectionHistoryShowAffected(affectedFromSelectionHistory),
       onAppActivated(appActivated),
+      onMenuOwnerGained(menuOwnerGained),
       onAppDeactivated(appDeactivated),
       onRepoChanged(refreshState),
     ];
@@ -971,6 +1054,23 @@
     const fetch = fetchRunning ? [] : ["Git.Fetch"];
     const github = pullsAvailable ? ["Github.View.Pull.Request"] : [];
     gitMenuEnable([...ids, ...fetch, ...github]).catch(() => {});
+  }
+
+  // The menu bar is the app's: this window puts its own state in it when it gains the focus, and
+  // when the backend hands the menu to it (the page's `focus` can arrive before the backend knows,
+  // and the focus may be on one of its auxiliary windows).
+  function windowGainedFocus() {
+    windowFocused = true;
+    if (repoNow) syncMenu(repoNow);
+  }
+  // Current File is this window's from now on: its own while it has the focus (or is getting it),
+  // the viewer's while the viewer has it (the viewer says so), and otherwise nothing to act on,
+  // since the entries only act in the focused window. Never the previous owner's.
+  function menuOwnerGained(focused: string | null) {
+    if (repoNow) syncMenu(repoNow);
+    const own = ownLabel();
+    if (windowFocused || focused === own) sendCurrentFile();
+    else if (focused !== labelFor("viewer", ownerOf(own) ?? own)) sendNoCurrentFile();
   }
 
   const pullsAvailable = $derived(windows.pulls !== null);
@@ -1003,6 +1103,33 @@
     if (repoNow) syncMenu(repoNow);
   }
 
+  // §5.8 step 2: before this window closes, or the app quits, its commit message draft goes to the
+  // changelist comment, where the Commit Changes dialog keeps it: the open dialog's as its Cancel
+  // keeps it, the Commit tool window's to the active list. The backend waits for the answer, which
+  // comes whatever happens.
+  async function saveDraftBeforeClose() {
+    try {
+      if ($commitDialog && commitDialogRef) await commitDialogRef.saveDraft();
+      else if (info && mode !== "modal") {
+        const draft = commitView?.changelistDraft();
+        if (draft) await changelistsSetComment(draft.id, draft.comment, info.path);
+      }
+    } catch (failure) {
+      showError(failure);
+    } finally {
+      await commitDraftSaved().catch(() => {});
+    }
+  }
+
+  // The open list's paths that no longer exist: skipped at start, and said once.
+  function reportMissing(missing: string[]) {
+    if (missing.length === 0) return;
+    notify({
+      kind: "warning",
+      title: `Some projects could not be reopened because their folders no longer exist: ${missing.map(projectName).join(", ")}`,
+    });
+  }
+
   // If git fails now, the next signal reads it again.
   async function refreshState(change: RepoChange = { stash: false, shelf: false }) {
     if (!info) return;
@@ -1031,6 +1158,11 @@
       applySettings(await settingsGet());
       // `Ramify <file>[:<line>]` also shows the file, once its repository is open (decision 1).
       const initial = await initialTarget();
+      // Reopening (§5.8): with the open list's first project as this window's initial target, the
+      // other ones open in new windows meanwhile. Nothing for a start with a path.
+      void openProjectsReopen()
+        .then(({ missing }) => reportMissing(missing))
+        .catch(showError);
       if (initial) {
         repoPath = initial.repo;
         await open();
@@ -1056,13 +1188,21 @@
 
 <svelte:window
   onkeydown={keydown}
-  onfocus={() => (windowFocused = true)}
+  onfocus={windowGainedFocus}
   onblur={() => (windowFocused = false)}
 />
 
 <main>
   <!-- An apply is modal from its OK to its end (`applyInProgress`): what is underneath is inert. -->
   <form class="main-toolbar" onsubmit={submit} inert={$applying}>
+    <ProjectWidget
+      path={info?.path ?? null}
+      {home}
+      onopen={openTarget}
+      onmissing={(path) => openRecent({ path, exists: false })}
+      onchoose={() => void chooseAndOpen()}
+      onclone={() => void remotesHost?.clone()}
+    />
     {#if info}
       <button
         bind:this={branchWidget}
@@ -1298,7 +1438,7 @@
   onshowcommit={() => void showTab("commit")}
   onshowstash={showGitStash}
 />
-<RemotesHost bind:this={remotesHost} current={() => info?.path ?? null} open={openRepository} />
+<RemotesHost bind:this={remotesHost} current={() => info?.path ?? null} open={openTarget} />
 {#if branchesPopup}
   <BranchesPopup
     anchor={branchesPopup.anchor}
@@ -1353,6 +1493,10 @@
 
 {#if missingProject !== null}
   <MissingProjectDialog path={missingProject} onanswer={answerMissingProject} />
+{/if}
+
+{#if openQuestion}
+  <OpenProjectDialog name={openQuestion.name} onanswer={openQuestion.answer} />
 {/if}
 
 <AskpassDialog />

@@ -341,43 +341,6 @@ pub fn reveal_in_finder(path: &Path) -> Result<(), String> {
     }
 }
 
-// One window per repository and the app does not open several yet: another window is another
-// process. Inside an `.app`, `open -n` launches it with the path as `argv[1]`, which is what
-// `initial_repo` reads. Outside one (development) there is nothing `open` knows how to launch, and
-// the binary is run.
-pub fn new_window_command(exe: &Path, repo: &Path) -> Result<Command, String> {
-    if !repo.is_absolute() {
-        return Err(format!("The path '{}' is not absolute", repo.display()));
-    }
-    let bundle = exe
-        .ancestors()
-        .find(|path| path.extension().is_some_and(|ext| ext == "app"));
-    Ok(match bundle {
-        Some(bundle) => {
-            let mut command = Command::new(OPEN);
-            command.arg("-n").arg(bundle).arg("--args").arg(repo);
-            command
-        }
-        None => {
-            let mut command = Command::new(exe);
-            command.arg(repo);
-            command
-        }
-    })
-}
-
-pub fn open_in_new_window(repo: &Path) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let mut child = new_window_command(&exe, repo)?
-        .spawn()
-        .map_err(|error| format!("Could not open another window: {error}"))?;
-    // Without waiting for it to close: `open` finishes on launching, the binary directly does not.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,16 +392,21 @@ mod tests {
         ) -> T {
             let (send, receive) = mpsc::channel();
             let sync = self.sync.clone();
-            self.runner
-                .start(dir, TaskKind::Write, "test".to_string(), move |ctx| {
+            self.runner.start(
+                "main",
+                dir,
+                TaskKind::Write,
+                "test".to_string(),
+                move |ctx| {
                     send.send(work(ctx, &sync)).unwrap();
                     Ok(())
-                });
+                },
+            );
             receive.recv_timeout(WAIT).unwrap()
         }
 
         fn commands(&self) -> Vec<String> {
-            let lines = self.console.lines();
+            let lines = self.console.lines_of("main");
             let commands = lines.into_iter().filter(|line| line.command);
             commands.map(|line| line.text).collect()
         }
@@ -803,6 +771,7 @@ mod tests {
         let url = text(origin.path());
         let targets = (new.clone(), existing.clone());
         let task = harness.runner.start(
+            "main",
             parent.path(),
             TaskKind::Read,
             "clone".to_string(),
@@ -817,7 +786,7 @@ mod tests {
                 Ok(())
             },
         );
-        harness.runner.cancel(task);
+        harness.runner.cancel("main", task);
         release.send(()).unwrap();
 
         let (first, second) = receive.recv_timeout(WAIT).unwrap();
@@ -898,6 +867,7 @@ mod tests {
             let (send, receive) = mpsc::channel();
             let target = dir.clone();
             let task = harness.runner.start(
+                "main",
                 parent.path(),
                 TaskKind::Write,
                 "clone".to_string(),
@@ -913,7 +883,7 @@ mod tests {
                 assert!(std::time::Instant::now() < deadline, "git did not start");
                 std::thread::sleep(Duration::from_millis(20));
             }
-            harness.runner.cancel(task);
+            harness.runner.cancel("main", task);
 
             let result = receive.recv_timeout(WAIT).unwrap();
             assert_eq!(result, Err(GitError::Cancelled));
@@ -937,7 +907,10 @@ mod tests {
             expand_home("/abs/~/x", Some(home)),
             PathBuf::from("/abs/~/x")
         );
-        assert_eq!(expand_home("~another/x", Some(home)), PathBuf::from("~another/x"));
+        assert_eq!(
+            expand_home("~another/x", Some(home)),
+            PathBuf::from("~another/x")
+        );
         assert_eq!(expand_home("~/x", None), PathBuf::from("~/x"));
     }
 
@@ -1037,38 +1010,6 @@ mod tests {
 
     fn args(command: &Command) -> Vec<&OsStr> {
         command.get_args().collect()
-    }
-
-    #[test]
-    fn new_window_with_bundle_uses_open_n_and_the_path_goes_in_argv() {
-        let exe = Path::new("/Applications/Ramify.app/Contents/MacOS/ramify");
-
-        let command = new_window_command(exe, Path::new("/tmp/my repo")).unwrap();
-
-        assert_eq!(command.get_program(), "/usr/bin/open");
-        assert_eq!(
-            args(&command),
-            ["-n", "/Applications/Ramify.app", "--args", "/tmp/my repo"]
-        );
-    }
-
-    #[test]
-    fn new_window_without_bundle_launches_the_binary_with_the_path() {
-        let exe = Path::new("/project/target/debug/ramify");
-
-        let command = new_window_command(exe, Path::new("/tmp/repo")).unwrap();
-
-        assert_eq!(command.get_program(), exe.as_os_str());
-        assert_eq!(args(&command), ["/tmp/repo"]);
-    }
-
-    #[test]
-    fn new_window_rejects_relative_or_dashed_paths() {
-        let exe = Path::new("/Applications/Ramify.app/Contents/MacOS/ramify");
-
-        assert!(new_window_command(exe, Path::new("-n")).is_err());
-        assert!(new_window_command(exe, Path::new("relative/repo")).is_err());
-        assert!(new_window_command(exe, Path::new("")).is_err());
     }
 
     #[test]

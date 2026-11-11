@@ -371,7 +371,7 @@ mod tests {
         }
 
         fn commands(&self) -> Vec<String> {
-            let lines = self.console.lines();
+            let lines = self.console.lines_of("main");
             lines
                 .into_iter()
                 .filter(|line| line.command)

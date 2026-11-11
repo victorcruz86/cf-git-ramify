@@ -5,7 +5,7 @@ import type { RebaseCommit } from "../lib/api";
 import InteractiveRebaseDialog from "./InteractiveRebaseDialog.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 const commit = (name: string): RebaseCommit => ({
   action: "pick",

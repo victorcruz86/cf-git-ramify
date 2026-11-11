@@ -8,11 +8,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ramify_lib::askpass::{ClientEnv, PromptKind, Server};
+use ramify_lib::askpass::{AskpassRegistration, ClientEnv, Handle, PromptKind, Server};
 use ramify_lib::commands::RepoLocks;
 use ramify_lib::console::Console;
 use ramify_lib::task::{GitOutput, Runner, TaskEvent, TaskId, TaskKind, TaskState};
@@ -21,34 +21,51 @@ use tempfile::TempDir;
 const WAIT: Duration = Duration::from_secs(20);
 const SECRET: &str = "secret-that-must-not-leak";
 const CLIENT: &str = env!("CARGO_BIN_EXE_ramify");
+// The project window the tasks of these tests belong to.
+const OWNER: &str = "main";
 
 struct Fixture {
     server: Arc<Server>,
     prompts: Receiver<(u64, PromptKind)>,
     dismissed: Receiver<u64>,
+    // The client's registration, which lives as long as the test.
+    client: (ClientEnv, AskpassRegistration),
 }
 
 impl Fixture {
     fn new() -> Self {
         let (asked, prompts) = mpsc::channel();
         let (gone, dismissed) = mpsc::channel();
-        let server = Server::start(
-            move |id, kind| asked.send((id, kind)).is_ok(),
-            move |id| gone.send(id).unwrap(),
+        let asked = Mutex::new(asked);
+        let gone = Mutex::new(gone);
+        let server = Server::start_with_program(
+            PathBuf::from(CLIENT),
+            // A question of another window would never be answered: the test sees it run out of time.
+            move |owner: &str, id, kind| {
+                owner == OWNER && asked.lock().unwrap().send((id, kind)).is_ok()
+            },
+            move |owner: &str, id| {
+                if owner == OWNER {
+                    gone.lock().unwrap().send(id).unwrap();
+                }
+            },
         )
         .unwrap();
+        let client = server.register(OWNER.to_string());
         Self {
             server: Arc::new(server),
             prompts,
             dismissed,
+            client,
         }
     }
 
     fn client(&self) -> ClientEnv {
-        ClientEnv {
-            program: PathBuf::from(CLIENT),
-            ..self.server.client_env()
-        }
+        self.client.0.clone()
+    }
+
+    fn handle(&self) -> Handle {
+        self.server.handle()
     }
 
     fn next_prompt(&self) -> (u64, PromptKind) {
@@ -59,7 +76,7 @@ impl Fixture {
 
     fn answer_next(&self, answer: Option<&str>) -> PromptKind {
         let (id, kind) = self.next_prompt();
-        self.server.answer(id, answer.map(str::to_string));
+        assert!(self.server.answer(OWNER, id, answer.map(str::to_string)));
         kind
     }
 }
@@ -156,7 +173,7 @@ fn if_the_client_dies_the_question_is_withdrawn() {
 
     assert_eq!(fixture.dismissed.recv_timeout(WAIT), Ok(id));
     // An answer that arrives late bothers nobody.
-    fixture.server.answer(id, Some(SECRET.to_string()));
+    fixture.server.answer(OWNER, id, Some(SECRET.to_string()));
 }
 
 // An ssh that asks like the real one and, if it gets an answer, serves the local repository.
@@ -241,9 +258,9 @@ struct Tasks {
 }
 
 impl Tasks {
-    fn new(client: ClientEnv) -> Self {
+    fn new(askpass: Handle) -> Self {
         let tasks = Self::without_askpass();
-        tasks.runner.use_askpass(client);
+        tasks.runner.use_askpass(askpass);
         tasks
     }
 
@@ -269,21 +286,28 @@ impl Tasks {
     ) -> (TaskId, Receiver<Result<GitOutput, String>>) {
         let (send, result) = mpsc::channel();
         let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-        let id = self
-            .runner
-            .start(repo, TaskKind::Read, "test".to_string(), move |context| {
+        let id = self.runner.start(
+            OWNER,
+            repo,
+            TaskKind::Read,
+            "test".to_string(),
+            move |context| {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 let output = context.git_loud(&args);
                 let _ = send.send(output.clone().map_err(|error| format!("{error:?}")));
                 output.map(|_| ())
-            });
+            },
+        );
         (id, result)
     }
 
     fn until_finished(&self) -> Vec<TaskEvent> {
         let mut seen = Vec::new();
         loop {
-            let event = self.events.recv_timeout(WAIT).expect("the task did not finish");
+            let event = self
+                .events
+                .recv_timeout(WAIT)
+                .expect("the task did not finish");
             let done = event.state != TaskState::Running;
             seen.push(event);
             if done {
@@ -313,7 +337,7 @@ fn wait_until_dead(pid: i32) -> bool {
 fn git_with_askpass_without_a_terminal() {
     install_fake_ssh();
     let fixture = Fixture::new();
-    let tasks = Tasks::new(fixture.client());
+    let tasks = Tasks::new(fixture.handle());
     let remote = Remote::new();
 
     let (_, result) = tasks.git_loud(remote.clone.path(), &["ls-remote", &remote.url()]);
@@ -338,7 +362,7 @@ fn git_with_askpass_without_a_terminal() {
 fn without_an_answer_git_is_cancelled() {
     install_fake_ssh();
     let fixture = Fixture::new();
-    let tasks = Tasks::new(fixture.client());
+    let tasks = Tasks::new(fixture.handle());
     let remote = Remote::new();
 
     let (_, result) = tasks.git_loud(remote.clone.path(), &["ls-remote", &remote.url()]);
@@ -352,14 +376,14 @@ fn without_an_answer_git_is_cancelled() {
 fn cancelling_the_task_withdraws_the_question() {
     install_fake_ssh();
     let fixture = Fixture::new();
-    let tasks = Tasks::new(fixture.client());
+    let tasks = Tasks::new(fixture.handle());
     let remote = Remote::new();
     let (task, result) = tasks.git_loud(remote.clone.path(), &["ls-remote", &remote.url()]);
     let (id, _) = fixture.next_prompt();
     let ssh: i32 = remote.mark("pid").trim().parse().unwrap();
     assert!(alive(ssh));
 
-    tasks.runner.cancel(task);
+    tasks.runner.cancel(OWNER, task);
 
     assert!(wait_until_dead(ssh), "ssh is still alive");
     assert_eq!(fixture.dismissed.recv_timeout(WAIT), Ok(id));
@@ -390,7 +414,7 @@ fn without_a_server_ssh_fails_without_a_terminal() {
 fn the_answer_does_not_reach_the_console() {
     install_fake_ssh();
     let fixture = Fixture::new();
-    let tasks = Tasks::new(fixture.client());
+    let tasks = Tasks::new(fixture.handle());
     let remote = Remote::new();
 
     let (_, result) = tasks.git_loud(remote.clone.path(), &["ls-remote", &remote.url()]);
@@ -398,7 +422,7 @@ fn the_answer_does_not_reach_the_console() {
     result.recv_timeout(WAIT).unwrap().unwrap();
     let events = tasks.until_finished();
 
-    let lines = tasks.console.lines();
+    let lines = tasks.console.lines_of(OWNER);
     assert!(lines.iter().any(|line| line.command), "{lines:?}");
     assert!(
         lines.iter().all(|line| !line.text.contains(SECRET)),
@@ -445,7 +469,7 @@ fn http_requiring_auth() -> (String, Receiver<String>) {
 #[test]
 fn git_asks_for_username_and_password_over_https() {
     let fixture = Fixture::new();
-    let tasks = Tasks::new(fixture.client());
+    let tasks = Tasks::new(fixture.handle());
     tasks.runner.set_credential_helper(false);
     let (url, received) = http_requiring_auth();
     let repo = TempDir::new().unwrap();

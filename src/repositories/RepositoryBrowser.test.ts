@@ -9,7 +9,7 @@ import RepositoryBrowser from "./RepositoryBrowser.svelte";
 import { repositoryTab, showRepositoryAtRevision } from "./tab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 // jsdom has no ResizeObserver, which `bind:clientHeight` needs.
 vi.stubGlobal(

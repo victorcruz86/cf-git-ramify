@@ -1,8 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::thread;
@@ -15,7 +16,7 @@ use tauri::{
 };
 
 use crate::askpass::{PromptKind, Server};
-use crate::block_history::{self, SELECTION_HISTORY_WINDOW};
+use crate::block_history::{self, SelectionRequest};
 use crate::branch_info::BranchSync;
 use crate::changelists::{ChangelistError, Changelists};
 use crate::commit::{
@@ -34,6 +35,7 @@ use crate::idea_import;
 use crate::log::commands::SharedLog;
 use crate::log::signatures::SignatureLoads;
 use crate::messages;
+use crate::open_projects::{self, OpenProjects};
 use crate::operation::{self, RepoState};
 use crate::preserve::{self, Pending};
 use crate::recent;
@@ -46,8 +48,9 @@ use crate::staging;
 use crate::status::{self, FileChange};
 use crate::storage;
 use crate::task::{Runner, TaskId};
-use crate::viewer::{self, VIEWER_WINDOW};
+use crate::viewer::{self, ViewerTarget};
 use crate::watch::{self, RepoChange, WatchedPaths, Watcher};
+use crate::windows::{self, InitialTargets, ReopenFocus, WindowKind};
 use crate::worktree_diff::{self, Comparison, WorktreeSides};
 
 #[derive(Debug, Serialize)]
@@ -96,7 +99,11 @@ impl From<GitError> for ApiError {
                 details: None,
             },
             GitError::LoginField { server, message } => ApiError {
-                kind: if server { "login_server" } else { "login_token" },
+                kind: if server {
+                    "login_server"
+                } else {
+                    "login_token"
+                },
                 message,
                 details: None,
             },
@@ -200,6 +207,8 @@ const QUIT_WAIT: Duration = Duration::from_secs(60);
 const LEAVE_REFUSED_EVENT: &str = "leave-refused";
 const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
 const OPEN_SETTINGS_EVENT: &str = "open-settings";
+// The project window became the menu's owner: its pages send their menu state again.
+const MENU_OWNER_GAINED_EVENT: &str = "menu-owner-gained";
 const OPEN_PROJECT_CHOOSER_EVENT: &str = "open-project-chooser";
 pub const QUIT_MENU_ID: &str = "ramify-quit";
 pub const SETTINGS_MENU_ID: &str = "ramify-settings";
@@ -213,6 +222,8 @@ const RECENT_MENU_TEXT: &str = "Recent Projects";
 // A row's id is this prefix and the repository's path: the click needs nothing else.
 const RECENT_ITEM_PREFIX: &str = "ramify-recent:";
 const OPEN_RECENT_EVENT: &str = "open-recent";
+const OPEN_PATH_EVENT: &str = "open-path";
+const OPEN_ELSEWHERE: &str = "The project is already open in another window";
 const SETTINGS_MENU_POSITION: usize = 2;
 const GIT_ACTION_EVENT: &str = "git-action";
 const WINDOW_MENU: &str = "Window";
@@ -410,6 +421,7 @@ const GIT_MENU: [GitMenuEntry; 31] = [
 const OPEN_ACTION: &str = "the repository was not opened";
 const QUIT_ACTION: &str = "the application was not quit";
 const CLOSE_ACTION: &str = "the window was not closed";
+const MERGE_OPEN_ACTION: &str = "the merge window was not opened";
 pub(crate) const SAVE_ACTION: &str = "nothing was done";
 pub const MAIN_WINDOW: &str = "main";
 pub const DIFF_WINDOW: &str = "diff";
@@ -427,13 +439,14 @@ const OPEN_LOCK_WAIT: Duration = Duration::from_millis(300);
 const LOCK_POLL: Duration = Duration::from_millis(20);
 
 // The diff window can be closed with the main one open: the main one still needs the notices.
+// Each main window owns its session's watcher, and closing it is closing its project window.
 pub fn owns_watcher(label: &str) -> bool {
-    label == MAIN_WINDOW
+    windows::kind_of(label) == Some(WindowKind::Main)
 }
 
 // Closing the diff window saves what was written; closing the merge one is its Cancel, with its questions.
 fn close_event_of(label: &str) -> &'static str {
-    if label == MERGE_WINDOW {
+    if windows::kind_of(label) == Some(WindowKind::Merge) {
         MERGE_CLOSE_EVENT
     } else {
         DIFF_CLOSE_EVENT
@@ -442,51 +455,58 @@ fn close_event_of(label: &str) -> &'static str {
 
 // The viewer and the selection history have nothing to save: they close at once.
 pub fn request_close(app: &AppHandle, label: &str) {
-    if label == VIEWER_WINDOW {
-        viewer::close(app);
-        return;
-    }
-    if label == SELECTION_HISTORY_WINDOW {
-        block_history::close(app);
-        return;
+    let owner = windows::owner_of(label).unwrap_or_else(|| MAIN_WINDOW.to_string());
+    match windows::kind_of(label) {
+        Some(WindowKind::Viewer) => {
+            viewer::close(app, &owner);
+            return;
+        }
+        Some(WindowKind::SelectionHistory) => {
+            block_history::close(app, &owner);
+            return;
+        }
+        _ => {}
     }
     let _ = app.emit_to(label, close_event_of(label), ());
 }
 
-// When the window is closed (it is only hidden) no one is looking: the watcher is released.
-pub fn stop_watching(state: &AppState) {
-    replace_watcher(state, None);
+// When the last project window is closed (it is only hidden) no one is looking: the watcher of
+// its session, `owner`'s, is released.
+pub fn stop_watching(state: &AppState, owner: &str) {
+    if let Ok(session) = session_of(state, owner) {
+        replace_watcher(&session, None);
+    }
 }
 
 // When the window is shown again, watching the session's repository resumes.
 pub fn resume_watching(
     state: &AppState,
+    owner: &str,
     on_change: impl Fn(RepoChange) + Send + 'static,
 ) -> Result<(), GitError> {
-    if state.watcher.lock().unwrap().is_some() {
+    let Ok(session) = session_of(state, owner) else {
+        return Ok(());
+    };
+    if session.watcher.lock().unwrap().is_some() {
         return Ok(());
     }
-    let path = state
-        .repo
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|repo| repo.path.clone());
-    let Some(path) = path else { return Ok(()) };
+    let Ok(path) = session_repo(&session) else {
+        return Ok(());
+    };
     let watcher = watch::start(WatchedPaths::of(&path)?, on_change)?;
-    replace_watcher(state, Some(watcher));
+    replace_watcher(&session, Some(watcher));
     Ok(())
 }
 
 // The old watcher is dropped outside the lock, which must not stay held while it finishes.
-fn replace_watcher(state: &AppState, watcher: Option<Watcher>) {
-    let old = std::mem::replace(&mut *state.watcher.lock().unwrap(), watcher);
+fn replace_watcher(session: &WindowSession, watcher: Option<Watcher>) {
+    let old = std::mem::replace(&mut *session.watcher.lock().unwrap(), watcher);
     drop(old);
 }
 
 // After a command: the watcher reports for itself whether the stash was touched.
-pub(crate) fn repo_changed(app: &AppHandle) {
-    emit_repo_changed(app, RepoChange::default());
+pub(crate) fn repo_changed(app: &AppHandle, owner: &str) {
+    emit_repo_changed(app, owner, RepoChange::default());
 }
 
 // The shelf generation each store had at the last `repo-changed`.
@@ -501,9 +521,13 @@ fn shelf_moved(seen: &mut BTreeMap<PathBuf, u64>, data: &Path) -> bool {
 // Every signal says whether the open repository's shelf changed since the previous one: the
 // commands that write the store emit `repo-changed` once they are done, and the Shelf tab reads
 // the lists only then.
-fn emit_repo_changed(app: &AppHandle, change: RepoChange) {
+// It goes to the windows of `owner`, whose session holds the repository.
+fn emit_repo_changed(app: &AppHandle, owner: &str, change: RepoChange) {
     let state = app.state::<AppState>();
-    let shelf = repo_data_dir(app, &state).is_ok_and(|data| {
+    let data = session_of(&state, owner)
+        .and_then(|session| session_repo(&session))
+        .and_then(|repo| data_dir_of(app, &repo));
+    let shelf = data.is_ok_and(|data| {
         let mut seen = SHELF_SEEN.lock().unwrap_or_else(PoisonError::into_inner);
         shelf_moved(&mut seen, &data)
     });
@@ -511,19 +535,24 @@ fn emit_repo_changed(app: &AppHandle, change: RepoChange) {
         shelf: change.shelf || shelf,
         ..change
     };
-    let _ = app.emit(REPO_CHANGED_EVENT, change);
+    emit_to_owner(app, owner, REPO_CHANGED_EVENT, change);
 }
 
-fn notifier(app: AppHandle) -> impl Fn(RepoChange) + Send + 'static {
-    move |change| emit_repo_changed(&app, change)
+fn notifier(app: AppHandle, owner: String) -> impl Fn(RepoChange) + Send + 'static {
+    move |change| emit_repo_changed(&app, &owner, change)
 }
 
 // If watching cannot be resumed there is no other error path to the interface: the
 // event is emitted anyway and the interface reads the state again.
-pub fn resume_and_notify(app: &AppHandle) {
-    let _ = resume_watching(&app.state::<AppState>(), notifier(app.clone()));
+// `owner` is the project window being shown.
+pub fn resume_and_notify(app: &AppHandle, owner: &str) {
+    let _ = resume_watching(
+        &app.state::<AppState>(),
+        owner,
+        notifier(app.clone(), owner.to_string()),
+    );
     // Nobody watched while it was hidden: the stash may have changed too.
-    notifier(app.clone())(RepoChange {
+    notifier(app.clone(), owner.to_string())(RepoChange {
         stash: true,
         shelf: false,
     });
@@ -835,22 +864,15 @@ pub fn recover_on_open(
     Ok((!report.is_empty()).then_some(report))
 }
 
-pub struct AppState {
-    pub operations: Arc<RepoLocks>,
-    pub console: Arc<Console>,
-    // Shares `operations`: a write task and a commit do not overlap.
-    pub tasks: Runner,
-    // `None` if the socket could not be opened: the console says why, and git fails when asking for
-    // credentials instead of hanging.
-    pub askpass: Mutex<Option<Server>>,
-    // The same for git's editor: without it, an interactive rebase fails instead of waiting.
-    pub editor: Mutex<Option<editor::Server>>,
+// What belongs to one project window: its repository, its log, its watcher and what its
+// auxiliary windows show. Its auxiliary windows use their owner's.
+#[derive(Default)]
+pub struct WindowSession {
     pub repo: Mutex<Option<RepoSession>>,
     // Shared with the tasks that open views: they finish after the command returns.
     pub log: SharedLog,
     // Dropping it stops watching the previous repository.
     pub watcher: Mutex<Option<Watcher>>,
-    pub branch_sync: BranchSync,
     // What the diff window must show. It does not go in the URL: a reused window is not
     // loaded again.
     pub diff_request: Mutex<Option<DiffRequest>>,
@@ -862,6 +884,31 @@ pub struct AppState {
     pub merge_leave: Mutex<VecDeque<Sender<LeaveReply>>>,
     // The merge page already listens to its notices. Before that it has loaded nothing, and there is no merge to lose.
     pub merge_ready: Mutex<bool>,
+    // What `viewer_open` left for the viewer page, until it takes it.
+    pub viewer_pending: Mutex<Vec<ViewerTarget>>,
+    // What `selection_history_open` left for the page, and the stream it runs, with the project
+    // window that started it, which is the only one that may cancel it.
+    pub selection_pending: Mutex<Option<SelectionRequest>>,
+    pub selection_running: Mutex<Option<(String, TaskId)>>,
+    // The root a `repo_open` of this window is opening, until it ends however it ends.
+    pub opening: Mutex<Option<PathBuf>>,
+    // Whoever waits for the main page to save its commit message draft (`commit_draft_saved`).
+    pub draft_saved: Mutex<VecDeque<Sender<()>>>,
+}
+
+pub struct AppState {
+    pub operations: Arc<RepoLocks>,
+    pub console: Arc<Console>,
+    // Shares `operations`: a write task and a commit do not overlap.
+    pub tasks: Runner,
+    // `None` if the socket could not be opened: the console says why, and git fails when asking for
+    // credentials instead of hanging.
+    pub askpass: Mutex<Option<Server>>,
+    // The same for git's editor: without it, an interactive rebase fails instead of waiting.
+    pub editor: Mutex<Option<editor::Server>>,
+    // Each project window's session, by the label of its main window.
+    pub sessions: Mutex<HashMap<String, Arc<WindowSession>>>,
+    pub branch_sync: BranchSync,
     // Whether the app has the focus, for the on-the-fly patch detection.
     pub activation: Mutex<Activation>,
     // GitHub's client and where its tokens are. Shared with the after-fetch hook, which loads the
@@ -869,6 +916,39 @@ pub struct AppState {
     pub hosting: Arc<HostingState>,
     // The `GPG Signature` column's loads and their app-wide cache.
     pub signatures: SignatureLoads,
+    // The label of the main window that last had the focus: where a path handed to the app goes.
+    pub last_focused_main: Mutex<String>,
+    // What each main window's page opens on start.
+    pub initial_targets: Mutex<InitialTargets>,
+    // The last number given to a main window (`windows::next_main_label`).
+    pub main_labels: AtomicU32,
+    // Held while a window's claim on a root is checked and made: a `repo_open` starting, or a
+    // new main window getting its label and being built.
+    pub open_claims: Mutex<()>,
+    // The main windows in the order they were opened, `main` first: the order of the open list.
+    // A window keeps its place when This Window replaces its repository, and leaves it on close.
+    pub open_order: Mutex<Vec<String>>,
+    // Held while the open list is computed and written, so two writes do not cross.
+    pub open_list_write: Mutex<()>,
+    // The main windows whose close is under way: a second click on the red button waits for it.
+    pub closing_windows: Mutex<HashSet<String>>,
+    // What the start reopens from the open list (`reopen_first`, `open_projects_reopen`).
+    pub reopen: Mutex<ReopenStage>,
+    // The reopened windows, until the last focused one comes to the front.
+    pub reopen_focus: Mutex<Option<ReopenFocus>>,
+    // The main windows closed for good: their labels never get a session again.
+    pub closed_owners: Mutex<HashSet<String>>,
+    // Set while a quit runs: the open list keeps what was open at quit.
+    pub quitting: AtomicBool,
+}
+
+// Reopening happens once per process, at the first `main` page's start.
+#[derive(Debug, Default)]
+pub enum ReopenStage {
+    #[default]
+    NotAsked,
+    Planned(open_projects::Reopen),
+    Done,
 }
 
 impl Default for AppState {
@@ -881,19 +961,446 @@ impl Default for AppState {
             editor: Mutex::default(),
             operations,
             console,
-            repo: Mutex::default(),
-            log: SharedLog::default(),
-            watcher: Mutex::default(),
+            sessions: Mutex::default(),
             branch_sync: BranchSync::default(),
-            diff_request: Mutex::default(),
-            diff_flush: Mutex::default(),
-            merge_session: Mutex::default(),
             activation: Mutex::default(),
-            merge_leave: Mutex::default(),
-            merge_ready: Mutex::default(),
             hosting: Arc::new(HostingState::default()),
             signatures: SignatureLoads::default(),
+            last_focused_main: Mutex::new(MAIN_WINDOW.to_string()),
+            initial_targets: Mutex::default(),
+            main_labels: AtomicU32::new(0),
+            open_claims: Mutex::new(()),
+            open_order: Mutex::new(vec![MAIN_WINDOW.to_string()]),
+            open_list_write: Mutex::new(()),
+            closing_windows: Mutex::default(),
+            reopen: Mutex::default(),
+            reopen_focus: Mutex::default(),
+            closed_owners: Mutex::default(),
+            quitting: AtomicBool::new(false),
         }
+    }
+}
+
+// The session of the project window `label` belongs to, created on first use. A label of no
+// project window has none.
+pub(crate) fn session_of(state: &AppState, label: &str) -> Result<Arc<WindowSession>, ApiError> {
+    let owner = windows::owner_of(label).ok_or_else(|| {
+        failed(format!(
+            "The window \"{label}\" belongs to no project window"
+        ))
+    })?;
+    let mut sessions = state.sessions.lock().unwrap();
+    // A closed window's label is never used again: a late call from its pages gets no session,
+    // which would outlive it.
+    if state.closed_owners.lock().unwrap().contains(&owner) {
+        return Err(failed(format!("The window \"{label}\" was closed")));
+    }
+    Ok(sessions.entry(owner).or_default().clone())
+}
+
+// The window of `kind` in the project window `label` belongs to.
+fn owned_label(kind: WindowKind, label: &str) -> String {
+    windows::label_for(kind, &windows::owner_of(label).unwrap_or_default())
+}
+
+// The first project window's session, for the tests that have no window to ask.
+#[cfg(test)]
+fn main_session(state: &AppState) -> Arc<WindowSession> {
+    session_of(state, MAIN_WINDOW).expect("the main window has an owner")
+}
+
+// The owner of the project window `window` belongs to: whose windows an event of its command goes to.
+pub(crate) fn owner_label(window: &WebviewWindow) -> String {
+    windows::owner_of(window.label()).unwrap_or_else(|| MAIN_WINDOW.to_string())
+}
+
+// The labels of `owner`'s five windows that exist: where its events go.
+fn emit_targets(owner: &str, exists: impl Fn(&str) -> bool) -> Vec<String> {
+    windows::owner_group(owner)
+        .into_iter()
+        .filter(|label| exists(label))
+        .collect()
+}
+
+// Sends `event` to each window of the project window `owner` that exists: its main window, diff,
+// merge, viewer and selection history. `emit_to` also reaches listeners without a target, so the
+// page listens with its own label (`listenOwn`). A window that does not exist is skipped. The
+// first error is returned, after every window was tried.
+pub fn try_emit_to_owner<S: Serialize + Clone>(
+    app: &AppHandle,
+    owner: &str,
+    event: &str,
+    payload: S,
+) -> tauri::Result<()> {
+    let mut first = Ok(());
+    for label in emit_targets(owner, |label| app.get_webview_window(label).is_some()) {
+        if let Err(error) = app.emit_to(label.as_str(), event, payload.clone()) {
+            first = first.and(Err(error));
+        }
+    }
+    first
+}
+
+// Like `try_emit_to_owner`, for events nobody can answer for: the error is only logged.
+pub fn emit_to_owner<S: Serialize + Clone>(app: &AppHandle, owner: &str, event: &str, payload: S) {
+    if let Err(error) = try_emit_to_owner(app, owner, event, payload) {
+        eprintln!("Could not send the event {event} to {owner}: {error}");
+    }
+}
+
+fn session_repo(session: &WindowSession) -> Result<PathBuf, ApiError> {
+    session
+        .repo
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|repo| repo.path.clone())
+        .ok_or_else(|| failed("No repository is open".to_string()))
+}
+
+// The repository open in the project window `label` belongs to.
+pub(crate) fn repo_of(state: &AppState, label: &str) -> Result<PathBuf, ApiError> {
+    let session = session_of(state, label)?;
+    session_repo(&session)
+}
+
+// What each project window has open or is about to have, by the label of its main window: its
+// repository, the root a `repo_open` of it is opening, and, while it has no repository yet, the
+// initial target it was built for. The sessions' lock is let go before any other is taken.
+fn claimed_roots(state: &AppState) -> Vec<(String, PathBuf)> {
+    let sessions: Vec<(String, Arc<WindowSession>)> = state
+        .sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(label, session)| (label.clone(), session.clone()))
+        .collect();
+    let mut claims = Vec::new();
+    let mut with_repo = HashSet::new();
+    for (label, session) in sessions {
+        if let Some(repo) = session.repo.lock().unwrap().as_ref() {
+            with_repo.insert(label.clone());
+            claims.push((label.clone(), repo.path.clone()));
+        }
+        if let Some(opening) = session.opening.lock().unwrap().clone() {
+            claims.push((label, opening));
+        }
+    }
+    let targets = state.initial_targets.lock().unwrap();
+    for (label, target) in targets.stored() {
+        if !with_repo.contains(label) {
+            claims.push((label.to_string(), PathBuf::from(target)));
+        }
+    }
+    claims
+}
+
+// The project window other than `except` whose repository is `root`, compared as canonical
+// paths: a symbolic link or a trailing slash is the same repository. A path that cannot be
+// resolved matches nothing.
+fn window_with_root(open: &[(String, PathBuf)], root: &Path, except: &str) -> Option<String> {
+    let root = fs::canonicalize(root).ok()?;
+    open.iter()
+        .filter(|(label, _)| label != except)
+        .find(|(_, path)| fs::canonicalize(path).is_ok_and(|path| path == root))
+        .map(|(label, _)| label.clone())
+}
+
+// The main window other than `except` that has `root` open or is opening it, among the windows
+// that `exists`. Whoever acts on the answer holds `open_claims`.
+fn claimed_by(
+    state: &AppState,
+    root: &Path,
+    except: &str,
+    exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let claims: Vec<(String, PathBuf)> = claimed_roots(state)
+        .into_iter()
+        .filter(|(label, _)| exists(label))
+        .collect();
+    window_with_root(&claims, root, except)
+}
+
+// A `repo_open` that is opening a root. Dropping it, however the open ends, takes the root out
+// of the session's `opening`, and the initial target the window was built for: from then on its
+// repository, or nothing, is what it has open.
+pub(crate) struct OpeningClaim<'a> {
+    state: &'a AppState,
+    session: Arc<WindowSession>,
+    owner: String,
+}
+
+impl Drop for OpeningClaim<'_> {
+    fn drop(&mut self) {
+        *self.session.opening.lock().unwrap() = None;
+        self.state
+            .initial_targets
+            .lock()
+            .unwrap()
+            .remove(&self.owner);
+    }
+}
+
+// `owner` starts opening `root`, unless another window has it open or is opening it: then that
+// window's label. Checking and claiming go under one lock, so two opens of one root cannot both
+// go ahead.
+fn claim_opening<'a>(
+    state: &'a AppState,
+    owner: &str,
+    root: &Path,
+    exists: impl Fn(&str) -> bool,
+) -> Result<OpeningClaim<'a>, String> {
+    let _claims = state
+        .open_claims
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(label) = claimed_by(state, root, owner, exists) {
+        return Err(label);
+    }
+    let session = session_of(state, owner).map_err(|_| owner.to_string())?;
+    *session.opening.lock().unwrap() = Some(root.to_path_buf());
+    Ok(OpeningClaim {
+        state,
+        session,
+        owner: owner.to_string(),
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NewWindowPlan {
+    // Another window already has the root open, or is opening it.
+    Existing(String),
+    // The label to build, with `root` already stored as its initial target.
+    Build(String),
+}
+
+// Called with `open_claims` held, until the window is built.
+fn plan_new_window(
+    state: &AppState,
+    root: &str,
+    taken: &HashSet<String>,
+    exists: impl Fn(&str) -> bool,
+) -> NewWindowPlan {
+    if let Some(label) = claimed_by(state, Path::new(root), "", exists) {
+        return NewWindowPlan::Existing(label);
+    }
+    let label = windows::next_main_label(taken, &state.main_labels);
+    state
+        .initial_targets
+        .lock()
+        .unwrap()
+        .store(&label, root.to_string());
+    NewWindowPlan::Build(label)
+}
+
+// The open flow's first step: the repository root, as `repo_info` gives it to `repo_open`. A
+// subfolder gives its root; a folder outside any repository fails as `repo_open` does.
+fn resolve_project(target: &Path) -> Result<String, ApiError> {
+    Ok(repo_root(target)?.display().to_string())
+}
+
+#[tauri::command]
+pub async fn project_resolve(target: String) -> Result<String, ApiError> {
+    blocking_api(move || resolve_project(Path::new(&target))).await
+}
+
+// `ProjectUtil.focusProjectWindow`: if another project window has `root` open, or is opening it,
+// it comes to the front (shown, out of the Dock, focused) and nothing opens twice.
+#[tauri::command]
+pub async fn project_focus_open(
+    root: String,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<bool, ApiError> {
+    let own = owner_label(&window);
+    let found = {
+        let _claims = state
+            .open_claims
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        claimed_by(&state, Path::new(&root), &own, |label| {
+            app.get_webview_window(label).is_some()
+        })
+    };
+    Ok(found.is_some_and(|label| focus_main(&app, &label)))
+}
+
+// Brings the main window `label` to the front; `false` if it does not exist. A window hidden as
+// the last one stopped watching: it watches again and reads its state, as the Dock icon does.
+fn focus_main(app: &AppHandle, label: &str) -> bool {
+    let Some(window) = app.get_webview_window(label) else {
+        return false;
+    };
+    if let Err(error) = reveal(&window) {
+        eprintln!("Could not bring {label} to the front: {error}");
+    }
+    resume_and_notify(app, label);
+    true
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewWindow {
+    pub label: String,
+    // `false`: another window already had the root open or was opening it, and was focused.
+    pub created: bool,
+}
+
+// New Window: the next `main-<n>`, built like the configured first window, whose page opens
+// `root` on start (`initial_target`). `root` comes from the page and is resolved to its
+// repository root here, before any claim is checked or stored. `open_claims` covers checking that no window has the root,
+// choosing the label and building the window, so two calls at once never get the same label nor
+// both build a window for one root. Async: building a window from a synchronous command, which
+// runs on the main thread, can block.
+#[tauri::command]
+pub async fn project_new_window(
+    root: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<NewWindow, ApiError> {
+    let root = blocking_api(move || resolve_project(Path::new(&root))).await?;
+    new_main_window(&app, &state, &root)
+}
+
+fn new_main_window(app: &AppHandle, state: &AppState, root: &str) -> Result<NewWindow, ApiError> {
+    let built = build_main_window(app, state, root)?;
+    if built.created {
+        // It counts as open from now on, with the target it was built for.
+        write_open_projects(app);
+    }
+    Ok(built)
+}
+
+fn build_main_window(app: &AppHandle, state: &AppState, root: &str) -> Result<NewWindow, ApiError> {
+    let _claims = state
+        .open_claims
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let mut config = app
+        .config()
+        .app
+        .windows
+        .first()
+        .cloned()
+        .ok_or_else(|| failed("The app has no window configuration".to_string()))?;
+    let taken: HashSet<String> = app
+        .webview_windows()
+        .into_keys()
+        .filter(|label| windows::kind_of(label) == Some(WindowKind::Main))
+        .collect();
+    let exists = |label: &str| app.get_webview_window(label).is_some();
+    let label = match plan_new_window(state, root, &taken, exists) {
+        NewWindowPlan::Existing(label) => {
+            focus_main(app, &label);
+            return Ok(NewWindow {
+                label,
+                created: false,
+            });
+        }
+        NewWindowPlan::Build(label) => label,
+    };
+    config.label = label.clone();
+    config.url = WebviewUrl::App("index.html".into());
+    if let Err(error) =
+        WebviewWindowBuilder::from_config(app, &config).and_then(|builder| builder.build())
+    {
+        state.initial_targets.lock().unwrap().remove(&label);
+        return Err(failed(format!("Could not open a new window: {error}")));
+    }
+    // Still under `open_claims`: the order is the order the windows were built in.
+    state.open_order.lock().unwrap().push(label.clone());
+    Ok(NewWindow {
+        label,
+        created: true,
+    })
+}
+
+// A project window, the main one or an auxiliary one, gained the focus. A focus change between
+// project windows rewrites the open list and hands the menu to the new owner, which is asked to
+// send its menu state again. The event says which of its windows got the focus: the main page
+// says Current File itself unless its viewer does.
+pub fn main_focused(app: &AppHandle, label: &str) {
+    if let Some(owner) = menu_follows(&app.state::<AppState>(), label) {
+        write_open_projects(app);
+        refresh_recent_menu(app);
+        // What the menu shows is the previous owner's until this one says its own state.
+        emit_to_owner(app, &owner, MENU_OWNER_GAINED_EVENT, label.to_string());
+    }
+}
+
+// The project window whose state the menu bar shows: the one that had the focus last, an
+// auxiliary window of it included.
+pub fn menu_owner(state: &AppState) -> String {
+    state.last_focused_main.lock().unwrap().clone()
+}
+
+// `label` gained the focus: its project window owns the menu now. The new owner if that changed
+// it; a window that belongs to no project window, or the owner it already was, gives `None`.
+fn menu_follows(state: &AppState, label: &str) -> Option<String> {
+    let owner = windows::owner_of(label)?;
+    let mut last = state.last_focused_main.lock().unwrap();
+    if *last == owner {
+        return None;
+    }
+    *last = owner.clone();
+    Some(owner)
+}
+
+// Whether the menu takes what `label` says about its state: only the owner's windows do.
+fn menu_accepts(state: &AppState, label: &str) -> bool {
+    windows::owner_of(label).is_some_and(|owner| owner == menu_owner(state))
+}
+
+// The repository of the menu's owner: the one the Recent Projects submenu leaves out.
+fn menu_repo(state: &AppState) -> Option<String> {
+    let session = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&menu_owner(state))
+        .cloned()?;
+    session_repo(&session)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+// The last focused main window's label, or another main window's if it has gone. Without any,
+// the first window's, which may not exist yet.
+fn last_main_label(app: &AppHandle) -> String {
+    let last = menu_owner(&app.state::<AppState>());
+    if app.get_webview_window(&last).is_some() {
+        return last;
+    }
+    let mut mains: Vec<String> = app
+        .webview_windows()
+        .into_keys()
+        .filter(|label| windows::kind_of(label) == Some(WindowKind::Main))
+        .collect();
+    mains.sort_by_key(|label| (label != MAIN_WINDOW, label.len(), label.clone()));
+    mains.into_iter().next().unwrap_or(last)
+}
+
+// macOS's open-documents event (`open -a Ramify <folder>`, a folder dropped on the Dock icon):
+// the last focused main window runs the open flow with it. A page that has not yet asked for its
+// initial target takes it as that target instead, which covers the event that comes with the
+// app's launch. Only the first path is used: each would ask its own question.
+pub fn open_paths(app: &AppHandle, paths: Vec<PathBuf>) {
+    let Some(path) = paths.into_iter().next() else {
+        return;
+    };
+    let path = path.display().to_string();
+    let label = last_main_label(app);
+    {
+        let state = app.state::<AppState>();
+        let mut targets = state.initial_targets.lock().unwrap();
+        if !targets.asked(&label) {
+            targets.store(&label, path);
+            return;
+        }
+    }
+    if focus_main(app, &label) {
+        emit_to_owner(app, &label, OPEN_PATH_EVENT, path);
     }
 }
 
@@ -952,14 +1459,140 @@ pub fn initial_repo() -> Option<String> {
     first_argument(env::args_os())
 }
 
+// Shown, out of the Dock if it was minimized, and focused.
 pub fn reveal(window: &WebviewWindow) -> tauri::Result<()> {
     window.show()?;
+    if window.is_minimized()? {
+        window.unminimize()?;
+    }
     window.set_focus()
 }
 
+// A page shows its window once it has started. After the windows a start reopened have all shown
+// themselves, the one focused last in the previous session comes to the front.
 #[tauri::command]
-pub fn show_window(window: WebviewWindow) -> Result<(), ApiError> {
-    reveal(&window).map_err(|error| failed(error.to_string()))
+pub fn show_window(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    reveal(&window).map_err(|error| failed(error.to_string()))?;
+    let due = state
+        .reopen_focus
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|focus| focus.shown(window.label()));
+    if let Some(label) = due {
+        focus_main(&app, &label);
+    }
+    Ok(())
+}
+
+// Reopening on start (§5.8), for the first `main` page's initial target when the command line
+// gives none: with `Reopen projects on startup`, the open list's first project, which `main`
+// opens. The others wait for `open_projects_reopen`. The paths that no longer exist are taken out
+// of the list now. Only once per process: a later call gives nothing.
+pub(crate) fn reopen_first(app: &AppHandle) -> Option<String> {
+    let state = app.state::<AppState>();
+    let mut stage = state.reopen.lock().unwrap();
+    if !matches!(*stage, ReopenStage::NotAsked) {
+        return None;
+    }
+    *stage = ReopenStage::Done;
+    if !current_settings(app).is_ok_and(|settings| settings.reopen_projects) {
+        return None;
+    }
+    let base = app.path().app_data_dir().ok()?;
+    let open = match open_projects::load(&base) {
+        Ok(open) => open,
+        Err(error) => {
+            eprintln!("Could not read the open projects: {error}");
+            return None;
+        }
+    };
+    let plan = open_projects::plan(&open, |path| Path::new(path).exists());
+    if !plan.missing.is_empty() {
+        if let Err(error) = open_projects::save(&base, &plan.kept()) {
+            eprintln!("Could not save the open projects: {error}");
+        }
+    }
+    let first = plan.first.clone();
+    if first.is_some() || !plan.missing.is_empty() {
+        // From here on `main` showing itself counts.
+        *state.reopen_focus.lock().unwrap() = Some(ReopenFocus::default());
+        *stage = ReopenStage::Planned(plan);
+    }
+    first
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct Reopened {
+    // The paths that no longer exist, which the initial window reports.
+    pub missing: Vec<String>,
+}
+
+// The rest of reopening, asked by the first `main` page once it has its initial target: each
+// other project of the open list in a new main window, in order, and at the end the one focused
+// last comes to the front. Nothing for any other window, or once it has run.
+#[tauri::command]
+pub async fn open_projects_reopen(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Reopened, ApiError> {
+    if window.label() != MAIN_WINDOW {
+        return Ok(Reopened::default());
+    }
+    let taken = {
+        let mut stage = state.reopen.lock().unwrap();
+        match std::mem::take(&mut *stage) {
+            ReopenStage::Planned(plan) => {
+                *stage = ReopenStage::Done;
+                Some(plan)
+            }
+            other => {
+                *stage = other;
+                None
+            }
+        }
+    };
+    let Some(plan) = taken else {
+        return Ok(Reopened::default());
+    };
+    let mut labels: HashMap<String, String> = HashMap::new();
+    let mut waiting = HashSet::new();
+    if let Some(first) = &plan.first {
+        labels.insert(first.clone(), MAIN_WINDOW.to_string());
+        waiting.insert(MAIN_WINDOW.to_string());
+    }
+    for root in &plan.rest {
+        match new_main_window(&app, &state, root) {
+            Ok(NewWindow { label, created }) => {
+                if created {
+                    waiting.insert(label.clone());
+                }
+                labels.entry(root.clone()).or_insert(label);
+            }
+            Err(error) => eprintln!("Could not reopen {root}: {}", error.message),
+        }
+    }
+    let focus = plan
+        .last_focused
+        .as_ref()
+        .and_then(|path| labels.get(path).cloned());
+    let due = state
+        .reopen_focus
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|reopen| reopen.planned(waiting, focus));
+    if let Some(label) = due {
+        focus_main(&app, &label);
+    }
+    Ok(Reopened {
+        missing: plan.missing,
+    })
 }
 
 // Closing the diff window from inside, without going through `CloseRequested`.
@@ -1011,29 +1644,66 @@ pub fn is_quit_item(text: &str) -> bool {
 
 // What is written in the diff must reach the disk before another operation reads it, like IntelliJ before
 // a commit. Never with the repository lock held: saving needs it too.
+// Only the diff window of `window`'s project window is asked.
 pub(crate) async fn flush_diff_window(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
     action: &'static str,
 ) -> Result<(), ApiError> {
-    let Some(window) = app.get_webview_window(DIFF_WINDOW) else {
+    flush_diff_of(app, state, window.label(), action).await
+}
+
+// Queues the sender of one flush in the session of `label`'s owner, and says which diff window
+// to ask. `None` when that window does not exist: there is nothing to save.
+fn flush_request(
+    state: &AppState,
+    label: &str,
+    exists: impl FnOnce(&str) -> bool,
+) -> Result<Option<(String, Receiver<bool>)>, ApiError> {
+    let session = session_of(state, label)?;
+    let diff = owned_label(WindowKind::Diff, label);
+    if !exists(&diff) {
+        return Ok(None);
+    }
+    let (send, answer) = mpsc::channel();
+    session.diff_flush.lock().unwrap().push_back(send);
+    Ok(Some((diff, answer)))
+}
+
+async fn flush_diff_of(
+    app: &AppHandle,
+    state: &AppState,
+    label: &str,
+    action: &'static str,
+) -> Result<(), ApiError> {
+    let Some((diff, answer)) =
+        flush_request(state, label, |diff| app.get_webview_window(diff).is_some())?
+    else {
         return Ok(());
     };
-    let (send, answer) = mpsc::channel();
-    state.diff_flush.lock().unwrap().push_back(send);
-    app.emit_to(DIFF_WINDOW, DIFF_FLUSH_EVENT, ())
+    let window = app.get_webview_window(&diff);
+    app.emit_to(diff.as_str(), DIFF_FLUSH_EVENT, ())
         .map_err(|error| failed(error.to_string()))?;
     let flushed = blocking_api(move || wait_for_diff(&answer, DIFF_FLUSH_WAIT, action)).await;
     if flushed.is_err() {
         // The error is in that window, which may be hidden.
-        let _ = reveal(&window);
+        if let Some(window) = window {
+            let _ = reveal(&window);
+        }
     }
     flushed
 }
 
 #[tauri::command]
-pub fn diff_flushed(saved: bool, state: State<'_, AppState>) {
-    answer_flush(&mut state.diff_flush.lock().unwrap(), saved);
+pub fn diff_flushed(
+    saved: bool,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let session = session_of(&state, window.label())?;
+    answer_flush(&mut session.diff_flush.lock().unwrap(), saved);
+    Ok(())
 }
 
 // What the merge page answers to `merge-leave`: the acknowledgement, and then whether it can be closed.
@@ -1077,28 +1747,224 @@ fn must_ask_merge(exists: bool, ready: bool) -> bool {
 
 // What would throw away the half-done merge goes first through the window's Cancel: with the result
 // changed it asks `Cancel Merge`, and if the user carries on with the merge nothing is done.
+// Only the merge window of `window`'s project window is asked.
 pub(crate) async fn leave_merge_window(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
     action: &'static str,
 ) -> Result<(), ApiError> {
-    let window = app.get_webview_window(MERGE_WINDOW);
-    let ready = *state.merge_ready.lock().unwrap();
-    let Some(window) = window.filter(|_| must_ask_merge(true, ready)) else {
+    leave_merge_of(app, state, window.label(), action).await
+}
+
+async fn leave_merge_of(
+    app: &AppHandle,
+    state: &AppState,
+    label: &str,
+    action: &'static str,
+) -> Result<(), ApiError> {
+    let Some((merge, answer)) = merge_leave_request(state, label, |merge| {
+        app.get_webview_window(merge).is_some()
+    })?
+    else {
         return Ok(());
     };
-    let (send, answer) = mpsc::channel();
-    state.merge_leave.lock().unwrap().push_back(send);
-    let _ = reveal(&window);
-    app.emit_to(MERGE_WINDOW, MERGE_LEAVE_EVENT, ())
+    // The question is in that window, which may be hidden or behind another project window.
+    if let Some(window) = app.get_webview_window(&merge) {
+        let _ = reveal(&window);
+    }
+    app.emit_to(merge.as_str(), MERGE_LEAVE_EVENT, ())
         .map_err(|error| failed(error.to_string()))?;
     blocking_api(move || wait_for_merge(&answer, MERGE_ACK_WAIT, MERGE_ANSWER_WAIT, action)).await
 }
 
 // The acknowledgement does not take anyone out of the queue: the answer arrives afterwards to that same one.
 #[tauri::command]
-pub fn merge_leave_received(state: State<'_, AppState>) {
-    let mut waiting = state.merge_leave.lock().unwrap();
+pub fn merge_leave_received(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let session = session_of(&state, window.label())?;
+    answer_merge_received(&session);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn merge_left(
+    closed: bool,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let session = session_of(&state, window.label())?;
+    answer_merge_leave(&session, closed);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn merge_window_ready(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let session = session_of(&state, window.label())?;
+    *session.merge_ready.lock().unwrap() = true;
+    Ok(())
+}
+
+// Hiding the last project window stops watching its repository; what is unsaved is saved first,
+// and if that is not possible everything stays as it was and the reason is given in that window.
+// Its merge window is only hidden, so it is not asked.
+fn leave(
+    app: AppHandle,
+    owner: String,
+    action: &'static str,
+    proceed: impl FnOnce(&AppHandle, &str) + Send + 'static,
+) {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let flushed = flush_diff_of(&app, &state, &owner, action).await;
+        after_flush(
+            flushed,
+            || proceed(&app, &owner),
+            |message| emit_to_owner(&app, &owner, LEAVE_REFUSED_EVENT, message),
+        );
+    });
+}
+
+// The leave flow of the project window `owner`, for closing it or quitting: its diff window saves
+// what was written, its merge window is left (with its `Cancel Merge` question, shown in that
+// merge window), and its commit message draft goes to its changelist. A refusal is the error.
+async fn leave_window(app: &AppHandle, owner: &str, action: &'static str) -> Result<(), ApiError> {
+    let state = app.state::<AppState>();
+    flush_diff_of(app, &state, owner, action).await?;
+    leave_merge_of(app, &state, owner, action).await?;
+    save_commit_draft(app, &state, owner).await;
+    Ok(())
+}
+
+// The main page answers `commit-draft-save` once the draft is saved; one that does not answer in
+// time (it hangs, or is gone) does not keep the window open.
+const COMMIT_DRAFT_SAVE_EVENT: &str = "commit-draft-save";
+const COMMIT_DRAFT_WAIT: Duration = Duration::from_secs(5);
+
+// Step 2 of §5.8: the commit message draft of the window `owner` (the Commit Changes dialog's, or
+// the Commit tool window's) is saved to the changelist comment, so it comes back when that
+// repository is opened again.
+async fn save_commit_draft(app: &AppHandle, state: &AppState, owner: &str) {
+    if app.get_webview_window(owner).is_none() {
+        return;
+    }
+    let Ok(session) = session_of(state, owner) else {
+        return;
+    };
+    let (send, answer) = mpsc::channel();
+    session.draft_saved.lock().unwrap().push_back(send);
+    if let Err(error) = app.emit_to(owner, COMMIT_DRAFT_SAVE_EVENT, ()) {
+        eprintln!("Could not ask {owner} to save its commit message: {error}");
+        return;
+    }
+    let _ =
+        tauri::async_runtime::spawn_blocking(move || answer.recv_timeout(COMMIT_DRAFT_WAIT)).await;
+}
+
+#[tauri::command]
+pub fn commit_draft_saved(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let session = session_of(&state, window.label())?;
+    let mut waiting = session.draft_saved.lock().unwrap();
+    while let Some(answer) = waiting.pop_front() {
+        if answer.send(()).is_ok() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+// The main windows that exist, in the order they were opened.
+fn main_windows(app: &AppHandle) -> Vec<String> {
+    let mut mains: Vec<String> = app
+        .webview_windows()
+        .into_keys()
+        .filter(|label| windows::kind_of(label) == Some(WindowKind::Main))
+        .collect();
+    let order = app.state::<AppState>().open_order.lock().unwrap().clone();
+    mains.sort_by_key(|label| {
+        let place = order.iter().position(|known| known == label);
+        (place.is_none(), place, label.len(), label.clone())
+    });
+    mains
+}
+
+// Every project window's leave flow, in turn; a refusal in any of them stops the quit for all,
+// and its reason is shown in that window. Then a task between stashing and restoring must finish
+// first: cancelled, it gives back what was stashed. With the deadline passed it quits anyway, and
+// what was stashed is noted down for next time. The open list is not written: it keeps what was
+// open at quit.
+pub fn quit(app: AppHandle) {
+    // From here on the open list is not written: focus changes while windows go must not leave
+    // a partial list. A quit that does not go ahead writes again. A second Quit while one runs
+    // does nothing.
+    if !begin_quit(&app.state::<AppState>()) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let exiting = app.clone();
+        let closed = app.clone();
+        let left = quit_flow(
+            main_windows(&app),
+            |owner| {
+                let app = app.clone();
+                async move { leave_window(&app, &owner, QUIT_ACTION).await }
+            },
+            move |owner| {
+                closed
+                    .state::<AppState>()
+                    .closed_owners
+                    .lock()
+                    .unwrap()
+                    .contains(owner)
+            },
+            move || {
+                thread::spawn(move || {
+                    exiting.state::<AppState>().tasks.finish_writes(QUIT_WAIT);
+                    exiting.exit(0);
+                });
+            },
+        )
+        .await;
+        if let Err((owner, message)) = left {
+            app.state::<AppState>()
+                .quitting
+                .store(false, Ordering::SeqCst);
+            emit_to_owner(&app, &owner, LEAVE_REFUSED_EVENT, message);
+        }
+    });
+}
+
+// Queues a waiter for the merge window of `label`'s owner, and says which window to ask. `None`
+// when that window does not exist or its page does not listen yet: there is no merge to lose.
+fn merge_leave_request(
+    state: &AppState,
+    label: &str,
+    exists: impl FnOnce(&str) -> bool,
+) -> Result<Option<(String, Receiver<LeaveReply>)>, ApiError> {
+    let session = session_of(state, label)?;
+    let merge = owned_label(WindowKind::Merge, label);
+    let ready = *session.merge_ready.lock().unwrap();
+    if !must_ask_merge(exists(&merge), ready) {
+        return Ok(None);
+    }
+    let (send, answer) = mpsc::channel();
+    session.merge_leave.lock().unwrap().push_back(send);
+    Ok(Some((merge, answer)))
+}
+
+// The merge page's acknowledgement of `merge-leave`.
+// The acknowledgement does not take anyone out of the queue: the answer arrives afterwards to that
+// same one.
+fn answer_merge_received(session: &WindowSession) {
+    let mut waiting = session.merge_leave.lock().unwrap();
     while let Some(front) = waiting.front() {
         if front.send(LeaveReply::Received).is_ok() {
             break;
@@ -1107,9 +1973,9 @@ pub fn merge_leave_received(state: State<'_, AppState>) {
     }
 }
 
-#[tauri::command]
-pub fn merge_left(closed: bool, state: State<'_, AppState>) {
-    let mut waiting = state.merge_leave.lock().unwrap();
+// The merge page's answer to `merge-leave`: whether it can be closed.
+fn answer_merge_leave(session: &WindowSession, closed: bool) {
+    let mut waiting = session.merge_leave.lock().unwrap();
     while let Some(answer) = waiting.pop_front() {
         if answer.send(LeaveReply::Answer(closed)).is_ok() {
             break;
@@ -1117,57 +1983,412 @@ pub fn merge_left(closed: bool, state: State<'_, AppState>) {
     }
 }
 
-#[tauri::command]
-pub fn merge_window_ready(state: State<'_, AppState>) {
-    *state.merge_ready.lock().unwrap() = true;
+// Marks the app as quitting; `false` if a quit already runs.
+fn begin_quit(state: &AppState) -> bool {
+    state
+        .quitting
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
 }
 
-// Quitting or closing the main one stops watching the repository and, on quit, throws away whatever is
-// unsaved: it is saved first, and if that is not possible everything stays as it was and the reason is given.
-// Quitting also throws away the half-done merge; closing the main one only hides its window.
-fn leave(
-    app: AppHandle,
-    action: &'static str,
-    ask_merge: bool,
-    proceed: impl FnOnce(&AppHandle) + Send + 'static,
-) {
-    tauri::async_runtime::spawn(async move {
-        let state = app.state::<AppState>();
-        let mut flushed = flush_diff_window(&app, &state, action).await;
-        if flushed.is_ok() && ask_merge {
-            flushed = leave_merge_window(&app, &state, action).await;
+// Quit's leave flow: each project window in turn, as `leave` runs it. The first refusal stops it,
+// with its window and its reason, and `finish` (waiting for writes and exiting) is not called;
+// the windows after it are not asked. A window whose close has finished (`closed`) is not asked,
+// and a refusal from one that finished closing while it was asked does not count: it has gone.
+async fn quit_flow<F, Fut>(
+    owners: Vec<String>,
+    leave: F,
+    closed: impl Fn(&str) -> bool,
+    finish: impl FnOnce(),
+) -> Result<(), (String, String)>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), ApiError>>,
+{
+    let mut leave = leave;
+    for owner in owners {
+        if closed(&owner) {
+            continue;
         }
-        after_flush(
-            flushed,
-            || proceed(&app),
-            |message| {
-                let _ = app.emit_to(MAIN_WINDOW, LEAVE_REFUSED_EVENT, message);
-            },
-        );
-    });
-}
-
-// A task between stashing and restoring must finish first: cancelled, it gives back what was stashed. With the
-// deadline passed it quits anyway, and what was stashed is noted down for next time.
-pub fn quit(app: AppHandle) {
-    leave(app, QUIT_ACTION, true, |app| {
-        let app = app.clone();
-        thread::spawn(move || {
-            app.state::<AppState>().tasks.finish_writes(QUIT_WAIT);
-            app.exit(0);
-        });
-    });
-}
-
-pub fn close_main(app: AppHandle) {
-    leave(app, CLOSE_ACTION, false, |app| {
-        for label in [DIFF_WINDOW, MERGE_WINDOW, VIEWER_WINDOW, MAIN_WINDOW] {
-            if let Some(window) = app.get_webview_window(label) {
-                let _ = window.hide();
+        if let Err(error) = leave(owner.clone()).await {
+            if closed(&owner) {
+                continue;
             }
+            return Err((owner, error.message));
         }
-        stop_watching(&app.state::<AppState>());
+    }
+    finish();
+    Ok(())
+}
+
+// Steps 3 to 5 of closing the project window `owner` (§5.8), once its leave flow went ahead:
+// 3. its reads are cancelled and its writes and remote tasks waited for, up to `limit`, while it
+//    starts no new one. A question they ask meanwhile still reaches the window, which is there
+//    until the end. Other windows go on.
+// 4. its auxiliary windows are destroyed (`destroy_aux`);
+// 5. its session goes, which stops its watcher, with its console lines and its place in the
+//    open list.
+// Before step 4 the diff window saves again (`flush`), and then the commit message draft
+// (`save_draft`): the window stays usable during the wait, and what was typed in either meanwhile
+// would go with it. Then, if every other main window went meanwhile (`others_remain`), this one is
+// the last: it is hidden instead, keeping its session and its place in the open list. The check
+// is here, before anything is destroyed, so that hiding still has everything to keep.
+fn finish_closing(
+    state: &AppState,
+    owner: &str,
+    limit: Duration,
+    flush: impl FnOnce() -> Result<(), ApiError>,
+    save_draft: impl FnOnce(),
+    others_remain: impl FnOnce() -> bool,
+    destroy_aux: impl FnOnce(),
+) -> CloseOutcome {
+    if !state.tasks.finish_writes_of(owner, limit) {
+        state.tasks.resume_writes_of(owner);
+        return CloseOutcome::TimedOut;
+    }
+    if let Err(error) = flush() {
+        state.tasks.resume_writes_of(owner);
+        return CloseOutcome::Refused(error.message);
+    }
+    save_draft();
+    if !others_remain() {
+        state.tasks.resume_writes_of(owner);
+        return CloseOutcome::Hide;
+    }
+    destroy_aux();
+    forget_window(state, owner);
+    CloseOutcome::Closed
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CloseOutcome {
+    Closed,
+    // Its writes did not finish in time: nothing was closed and the window writes again.
+    TimedOut,
+    // The diff window could not save: the same, with the reason.
+    Refused(String),
+    // Every other main window went meanwhile: the window is hidden, as the last one is.
+    Hide,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CloseStart {
+    Close,
+    // The last main window, not counting those already closing: hidden, as today.
+    Hide,
+    AlreadyClosing,
+}
+
+// How a close of `owner` starts, among the main windows `mains` that exist. Deciding and marking
+// it as closing go under one lock, so two closes at once never both destroy their window.
+fn start_close(state: &AppState, owner: &str, mains: &[String]) -> CloseStart {
+    let mut closing = state.closing_windows.lock().unwrap();
+    if closing.contains(owner) {
+        return CloseStart::AlreadyClosing;
+    }
+    let others = mains
+        .iter()
+        .any(|main| main != owner && !closing.contains(main));
+    if !others {
+        return CloseStart::Hide;
+    }
+    closing.insert(owner.to_string());
+    CloseStart::Close
+}
+
+// Whether a main window other than `owner` stays: one of `mains` that is not closing itself.
+fn other_main_remains(state: &AppState, owner: &str, mains: &[String]) -> bool {
+    let closing = state.closing_windows.lock().unwrap();
+    mains
+        .iter()
+        .any(|main| main != owner && !closing.contains(main))
+}
+
+// A window that is closing, or closed, opens no repository: its session would outlive it.
+fn refuse_if_closing(state: &AppState, owner: &str) -> Result<(), ApiError> {
+    refuse_while_closing(state, owner, OPEN_ACTION)
+}
+
+fn refuse_while_closing(state: &AppState, owner: &str, action: &str) -> Result<(), ApiError> {
+    let closed = state.closed_owners.lock().unwrap().contains(owner);
+    if closed || state.closing_windows.lock().unwrap().contains(owner) {
+        return Err(failed(format!("The window is closing: {action}")));
+    }
+    Ok(())
+}
+
+// The session a merge window of `label`'s project window opens in. A closing window opens none:
+// its leave flow has already asked its merge window, and a new one would be destroyed with it.
+fn merge_open_session(state: &AppState, label: &str) -> Result<Arc<WindowSession>, ApiError> {
+    let owner = windows::owner_of(label).unwrap_or_else(|| MAIN_WINDOW.to_string());
+    refuse_while_closing(state, &owner, MERGE_OPEN_ACTION)?;
+    session_of(state, label)
+}
+
+// Writes the open list into `base`, unless the app is quitting: the list keeps what was open at
+// quit, whatever the windows do while the app goes. `false` if nothing was written.
+fn write_open_list(
+    state: &AppState,
+    base: &Path,
+    exists: impl Fn(&str) -> bool,
+) -> std::io::Result<bool> {
+    let _writing = state
+        .open_list_write
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if state.quitting.load(Ordering::SeqCst) {
+        return Ok(false);
+    }
+    open_projects::save(base, &open_snapshot(state, exists))?;
+    Ok(true)
+}
+
+fn forget_window(state: &AppState, owner: &str) {
+    let session = {
+        let mut sessions = state.sessions.lock().unwrap();
+        state
+            .closed_owners
+            .lock()
+            .unwrap()
+            .insert(owner.to_string());
+        sessions.remove(owner)
+    };
+    if let Some(session) = session {
+        replace_watcher(&session, None);
+        viewer::release(&session);
+        block_history::release(&state.tasks, &session);
+    }
+    state.console.forget(owner);
+    SHELF_FOLDERS.close(owner);
+    state.initial_targets.lock().unwrap().remove(owner);
+    let first = {
+        let mut order = state.open_order.lock().unwrap();
+        order.retain(|label| label != owner);
+        order.first().cloned()
+    };
+    // The window macOS focuses next says so itself (`main_focused`); until then, another one.
+    let mut last = state.last_focused_main.lock().unwrap();
+    if *last == owner {
+        *last = first.unwrap_or_else(|| MAIN_WINDOW.to_string());
+    }
+}
+
+// Each main window of `open_order` that `exists`, in opening order, with its repository or, while
+// its first open has not ended, the target it was built for (a project counts as open from the
+// moment it starts opening).
+fn window_repos(state: &AppState, exists: impl Fn(&str) -> bool) -> Vec<(String, String)> {
+    let order: Vec<String> = state
+        .open_order
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|label| exists(label))
+        .cloned()
+        .collect();
+    let sessions: HashMap<String, Arc<WindowSession>> = state.sessions.lock().unwrap().clone();
+    let mut open = Vec::new();
+    for label in order {
+        let repo = sessions
+            .get(&label)
+            .and_then(|session| session_repo(session).ok())
+            .map(|path| path.display().to_string());
+        let target = || {
+            let targets = state.initial_targets.lock().unwrap();
+            let target = targets
+                .stored()
+                .find(|(stored, _)| *stored == label)
+                .map(|(_, target)| target.to_string());
+            target
+        };
+        if let Some(repo) = repo.or_else(target) {
+            open.push((label, repo));
+        }
+    }
+    open
+}
+
+// The open list as the windows are now (`window_repos`), and the one focused last.
+fn open_snapshot(state: &AppState, exists: impl Fn(&str) -> bool) -> OpenProjects {
+    let open = window_repos(state, exists);
+    let focused = state.last_focused_main.lock().unwrap().clone();
+    open_projects::snapshot(&open, Some(&focused))
+}
+
+// The project widget's popup: the other windows' repositories and the recent ones that are not
+// open in any window (`recent::projects_list`).
+#[tauri::command]
+pub async fn projects_list(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<recent::ProjectsList, ApiError> {
+    let own = owner_label(&window);
+    let windows = window_repos(&state, |label| app.get_webview_window(label).is_some());
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| failed(error.to_string()))?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    blocking_api(move || {
+        let recent = recent::load(&base).map_err(|error| failed(error.to_string()))?;
+        Ok(recent::projects_list(
+            &windows,
+            &own,
+            &recent,
+            home.as_deref(),
+        ))
+    })
+    .await
+}
+
+// Rewrites the open list (§5.8): on an open, This Window, a window close and a focus change
+// between main windows, never on quit. A failure is only logged: the list is an aid.
+pub(crate) fn write_open_projects(app: &AppHandle) {
+    let Ok(base) = app.path().app_data_dir() else {
+        return;
+    };
+    let state = app.state::<AppState>();
+    if let Err(error) = write_open_list(&state, &base, |label| {
+        app.get_webview_window(label).is_some()
+    }) {
+        eprintln!("Could not save the open projects: {error}");
+    }
+}
+
+// What opening another repository destroys in the project window `owner`: its auxiliary windows,
+// which showed the previous repository.
+fn aux_labels(owner: &str) -> Vec<String> {
+    [
+        WindowKind::Diff,
+        WindowKind::Merge,
+        WindowKind::Viewer,
+        WindowKind::SelectionHistory,
+    ]
+    .map(|kind| windows::label_for(kind, owner))
+    .to_vec()
+}
+
+// What closing the project window `owner` hides: its auxiliary windows and then itself.
+fn close_labels(owner: &str) -> Vec<String> {
+    let mut labels = aux_labels(owner);
+    labels.push(windows::label_for(WindowKind::Main, owner));
+    labels
+}
+
+// The red button or ⌘W on the main window `label` (§5.8). The last main window keeps today's
+// behaviour: it is hidden with its auxiliary windows, its repository stays open (and in the open
+// list), and the Dock shows it again. Any other one is closed: its leave flow, its commit message
+// draft, the wait for its writes, its auxiliary windows, its session, the open list, and then the
+// window itself. A refusal or a wait past the limit keeps everything open and says why there.
+pub fn close_project_window(app: AppHandle, label: &str) {
+    let owner = label.to_string();
+    let mains = existing_mains(&app);
+    match start_close(&app.state::<AppState>(), &owner, &mains) {
+        // A second click while the first close runs adds nothing.
+        CloseStart::AlreadyClosing => {}
+        CloseStart::Hide => hide_last_window(app, owner),
+        CloseStart::Close => {
+            tauri::async_runtime::spawn(async move {
+                let closed = close_steps(&app, &owner).await;
+                app.state::<AppState>()
+                    .closing_windows
+                    .lock()
+                    .unwrap()
+                    .remove(&owner);
+                if let Err(message) = closed {
+                    emit_to_owner(&app, &owner, LEAVE_REFUSED_EVENT, message);
+                }
+            });
+        }
+    }
+}
+
+// The main windows that exist now.
+fn existing_mains(app: &AppHandle) -> Vec<String> {
+    app.webview_windows()
+        .into_keys()
+        .filter(|label| windows::kind_of(label) == Some(WindowKind::Main))
+        .collect()
+}
+
+// Today's close of the last window: everything is hidden after the diff window saves.
+fn hide_last_window(app: AppHandle, owner: String) {
+    leave(app, owner, CLOSE_ACTION, |app, owner| {
+        hide_windows(app, owner)
     });
+}
+
+fn hide_windows(app: &AppHandle, owner: &str) {
+    for label in close_labels(owner) {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.hide();
+        }
+    }
+    stop_watching(&app.state::<AppState>(), owner);
+}
+
+async fn close_steps(app: &AppHandle, owner: &str) -> Result<(), String> {
+    // 1 and 2: the leave flow and the commit message draft.
+    leave_window(app, owner, CLOSE_ACTION)
+        .await
+        .map_err(|error| error.message)?;
+    // 3 to 5, with the diff window and the commit message draft saved again right before they go.
+    let (handle, closing) = (app.clone(), owner.to_string());
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppState>();
+        finish_closing(
+            &state,
+            &closing,
+            QUIT_WAIT,
+            // A thread of the blocking pool may wait for a future.
+            || {
+                tauri::async_runtime::block_on(flush_diff_of(
+                    &handle,
+                    &handle.state::<AppState>(),
+                    &closing,
+                    CLOSE_ACTION,
+                ))
+            },
+            || {
+                tauri::async_runtime::block_on(save_commit_draft(
+                    &handle,
+                    &handle.state::<AppState>(),
+                    &closing,
+                ))
+            },
+            || other_main_remains(&state, &closing, &existing_mains(&handle)),
+            || {
+                for label in aux_labels(&closing) {
+                    if let Some(window) = handle.get_webview_window(&label) {
+                        let _ = window.destroy();
+                    }
+                }
+            },
+        )
+    })
+    .await
+    .unwrap_or(CloseOutcome::TimedOut);
+    match outcome {
+        CloseOutcome::Closed => {}
+        CloseOutcome::TimedOut => {
+            return Err(format!(
+                "The window's tasks did not finish in time: {CLOSE_ACTION}"
+            ))
+        }
+        CloseOutcome::Refused(message) => return Err(message),
+        // Every other main window went meanwhile: this one is the last, and stays hidden.
+        CloseOutcome::Hide => {
+            hide_windows(app, owner);
+            return Ok(());
+        }
+    }
+    // 6. The open list without it.
+    write_open_projects(app);
+    // 7.
+    if let Some(window) = app.get_webview_window(owner) {
+        window.destroy().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 // `terminate:`, what the stock Quit does, does not let the exit be stopped: it is replaced with one of our own
@@ -1273,13 +2494,7 @@ pub fn refresh_recent_menu(app: &AppHandle) {
             return;
         }
     };
-    let current = app
-        .state::<AppState>()
-        .repo
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|session| session.path.to_string_lossy().into_owned());
+    let current = menu_repo(&app.state::<AppState>());
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let entries = recent::menu_entries(&projects, current.as_deref(), home.as_deref());
     if let Err(error) = fill_recent_menu(app, &entries) {
@@ -1319,15 +2534,17 @@ struct OpenRecent {
 }
 
 // `ReopenProjectAction`: the main window opens it, or asks about a path that no longer exists.
+// The last focused main window: `main` may have been closed.
 pub fn open_recent(app: &AppHandle, path: &str) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+    let label = last_main_label(app);
+    if let Some(window) = app.get_webview_window(&label) {
         let _ = reveal(&window);
-        resume_and_notify(app);
+        resume_and_notify(app, &label);
         let payload = OpenRecent {
             path: path.to_string(),
             exists: Path::new(path).exists(),
         };
-        let _ = window.emit_to(MAIN_WINDOW, OPEN_RECENT_EVENT, payload);
+        emit_to_owner(app, &label, OPEN_RECENT_EVENT, payload);
     }
 }
 
@@ -1549,7 +2766,14 @@ pub fn is_git_menu_item(id: &str) -> bool {
 // The entries of the operation in progress that apply now: the interface computes them from the repository
 // state every time it changes. `Github.View.Pull.Request` among them puts the GitHub submenu in.
 #[tauri::command]
-pub fn git_menu_enable(ids: Vec<String>, app: AppHandle) -> Result<(), ApiError> {
+pub fn git_menu_enable(
+    ids: Vec<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<(), ApiError> {
+    if !menu_accepts(&app.state::<AppState>(), window.label()) {
+        return Ok(());
+    }
     let Some(menu) = app.menu() else {
         return Ok(());
     };
@@ -1573,7 +2797,11 @@ pub fn git_menu_current_file(
     title: String,
     items: Vec<CurrentFileItem>,
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<(), ApiError> {
+    if !menu_accepts(&app.state::<AppState>(), window.label()) {
+        return Ok(());
+    }
     let set = || -> tauri::Result<()> {
         let Some(menu) = app.menu() else {
             return Ok(());
@@ -1599,23 +2827,28 @@ pub fn git_menu_current_file(
 }
 
 // The entries of `Current File` act on the selection of the focused window: the viewer's own file
-// when it has the focus. The rest always go to the main window.
-fn action_window(id: &str, viewer_focused: bool) -> &'static str {
-    if viewer_focused && FILE_MENU.contains(&id) {
-        VIEWER_WINDOW
+// when the menu owner's viewer has the focus. The rest go to the owner's main window, never to
+// another project window's.
+fn action_window(id: &str, owner: &str, focused: Option<&str>) -> String {
+    let viewer = windows::label_for(WindowKind::Viewer, owner);
+    if focused == Some(viewer.as_str()) && FILE_MENU.contains(&id) {
+        viewer
     } else {
-        MAIN_WINDOW
+        owner.to_string()
     }
 }
 
 // It does not raise the window: the interface does that if the action is going to be handled, and a modal dialog or
 // the lack of a repository leave it as it was.
 pub fn git_menu_action(app: &AppHandle, id: &str) {
+    let owner = menu_owner(&app.state::<AppState>());
+    let viewer = windows::label_for(WindowKind::Viewer, &owner);
     let viewer_focused = app
-        .get_webview_window(VIEWER_WINDOW)
+        .get_webview_window(&viewer)
         .and_then(|window| window.is_focused().ok())
         .unwrap_or(false);
-    let _ = app.emit_to(action_window(id, viewer_focused), GIT_ACTION_EVENT, id);
+    let focused = viewer_focused.then_some(viewer.as_str());
+    let _ = app.emit_to(action_window(id, &owner, focused), GIT_ACTION_EVENT, id);
 }
 
 const GIT_FILE_ACTION_EVENT: &str = "git-file-action";
@@ -1629,8 +2862,12 @@ pub struct GitFileAction {
 }
 
 #[tauri::command]
-pub fn git_file_action(action: GitFileAction, app: AppHandle) -> Result<(), ApiError> {
-    app.emit_to(MAIN_WINDOW, GIT_FILE_ACTION_EVENT, action)
+pub fn git_file_action(
+    action: GitFileAction,
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<(), ApiError> {
+    try_emit_to_owner(&app, &owner_label(&window), GIT_FILE_ACTION_EVENT, action)
         .map_err(|error| failed(error.to_string()))
 }
 
@@ -1638,11 +2875,28 @@ pub fn git_file_action(action: GitFileAction, app: AppHandle) -> Result<(), ApiE
 pub async fn repo_open(
     repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<RepoInfo, ApiError> {
-    flush_diff_window(&app, &state, OPEN_ACTION).await?;
-    leave_merge_window(&app, &state, OPEN_ACTION).await?;
-    let path = PathBuf::from(repo);
+    flush_diff_window(&app, &state, &window, OPEN_ACTION).await?;
+    leave_merge_window(&app, &state, &window, OPEN_ACTION).await?;
+    let owner = owner_label(&window);
+    refuse_if_closing(&state, &owner)?;
+    let session = session_of(&state, window.label())?;
+    let target = PathBuf::from(repo);
+    let path = PathBuf::from(blocking_api(move || resolve_project(&target)).await?);
+    // Another window that has it open, or is opening it, comes to the front instead.
+    let _claim = claim_opening(&state, &owner, &path, |label| {
+        app.get_webview_window(label).is_some()
+    })
+    .map_err(|label| {
+        focus_main(&app, &label);
+        ApiError {
+            kind: "open_elsewhere",
+            message: OPEN_ELSEWHERE.to_string(),
+            details: None,
+        }
+    })?;
     let data_base = app.path().app_data_dir().ok();
     let locks = state.operations.clone();
     let app_for_diff = app.clone();
@@ -1655,36 +2909,41 @@ pub async fn repo_open(
             find_pending(&mut info, &root, &dir);
         }
         prune_snapshots(data_base.clone(), root.clone());
-        clean_shelf(app.clone(), data_base, root.clone());
-        let watcher = watch::start(WatchedPaths::of(&root)?, notifier(app))?;
+        clean_shelf(app.clone(), data_base, owner.clone(), root.clone());
+        let watcher = watch::start(WatchedPaths::of(&root)?, notifier(app, owner))?;
         Ok((info, watcher))
     })
     .await?;
-    *state.repo.lock().unwrap() = Some(RepoSession {
+    *session.repo.lock().unwrap() = Some(RepoSession {
         path: PathBuf::from(&info.path),
     });
-    *state.log.lock().unwrap() = None;
-    replace_watcher(&state, Some(watcher));
+    *session.log.lock().unwrap() = None;
+    replace_watcher(&session, Some(watcher));
     state.branch_sync.request();
     remember_recent(&app_for_diff, &info.path);
     // It belonged to another repository; what it showed, and its selection, no longer apply.
-    if let Some(window) = app_for_diff.get_webview_window(DIFF_WINDOW) {
-        let _ = window.destroy();
+    *session.merge_session.lock().unwrap() = None;
+    *session.merge_ready.lock().unwrap() = false;
+    viewer::release(&session);
+    block_history::release(&state.tasks, &session);
+    for label in aux_labels(&owner_label(&window)) {
+        if let Some(aux) = app_for_diff.get_webview_window(&label) {
+            let _ = aux.destroy();
+        }
     }
-    *state.merge_session.lock().unwrap() = None;
-    *state.merge_ready.lock().unwrap() = false;
-    if let Some(window) = app_for_diff.get_webview_window(MERGE_WINDOW) {
-        let _ = window.destroy();
-    }
-    viewer::close(&app_for_diff);
-    block_history::close(&app_for_diff);
+    // An open, or This Window replacing the repository: the window keeps its place in the list.
+    drop(_claim);
+    write_open_projects(&app_for_diff);
     Ok(info)
 }
 
 // The half-done operation and the widget text. `repo-changed` makes the interface read it again.
 #[tauri::command]
-pub async fn repo_state(state: State<'_, AppState>) -> Result<RepoState, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn repo_state(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<RepoState, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(operation::state(&repo)?)).await
 }
 
@@ -1703,42 +2962,95 @@ fn prune_snapshots(base: Option<PathBuf>, repo: PathBuf) {
 // open hands it the repository's data folder.
 const SHELF_CLEANING_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
 
-static SHELF_CLEANER: Mutex<Option<Sender<PathBuf>>> = Mutex::new(None);
+// The data folder of each open project window's repository, by owner: what the cleaner serves.
+#[derive(Default)]
+struct ShelfFolders(Mutex<BTreeMap<String, PathBuf>>);
 
-fn clean_shelf(app: AppHandle, base: Option<PathBuf>, repo: PathBuf) {
+impl ShelfFolders {
+    // A window opened `dir`; it takes the place of the one it had.
+    fn open(&self, owner: &str, dir: PathBuf) {
+        self.lock().insert(owner.to_string(), dir);
+    }
+
+    // The window closed.
+    fn close(&self, owner: &str) {
+        self.lock().remove(owner);
+    }
+
+    fn dir_of(&self, owner: &str) -> Option<PathBuf> {
+        self.lock().get(owner).cloned()
+    }
+
+    fn owners(&self) -> Vec<String> {
+        self.lock().keys().cloned().collect()
+    }
+
+    #[cfg(test)]
+    fn dirs(&self) -> Vec<PathBuf> {
+        self.lock().values().cloned().collect()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, PathBuf>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+static SHELF_FOLDERS: ShelfFolders = ShelfFolders(Mutex::new(BTreeMap::new()));
+static SHELF_CLEANER: Mutex<Option<Sender<String>>> = Mutex::new(None);
+
+fn clean_shelf(app: AppHandle, base: Option<PathBuf>, owner: String, repo: PathBuf) {
     let Some(base) = base else { return };
-    let dir = storage::repo_dir(&base, &repo);
+    SHELF_FOLDERS.open(&owner, storage::repo_dir(&base, &repo));
     let mut cleaner = SHELF_CLEANER.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(sender) = cleaner.as_ref() {
-        if sender.send(dir.clone()).is_ok() {
+        if sender.send(owner.clone()).is_ok() {
             return;
         }
     }
     let (sender, receiver) = mpsc::channel();
-    let _ = sender.send(dir);
+    let _ = sender.send(owner);
     *cleaner = Some(sender);
     thread::spawn(move || {
-        run_shelf_cleaner(receiver, SHELF_CLEANING_PERIOD, |dir| {
-            let before = shelf::generation(dir);
-            // What the user moved into `shelf-restore/` comes back before the cleanup looks.
-            let _ = shelf::tab::restore_requested(dir, SystemTime::now());
-            let _ = shelf::cleanup(dir, SystemTime::now());
-            // What the Shelf tab shows changed: it reads the lists again.
-            if shelf::generation(dir) != before {
-                repo_changed(&app);
-            }
-        })
+        run_shelf_cleaner(
+            receiver,
+            SHELF_CLEANING_PERIOD,
+            || SHELF_FOLDERS.owners(),
+            |owner| {
+                // A window closed since it was asked for has no folder any more.
+                let Some(dir) = SHELF_FOLDERS.dir_of(owner) else {
+                    return;
+                };
+                let before = shelf::generation(&dir);
+                // What the user moved into `shelf-restore/` comes back before the cleanup looks.
+                let _ = shelf::tab::restore_requested(&dir, SystemTime::now());
+                let _ = shelf::cleanup(&dir, SystemTime::now());
+                // What the Shelf tab shows changed: that window reads the lists again.
+                if shelf::generation(&dir) != before {
+                    repo_changed(&app, owner);
+                }
+            },
+        )
     });
 }
 
-// Cleans the last folder it was given at once, then again each `period` until another one comes.
-fn run_shelf_cleaner(receiver: Receiver<PathBuf>, period: Duration, mut clean: impl FnMut(&Path)) {
-    let Ok(mut dir) = receiver.recv() else { return };
+// Cleans the window that opened at once, then every window in `owners()` each `period`.
+fn run_shelf_cleaner(
+    receiver: Receiver<String>,
+    period: Duration,
+    owners: impl Fn() -> Vec<String>,
+    mut clean: impl FnMut(&str),
+) {
+    // An open does not push the periodic round back.
+    let mut next = Instant::now() + period;
     loop {
-        clean(&dir);
-        match receiver.recv_timeout(period) {
-            Ok(next) => dir = next,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        match receiver.recv_timeout(next.saturating_duration_since(Instant::now())) {
+            Ok(owner) => clean(&owner),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                next = Instant::now() + period;
+                for owner in owners() {
+                    clean(&owner);
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
     }
@@ -1752,20 +3064,19 @@ const ASKPASS_PROMPT_EVENT: &str = "askpass-prompt";
 const ASKPASS_DISMISSED_EVENT: &str = "askpass-dismissed";
 const EDITOR_REQUEST_EVENT: &str = "editor-request";
 const EDITOR_DISMISSED_EVENT: &str = "editor-dismissed";
+const OTHER_WINDOWS_PROMPT: &str = "The question belongs to another window";
 
-// Tasks and the console report what happens to the main window. The merge one launches its own
-// and needs their result.
+// Tasks and the console report what happens to the windows of the project window whose command
+// started them, and to no other. The merge one launches its own and needs their result.
 pub fn forward_task_events(app: &AppHandle) {
     let state = app.state::<AppState>();
     let handle = app.clone();
     state.tasks.listen(move |event| {
-        for label in [MAIN_WINDOW, MERGE_WINDOW] {
-            let _ = handle.emit_to(label, TASK_CHANGED_EVENT, event);
-        }
+        emit_to_owner(&handle, &event.owner, TASK_CHANGED_EVENT, event);
     });
     let handle = app.clone();
     state.console.listen(move |line| {
-        let _ = handle.emit_to(MAIN_WINDOW, CONSOLE_LINE_EVENT, line);
+        emit_to_owner(&handle, &line.owner, CONSOLE_LINE_EVENT, line);
     });
 }
 
@@ -1775,33 +3086,34 @@ struct AskpassPrompt {
     kind: PromptKind,
 }
 
-// The window may be hidden with a task running, and the dialog lives in it. If the question
-// does not reach the window, no one will answer: `false` is returned and git fails instead of waiting.
+// The question goes to the project window of the task that asks (its token says which). That
+// window may be hidden with a task running, and the dialog lives in it. If the question does not
+// reach the window, no one will answer: `false` is returned and git fails instead of waiting.
 pub fn start_askpass(app: &AppHandle) {
     let (asked, dismissed) = (app.clone(), app.clone());
     let server = Server::start(
-        move |id, kind| {
-            let Some(window) = asked.get_webview_window(MAIN_WINDOW) else {
+        move |owner, id, kind| {
+            let Some(window) = asked.get_webview_window(owner) else {
                 return false;
             };
             let _ = reveal(&window);
-            resume_and_notify(&asked);
-            asked
-                .emit_to(
-                    MAIN_WINDOW,
-                    ASKPASS_PROMPT_EVENT,
-                    AskpassPrompt { id, kind },
-                )
-                .is_ok()
+            resume_and_notify(&asked, owner);
+            try_emit_to_owner(
+                &asked,
+                owner,
+                ASKPASS_PROMPT_EVENT,
+                AskpassPrompt { id, kind },
+            )
+            .is_ok()
         },
-        move |id| {
-            let _ = dismissed.emit_to(MAIN_WINDOW, ASKPASS_DISMISSED_EVENT, id);
+        move |owner, id| {
+            emit_to_owner(&dismissed, owner, ASKPASS_DISMISSED_EVENT, id);
         },
     );
     let state = app.state::<AppState>();
     match server {
         Ok(server) => {
-            state.tasks.use_askpass(server.client_env());
+            state.tasks.use_askpass(server.handle());
             *state.askpass.lock().unwrap_or_else(PoisonError::into_inner) = Some(server);
         }
         Err(error) => state.tasks.askpass_unavailable(&error),
@@ -1818,11 +3130,21 @@ pub fn stop_askpass(app: &AppHandle) {
 }
 
 // The answer is neither stored nor returned: it continues through the socket to the process that asked.
+// Only the project window the question went to may answer it; another window's answer is refused
+// and the question keeps waiting.
 #[tauri::command]
-pub fn askpass_answer(id: u64, answer: Option<String>, state: State<'_, AppState>) {
+pub fn askpass_answer(
+    id: u64,
+    answer: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
     let server = state.askpass.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(server) = server.as_ref() {
-        server.answer(id, answer);
+    match server.as_ref() {
+        Some(server) if !server.answer(&owner_label(&window), id, answer) => {
+            Err(failed(OTHER_WINDOWS_PROMPT.to_string()))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -1833,28 +3155,29 @@ struct EditorRequest {
     prompt: Prompt,
 }
 
-// Like `start_askpass`: the dialog lives in the main window, which may be hidden with the
-// task running. If the request does not arrive, no one will answer and git fails instead of waiting.
+// Like `start_askpass`: the request goes to the project window of the task's registration, whose
+// main window holds the dialog and may be hidden with the task running. If the request does not
+// arrive, no one will answer and git fails instead of waiting.
 pub fn start_editor(app: &AppHandle) {
     let asked = app.clone();
     let dismissed = app.clone();
     let server = editor::Server::start(
-        move |id, prompt| {
-            let Some(window) = asked.get_webview_window(MAIN_WINDOW) else {
+        move |owner, id, prompt| {
+            let Some(window) = asked.get_webview_window(owner) else {
                 return false;
             };
             let _ = reveal(&window);
-            resume_and_notify(&asked);
-            asked
-                .emit_to(
-                    MAIN_WINDOW,
-                    EDITOR_REQUEST_EVENT,
-                    EditorRequest { id, prompt },
-                )
-                .is_ok()
+            resume_and_notify(&asked, owner);
+            try_emit_to_owner(
+                &asked,
+                owner,
+                EDITOR_REQUEST_EVENT,
+                EditorRequest { id, prompt },
+            )
+            .is_ok()
         },
-        move |id| {
-            let _ = dismissed.emit_to(MAIN_WINDOW, EDITOR_DISMISSED_EVENT, id);
+        move |owner, id| {
+            emit_to_owner(&dismissed, owner, EDITOR_DISMISSED_EVENT, id);
         },
     );
     let state = app.state::<AppState>();
@@ -1877,23 +3200,34 @@ pub fn stop_editor(app: &AppHandle) {
 }
 
 // It only answers a request that is already waiting, like `askpass_answer`: it does not touch the
-// repository. The text continues through the socket to git's editor, which writes it.
+// repository. The text continues through the socket to git's editor, which writes it. Like
+// `askpass_answer`, only the project window the request went to may answer it.
 #[tauri::command]
-pub fn editor_answer(id: u64, text: Option<String>, state: State<'_, AppState>) {
+pub fn editor_answer(
+    id: u64,
+    text: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
     let server = state.editor.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(server) = server.as_ref() {
-        server.answer(id, text);
+    match server.as_ref() {
+        Some(server) if !server.answer(&owner_label(&window), id, text) => {
+            Err(failed(OTHER_WINDOWS_PROMPT.to_string()))
+        }
+        _ => Ok(()),
     }
 }
 
+// Only a task of the calling project window: another window's goes on.
 #[tauri::command]
-pub fn task_cancel(id: TaskId, state: State<'_, AppState>) {
-    state.tasks.cancel(id);
+pub fn task_cancel(id: TaskId, window: WebviewWindow, state: State<'_, AppState>) {
+    state.tasks.cancel(&owner_label(&window), id);
 }
 
+// The lines of the calling project window, like IntelliJ's console per project.
 #[tauri::command]
-pub fn console_lines(state: State<'_, AppState>) -> Vec<ConsoleLine> {
-    state.console.lines()
+pub fn console_lines(window: WebviewWindow, state: State<'_, AppState>) -> Vec<ConsoleLine> {
+    state.console.lines_of(&owner_label(&window))
 }
 
 #[tauri::command]
@@ -1908,11 +3242,11 @@ pub fn perf_report(json: String) -> Result<(), ApiError> {
     fs::write(path, json).map_err(|error| failed(error.to_string()))
 }
 
-pub(crate) fn current_repo(state: &State<'_, AppState>) -> Result<PathBuf, ApiError> {
-    let repo = state.repo.lock().unwrap();
-    repo.as_ref()
-        .map(|repo| repo.path.clone())
-        .ok_or_else(|| failed("No repository is open".to_string()))
+pub(crate) fn current_repo(
+    state: &State<'_, AppState>,
+    window: &WebviewWindow,
+) -> Result<PathBuf, ApiError> {
+    repo_of(state, window.label())
 }
 
 async fn blocking<T: Send + 'static>(
@@ -1927,9 +3261,10 @@ async fn blocking<T: Send + 'static>(
 #[tauri::command]
 pub async fn commit_files(
     hash: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChangedFile>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking(move || diff::commit_files(&repo, &hash)).await
 }
 
@@ -1940,9 +3275,10 @@ pub async fn file_sides(
     old_path: Option<String>,
     base: Option<String>,
     no_base: bool,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<FileSides, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking(move || {
         diff::sides_against(
             &repo,
@@ -1959,18 +3295,20 @@ pub async fn file_sides(
 #[tauri::command]
 pub async fn repo_status(
     include_ignored: bool,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileChange>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking(move || status::read(&repo, include_ignored)).await
 }
 
 #[tauri::command]
 pub async fn worktree_sides(
     path: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<WorktreeSides, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(worktree_diff::sides(&repo, &path)?)).await
 }
 
@@ -1978,9 +3316,10 @@ pub async fn worktree_sides(
 pub async fn worktree_preview(
     path: String,
     content: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<Hunk>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(worktree_diff::preview(&repo, &path, &content)?)).await
 }
 
@@ -1991,10 +3330,11 @@ pub async fn file_write(
     content: String,
     expected_hash: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    let repo = current_repo(&state)?;
-    let dir = repo_data_dir(&app, &state)?;
+    let repo = current_repo(&state, &window)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || file_write_locked(&locks, &repo, &dir, &path, &content, &expected_hash))
         .await
@@ -2006,9 +3346,10 @@ pub async fn file_write(
 pub async fn diff_window_open(
     path: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    diff_window_open_request(DiffRequest::Worktree { path }, app, state).await
+    diff_window_open_request(DiffRequest::Worktree { path }, app, window, state).await
 }
 
 // The same window, also for two revisions of one or more files (`compare::DiffRequest`).
@@ -2016,27 +3357,33 @@ pub async fn diff_window_open(
 pub async fn diff_window_open_request(
     request: DiffRequest,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let checked = request.clone();
     let title = blocking_api(move || {
         compare::check_request(&repo, &checked)?;
         Ok(compare::window_title(&repo, &checked))
     })
     .await?;
-    *state.diff_request.lock().unwrap() = Some(request.clone());
-    let notify = |window: &WebviewWindow| match &request {
-        DiffRequest::Worktree { path } => window.emit_to(DIFF_WINDOW, DIFF_OPEN_EVENT, path),
-        DiffRequest::Revisions { .. } => window.emit_to(DIFF_WINDOW, DIFF_REQUEST_EVENT, &request),
+    let session = session_of(&state, window.label())?;
+    *session.diff_request.lock().unwrap() = Some(request.clone());
+    let owner = owner_label(&window);
+    let notify = || match &request {
+        DiffRequest::Worktree { path } => try_emit_to_owner(&app, &owner, DIFF_OPEN_EVENT, path),
+        DiffRequest::Revisions { .. } => {
+            try_emit_to_owner(&app, &owner, DIFF_REQUEST_EVENT, &request)
+        }
     };
-    let opened = match app.get_webview_window(DIFF_WINDOW) {
-        Some(window) => window
+    let diff_label = windows::label_for(WindowKind::Diff, &owner);
+    let opened = match app.get_webview_window(&diff_label) {
+        Some(diff) => diff
             .set_title(&title)
-            .and_then(|()| reveal(&window))
-            .and_then(|()| notify(&window)),
+            .and_then(|()| reveal(&diff))
+            .and_then(|()| notify()),
         None => {
-            WebviewWindowBuilder::new(&app, DIFF_WINDOW, WebviewUrl::App(DIFF_WINDOW_URL.into()))
+            WebviewWindowBuilder::new(&app, &diff_label, WebviewUrl::App(DIFF_WINDOW_URL.into()))
                 .title(&title)
                 .inner_size(1200.0, 800.0)
                 .visible(false)
@@ -2050,16 +3397,26 @@ pub async fn diff_window_open_request(
 
 // The file of a working-tree request; `None` with two revisions.
 #[tauri::command]
-pub fn diff_window_path(state: State<'_, AppState>) -> Option<String> {
-    match state.diff_request.lock().unwrap().as_ref() {
+pub fn diff_window_path(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    let session = session_of(&state, window.label())?;
+    let request = session.diff_request.lock().unwrap();
+    Ok(match request.as_ref() {
         Some(DiffRequest::Worktree { path }) => Some(path.clone()),
         _ => None,
-    }
+    })
 }
 
 #[tauri::command]
-pub fn diff_window_request(state: State<'_, AppState>) -> Option<DiffRequest> {
-    state.diff_request.lock().unwrap().clone()
+pub fn diff_window_request(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<DiffRequest>, ApiError> {
+    let session = session_of(&state, window.label())?;
+    let request = session.diff_request.lock().unwrap().clone();
+    Ok(request)
 }
 
 // `multiple.file.merge.request.title`, with the full path as `presentableUrl`.
@@ -2122,12 +3479,31 @@ pub const APP_DEACTIVATED_EVENT: &str = "app-deactivated";
 // How long the focus may take to arrive in another window of Ramify.
 const FOCUS_SETTLE: Duration = Duration::from_millis(150);
 
-// The main window hears when the app as a whole gains and loses the focus.
-pub fn focus_changed(app: &AppHandle, focused: bool) {
+// Every main window hears when the app as a whole gains and loses the focus (`emit_to` each
+// existing main label).
+fn emit_to_every_main(app: &AppHandle, event: &str, payload: impl Serialize + Clone) {
+    for label in app.webview_windows().into_keys() {
+        if windows::kind_of(&label) == Some(WindowKind::Main) {
+            if let Err(error) = app.emit_to(label.as_str(), event, payload.clone()) {
+                eprintln!("Could not send the event {event} to {label}: {error}");
+            }
+        }
+    }
+}
+
+// What `app-activated` says: the project window that was activated, the owner of the window
+// `label` that got the focus. Only that one looks at the clipboard for a patch on the fly
+// (IntelliJ's `PatchClipboardListener` asks in the activated frame).
+fn activated_owner(label: &str) -> Option<String> {
+    windows::owner_of(label)
+}
+
+// The window `label` gained (`focused`) or lost the focus.
+pub fn focus_changed(app: &AppHandle, label: &str, focused: bool) {
     let state = app.state::<AppState>();
     if focused {
         if state.activation.lock().unwrap().gained() {
-            let _ = app.emit_to(MAIN_WINDOW, APP_ACTIVATED_EVENT, ());
+            emit_to_every_main(app, APP_ACTIVATED_EVENT, activated_owner(label));
             refresh_recent_menu(app);
         }
         return;
@@ -2142,7 +3518,7 @@ pub fn focus_changed(app: &AppHandle, focused: bool) {
             .any(|window| window.is_focused().unwrap_or(false));
         let state = app.state::<AppState>();
         if state.activation.lock().unwrap().settled(since, any) {
-            let _ = app.emit_to(MAIN_WINDOW, APP_DEACTIVATED_EVENT, ());
+            emit_to_every_main(&app, APP_DEACTIVATED_EVENT, ());
         }
     });
 }
@@ -2189,8 +3565,9 @@ fn session_contents(shown: &Option<MergeSession>) -> Option<MergeContents> {
 }
 
 // Hidden until its page calls `showWindow`.
-fn build_merge_window(app: &AppHandle, title: &str) -> tauri::Result<()> {
-    WebviewWindowBuilder::new(app, MERGE_WINDOW, WebviewUrl::App(MERGE_WINDOW_URL.into()))
+fn build_merge_window(app: &AppHandle, owner: &str, title: &str) -> tauri::Result<()> {
+    let label = windows::label_for(WindowKind::Merge, owner);
+    WebviewWindowBuilder::new(app, &label, WebviewUrl::App(MERGE_WINDOW_URL.into()))
         .title(title)
         .inner_size(1200.0, 800.0)
         .visible(false)
@@ -2205,22 +3582,28 @@ fn build_merge_window(app: &AppHandle, title: &str) -> tauri::Result<()> {
 pub async fn merge_window_open(
     path: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let repo = current_repo(&state)?;
+    merge_open_session(&state, window.label())?;
+    let repo = current_repo(&state, &window)?;
     let checked = path.clone();
     let root = repo.clone();
     blocking_api(move || Ok(worktree_diff::check_inside(&root, &checked)?)).await?;
-    let mut shown = state.merge_session.lock().unwrap();
-    let existing = app.get_webview_window(MERGE_WINDOW);
+    let session = merge_open_session(&state, window.label())?;
+    let mut shown = session.merge_session.lock().unwrap();
+    let existing = app.get_webview_window(&windows::label_for(
+        WindowKind::Merge,
+        &owner_label(&window),
+    ));
     let title = merge_title(&repo, &path);
     if !claim_merge(&mut shown, existing.is_some(), MergeSession::Conflict(path)) {
         return existing
             .map_or(Ok(()), |window| reveal(&window))
             .map_err(|error| failed(error.to_string()));
     }
-    *state.merge_ready.lock().unwrap() = false;
-    if let Err(error) = build_merge_window(&app, &title) {
+    *session.merge_ready.lock().unwrap() = false;
+    if let Err(error) = build_merge_window(&app, &owner_label(&window), &title) {
         *shown = None;
         return Err(failed(error.to_string()));
     }
@@ -2233,23 +3616,28 @@ pub async fn merge_window_open(
 pub async fn merge_window_open_contents(
     input: MergeContents,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let mut shown = state.merge_session.lock().unwrap();
-    let existing = app.get_webview_window(MERGE_WINDOW);
+    let session = merge_open_session(&state, window.label())?;
+    let mut shown = session.merge_session.lock().unwrap();
+    let existing = app.get_webview_window(&windows::label_for(
+        WindowKind::Merge,
+        &owner_label(&window),
+    ));
     let title = input.title.clone();
     if !claim_merge(
         &mut shown,
         existing.is_some(),
         MergeSession::Contents(input),
     ) {
-        if let Some(window) = existing {
-            let _ = reveal(&window);
+        if let Some(merge) = existing {
+            let _ = reveal(&merge);
         }
         return Err(failed("Another merge is in progress".to_string()));
     }
-    *state.merge_ready.lock().unwrap() = false;
-    if let Err(error) = build_merge_window(&app, &title) {
+    *session.merge_ready.lock().unwrap() = false;
+    if let Err(error) = build_merge_window(&app, &owner_label(&window), &title) {
         *shown = None;
         return Err(failed(error.to_string()));
     }
@@ -2257,13 +3645,23 @@ pub async fn merge_window_open_contents(
 }
 
 #[tauri::command]
-pub fn merge_window_path(state: State<'_, AppState>) -> Option<String> {
-    session_path(&state.merge_session.lock().unwrap())
+pub fn merge_window_path(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    let session = session_of(&state, window.label())?;
+    let path = session_path(&session.merge_session.lock().unwrap());
+    Ok(path)
 }
 
 #[tauri::command]
-pub fn merge_window_contents(state: State<'_, AppState>) -> Option<MergeContents> {
-    session_contents(&state.merge_session.lock().unwrap())
+pub fn merge_window_contents(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<MergeContents>, ApiError> {
+    let session = session_of(&state, window.label())?;
+    let contents = session_contents(&session.merge_session.lock().unwrap());
+    Ok(contents)
 }
 
 // `MergeResult`, with the side's name as the user sees it. `Abort` and `Skip` are the answers of a
@@ -2319,18 +3717,21 @@ pub async fn merge_window_done(
     result: MergeResult,
     content: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let mut shown = state.merge_session.lock().unwrap();
-    if let Some(session) = shown.take() {
-        let done = merge_done(session, result, content);
-        let _ = app.emit_to(MAIN_WINDOW, MERGE_DONE_EVENT, done);
+    let session = session_of(&state, window.label())?;
+    let mut shown = session.merge_session.lock().unwrap();
+    if let Some(merge) = shown.take() {
+        let done = merge_done(merge, result, content);
+        emit_to_owner(&app, &owner_label(&window), MERGE_DONE_EVENT, done);
     }
-    *state.merge_ready.lock().unwrap() = false;
-    if let Some(window) = app.get_webview_window(MERGE_WINDOW) {
-        window
-            .destroy()
-            .map_err(|error| failed(error.to_string()))?;
+    *session.merge_ready.lock().unwrap() = false;
+    if let Some(merge) = app.get_webview_window(&windows::label_for(
+        WindowKind::Merge,
+        &owner_label(&window),
+    )) {
+        merge.destroy().map_err(|error| failed(error.to_string()))?;
     }
     Ok(())
 }
@@ -2399,9 +3800,10 @@ fn working_file(root: &Path, path: &str) -> Result<WorkingFile, ApiError> {
 #[tauri::command]
 pub async fn merge_working_file(
     path: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<WorkingFile, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || working_file(&repo, &path)).await
 }
 
@@ -2416,8 +3818,9 @@ pub async fn reveal_in_finder(path: String) -> Result<(), ApiError> {
 pub(crate) fn repo_data_dir(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
 ) -> Result<PathBuf, ApiError> {
-    data_dir_of(app, &current_repo(state)?)
+    data_dir_of(app, &current_repo(state, window)?)
 }
 
 pub(crate) fn data_dir_of(app: &AppHandle, repo: &Path) -> Result<PathBuf, ApiError> {
@@ -2471,9 +3874,10 @@ pub fn edit_changelists(
 pub fn changelists_get(
     paths: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    read_changelists(&repo_data_dir(&app, &state)?, &paths)
+    read_changelists(&repo_data_dir(&app, &state, &window)?, &paths)
 }
 
 // Imports IntelliJ's changelists without writing to `.idea`. If the XML cannot be read or
@@ -2489,19 +3893,21 @@ pub fn import_changelists(repo: &Path, dir: &Path) -> Result<Changelists, ApiErr
 #[tauri::command]
 pub fn changelists_import(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    let repo = current_repo(&state)?;
-    import_changelists(&repo, &repo_data_dir(&app, &state)?)
+    let repo = current_repo(&state, &window)?;
+    import_changelists(&repo, &repo_data_dir(&app, &state, &window)?)
 }
 
 #[tauri::command]
 pub fn changelists_create(
     name: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    edit_changelists(&repo_data_dir(&app, &state)?, |lists| {
+    edit_changelists(&repo_data_dir(&app, &state, &window)?, |lists| {
         lists.create(&name).map(drop)
     })
 }
@@ -2511,9 +3917,10 @@ pub fn changelists_rename(
     id: String,
     name: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    edit_changelists(&repo_data_dir(&app, &state)?, |lists| {
+    edit_changelists(&repo_data_dir(&app, &state, &window)?, |lists| {
         lists.rename(&id, &name)
     })
 }
@@ -2543,9 +3950,10 @@ pub fn changelists_set_comment(
     comment: String,
     repo: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    let open = current_repo(&state)?;
+    let open = current_repo(&state, &window)?;
     set_list_comment(&open, &repo, &data_dir_of(&app, &open)?, &id, &comment)
 }
 
@@ -2553,18 +3961,24 @@ pub fn changelists_set_comment(
 pub fn changelists_remove(
     id: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    edit_changelists(&repo_data_dir(&app, &state)?, |lists| lists.remove(&id))
+    edit_changelists(&repo_data_dir(&app, &state, &window)?, |lists| {
+        lists.remove(&id)
+    })
 }
 
 #[tauri::command]
 pub fn changelists_set_active(
     id: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    edit_changelists(&repo_data_dir(&app, &state)?, |lists| lists.set_active(&id))
+    edit_changelists(&repo_data_dir(&app, &state, &window)?, |lists| {
+        lists.set_active(&id)
+    })
 }
 
 #[tauri::command]
@@ -2572,9 +3986,10 @@ pub fn changelists_move(
     paths: Vec<String>,
     id: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    edit_changelists(&repo_data_dir(&app, &state)?, |lists| {
+    edit_changelists(&repo_data_dir(&app, &state, &window)?, |lists| {
         lists.move_paths(&paths, &id)
     })
 }
@@ -2593,19 +4008,24 @@ pub async fn rollback_files(
     paths: Vec<String>,
     delete_added: bool,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let repo = current_repo(&state)?;
-    let dir = repo_data_dir(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let repo = current_repo(&state, &window)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || rollback_locked(&locks, &repo, &dir, &paths, delete_added)).await
 }
 
 // The file's hunks against HEAD; empty if it is treated as a single piece (binary or very large).
 #[tauri::command]
-pub async fn file_hunks(path: String, state: State<'_, AppState>) -> Result<Vec<Hunk>, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn file_hunks(
+    path: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<Hunk>, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(hunks::file_hunks(&repo, &path)?)).await
 }
 
@@ -2615,11 +4035,12 @@ pub async fn lines_rollback(
     path: String,
     selection: Vec<LineSelection>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let repo = current_repo(&state)?;
-    let dir = repo_data_dir(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let repo = current_repo(&state, &window)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || lines_rollback_locked(&locks, &repo, &dir, &path, &selection)).await
 }
@@ -2631,10 +4052,17 @@ pub fn changelists_move_hunks(
     hunks: Vec<String>,
     id: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
-    let repo = current_repo(&state)?;
-    move_hunks_in(&repo, &repo_data_dir(&app, &state)?, &path, &hunks, &id)
+    let repo = current_repo(&state, &window)?;
+    move_hunks_in(
+        &repo,
+        &repo_data_dir(&app, &state, &window)?,
+        &path,
+        &hunks,
+        &id,
+    )
 }
 
 // Returns the commit hash. The stage of what was not selected stays as it was, and everything goes back
@@ -2643,11 +4071,12 @@ pub fn changelists_move_hunks(
 pub async fn commit_changes(
     request: CommitRequest,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let repo = current_repo(&state)?;
-    let dir = repo_data_dir(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let repo = current_repo(&state, &window)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || commit_locked(&locks, &repo, &dir, &request)).await
 }
@@ -2659,11 +4088,12 @@ pub async fn commit_changes_selected(
     request: CommitRequest,
     selections: Vec<FileSelection>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let repo = current_repo(&state)?;
-    let dir = repo_data_dir(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let repo = current_repo(&state, &window)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || commit_selected_locked(&locks, &repo, &dir, request, &selections)).await
 }
@@ -2671,11 +4101,15 @@ pub async fn commit_changes_selected(
 // The lock, the repository and the folder of its data.
 type Operation = (Arc<RepoLocks>, PathBuf, PathBuf);
 
-fn staging_context(app: &AppHandle, state: &State<'_, AppState>) -> Result<Operation, ApiError> {
+fn staging_context(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    window: &WebviewWindow,
+) -> Result<Operation, ApiError> {
     Ok((
         state.operations.clone(),
-        current_repo(state)?,
-        repo_data_dir(app, state)?,
+        current_repo(state, window)?,
+        repo_data_dir(app, state, window)?,
     ))
 }
 
@@ -2683,10 +4117,11 @@ fn staging_context(app: &AppHandle, state: &State<'_, AppState>) -> Result<Opera
 pub async fn staging_stage(
     paths: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<SnapshotId>, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let (locks, repo, dir) = staging_context(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let (locks, repo, dir) = staging_context(&app, &state, &window)?;
     blocking_api(move || stage_locked(&locks, &repo, &dir, &paths)).await
 }
 
@@ -2694,10 +4129,11 @@ pub async fn staging_stage(
 pub async fn staging_unstage(
     paths: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<SnapshotId>, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let (locks, repo, dir) = staging_context(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let (locks, repo, dir) = staging_context(&app, &state, &window)?;
     blocking_api(move || unstage_locked(&locks, &repo, &dir, &paths)).await
 }
 
@@ -2705,10 +4141,11 @@ pub async fn staging_unstage(
 pub async fn staging_revert(
     paths: Vec<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<SnapshotId>, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let (locks, repo, dir) = staging_context(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let (locks, repo, dir) = staging_context(&app, &state, &window)?;
     blocking_api(move || revert_locked(&locks, &repo, &dir, &paths)).await
 }
 
@@ -2717,10 +4154,11 @@ pub async fn staging_stage_hunks(
     path: String,
     selection: Vec<LineSelection>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<SnapshotId>, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let (locks, repo, dir) = staging_context(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let (locks, repo, dir) = staging_context(&app, &state, &window)?;
     blocking_api(move || stage_hunks_locked(&locks, &repo, &dir, &path, &selection)).await
 }
 
@@ -2729,10 +4167,11 @@ pub async fn staging_unstage_hunks(
     path: String,
     selection: Vec<LineSelection>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<SnapshotId>, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let (locks, repo, dir) = staging_context(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let (locks, repo, dir) = staging_context(&app, &state, &window)?;
     blocking_api(move || unstage_hunks_locked(&locks, &repo, &dir, &path, &selection)).await
 }
 
@@ -2740,9 +4179,10 @@ pub async fn staging_unstage_hunks(
 pub async fn staging_sides(
     path: String,
     comparison: Comparison,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<WorktreeSides, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(worktree_diff::stage_sides(&repo, &path, comparison)?)).await
 }
 
@@ -2750,9 +4190,10 @@ pub async fn staging_sides(
 pub async fn staging_preview(
     path: String,
     content: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<Hunk>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(worktree_diff::stage_preview(&repo, &path, &content)?)).await
 }
 
@@ -2762,10 +4203,11 @@ pub async fn commit_staged(
     options: CommitOptions,
     message: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let (locks, repo, dir) = staging_context(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let (locks, repo, dir) = staging_context(&app, &state, &window)?;
     blocking_api(move || commit_staged_locked(&locks, &repo, &dir, &options, &message)).await
 }
 
@@ -2774,9 +4216,10 @@ pub async fn commit_warnings(
     request: CommitRequest,
     selections: Vec<FileSelection>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<CommitWarning>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let settings = current_settings(&app)?;
     blocking_api(move || Ok(warnings_for(&repo, request, &selections, &settings))).await
 }
@@ -2784,16 +4227,20 @@ pub async fn commit_warnings(
 #[tauri::command]
 pub async fn commit_warnings_staged(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<CommitWarning>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let settings = current_settings(&app)?;
     blocking_api(move || Ok(commit::staged_warnings(&repo, &settings))).await
 }
 
 #[tauri::command]
-pub async fn commit_fix_autocrlf(state: State<'_, AppState>) -> Result<(), ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn commit_fix_autocrlf(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking(move || commit::fix_autocrlf(&repo)).await
 }
 
@@ -2863,36 +4310,55 @@ pub async fn git_version(path: Option<String>) -> Result<String, ApiError> {
     blocking(move || git::version_of(path.as_deref().filter(|path| !path.trim().is_empty()))).await
 }
 
-// File > Open…: the chooser is shown by the main window, brought to the front first.
+// File > Open…: the chooser is shown by the last focused main window, brought to the front first.
 pub fn open_project_chooser(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+    let label = last_main_label(app);
+    if let Some(window) = app.get_webview_window(&label) {
         let _ = reveal(&window);
-        resume_and_notify(app);
-        let _ = window.emit_to(MAIN_WINDOW, OPEN_PROJECT_CHOOSER_EVENT, ());
+        resume_and_notify(app, &label);
+        emit_to_owner(app, &label, OPEN_PROJECT_CHOOSER_EVENT, ());
     }
 }
 
 // The main window may be hidden, and the diff one in front.
 pub fn open_settings(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+    let label = last_main_label(app);
+    if let Some(window) = app.get_webview_window(&label) {
         let _ = reveal(&window);
-        resume_and_notify(app);
-        let _ = window.emit_to(MAIN_WINDOW, OPEN_SETTINGS_EVENT, ());
+        resume_and_notify(app, &label);
+        emit_to_owner(app, &label, OPEN_SETTINGS_EVENT, ());
     }
 }
 
+// The Dock icon clicked (`RunEvent::Reopen`): the last focused main window comes back, hidden or
+// not, and watches its repository again.
+pub fn show_last_window(app: &AppHandle) {
+    let label = last_main_label(app);
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = reveal(&window);
+    }
+    resume_and_notify(app, &label);
+}
+
 #[tauri::command]
-pub fn messages_list(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<String>, ApiError> {
-    Ok(messages::list(&repo_data_dir(&app, &state)?))
+pub fn messages_list(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, ApiError> {
+    Ok(messages::list(&repo_data_dir(&app, &state, &window)?))
 }
 
 // `LAST_COMMIT_MESSAGE`, the last resort of the Commit Changes dialog's message.
 #[tauri::command]
 pub fn messages_last(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    Ok(messages::last_commit_message(&repo_data_dir(&app, &state)?))
+    Ok(messages::last_commit_message(&repo_data_dir(
+        &app, &state, &window,
+    )?))
 }
 
 // `VcsConfiguration.saveCommitMessage`: the text written before amend loads the last commit's
@@ -2901,16 +4367,20 @@ pub fn messages_last(
 pub fn messages_push(
     message: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    messages::push(&repo_data_dir(&app, &state)?, &message)
+    messages::push(&repo_data_dir(&app, &state, &window)?, &message)
         .map_err(|error| failed(error.to_string()))
 }
 
 // Whether `Run Git hooks` is offered. It reads: it changes nothing.
 #[tauri::command]
-pub async fn repo_has_commit_hooks(state: State<'_, AppState>) -> Result<bool, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn repo_has_commit_hooks(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<bool, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking(move || Ok(commit::has_commit_hooks(&repo))).await
 }
 
@@ -2922,17 +4392,21 @@ pub fn last_message(repo: &Path) -> Result<String, GitError> {
 }
 
 #[tauri::command]
-pub async fn head_message(state: State<'_, AppState>) -> Result<String, ApiError> {
-    let repo = current_repo(&state)?;
+pub async fn head_message(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<String, ApiError> {
+    let repo = current_repo(&state, &window)?;
     blocking(move || last_message(&repo)).await
 }
 
 #[tauri::command]
 pub fn snapshots_list(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<Snapshot>, ApiError> {
-    Ok(snapshots::list(&repo_data_dir(&app, &state)?))
+    Ok(snapshots::list(&repo_data_dir(&app, &state, &window)?))
 }
 
 // Ramify's own: a copy offered by a notification of another repository is not looked for in the
@@ -2953,11 +4427,12 @@ pub async fn snapshots_restore(
     id: String,
     expected_repo: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     restorable_here(&repo, expected_repo.as_deref())?;
-    let dir = repo_data_dir(&app, &state)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || restore_locked(&locks, &repo, &dir, &id)).await
 }
@@ -2971,6 +4446,116 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    #[test]
+    fn emit_targets_are_the_owner_group() {
+        let group = [
+            "main-2",
+            "diff-2",
+            "merge-2",
+            "viewer-2",
+            "selection-history-2",
+        ];
+        assert_eq!(emit_targets("main-2", |_| true), group);
+        // Only the windows that exist, and never another project window's.
+        assert_eq!(
+            emit_targets("main-2", |label| label == "diff-2" || label == "diff"),
+            ["diff-2"]
+        );
+        // With no window at all there is nothing to send to, and nothing fails.
+        assert!(emit_targets("main-2", |_| false).is_empty());
+        assert_eq!(
+            emit_targets("main", |_| true),
+            ["main", "diff", "merge", "viewer", "selection-history"]
+        );
+    }
+
+    #[test]
+    fn opening_a_repository_closes_only_its_own_auxiliary_windows() {
+        assert_eq!(
+            aux_labels("main-2"),
+            ["diff-2", "merge-2", "viewer-2", "selection-history-2"]
+        );
+        assert_eq!(
+            aux_labels("main"),
+            ["diff", "merge", "viewer", "selection-history"]
+        );
+    }
+
+    #[test]
+    fn closing_the_last_window_hides_the_selection_history_too() {
+        assert_eq!(
+            close_labels("main-2"),
+            [
+                "diff-2",
+                "merge-2",
+                "viewer-2",
+                "selection-history-2",
+                "main-2"
+            ]
+        );
+        assert!(close_labels("main").contains(&"selection-history".to_string()));
+    }
+
+    // Each project window reads its own repository; an auxiliary window reads its owner's.
+    #[test]
+    fn two_sessions_keep_their_repository() {
+        let first = TempRepo::new();
+        let second = TempRepo::new();
+        let state = AppState::default();
+        for (label, repo) in [("main", &first), ("main-2", &second)] {
+            *session_of(&state, label).unwrap().repo.lock().unwrap() = Some(RepoSession {
+                path: repo.path().to_path_buf(),
+            });
+        }
+
+        assert!(Arc::ptr_eq(
+            &session_of(&state, "diff-2").unwrap(),
+            &session_of(&state, "main-2").unwrap()
+        ));
+        assert_eq!(repo_of(&state, "diff-2").unwrap(), second.path());
+        assert_eq!(repo_of(&state, "main").unwrap(), first.path());
+        assert_eq!(repo_of(&state, "merge").unwrap(), first.path());
+    }
+
+    // Review Focus 1: a write in one window asks only that window's diff window to save.
+    #[test]
+    fn a_write_flushes_only_its_own_diff_window() {
+        let state = AppState::default();
+        let first = session_of(&state, "main").unwrap();
+        let second = session_of(&state, "main-2").unwrap();
+
+        // Its diff window does not exist: nothing is asked and nothing is queued.
+        let missing = flush_request(&state, "main-2", |_| false).unwrap();
+        assert!(missing.is_none());
+        assert!(second.diff_flush.lock().unwrap().is_empty());
+
+        let mut asked = Vec::new();
+        let (target, _answer) = flush_request(&state, "main-2", |label| {
+            asked.push(label.to_string());
+            true
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(target, "diff-2");
+        assert_eq!(asked, ["diff-2"]);
+        assert_eq!(second.diff_flush.lock().unwrap().len(), 1);
+        assert!(first.diff_flush.lock().unwrap().is_empty());
+        // Window `main` still asks its own `diff`.
+        let (own, _kept) = flush_request(&state, "main", |_| true).unwrap().unwrap();
+        assert_eq!(own, "diff");
+        assert_eq!(first.diff_flush.lock().unwrap().len(), 1);
+        assert_eq!(second.diff_flush.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_label_without_owner_has_no_session() {
+        let state = AppState::default();
+
+        assert!(session_of(&state, "other").is_err());
+        assert!(state.sessions.lock().unwrap().is_empty());
+    }
 
     // `SHELF_TOPIC`: `repo-changed` says the shelf changed only after a write to the open
     // repository's store, once; a worktree save does not make the Shelf tab read its lists again.
@@ -3007,28 +4592,63 @@ mod tests {
     }
 
     // P9: one thread for every open. It cleans the repository just opened at once, then once a
-    // period, and a repository opened meanwhile takes the place of the previous one.
+    // period, and a repository opened meanwhile joins the first one instead of replacing it.
     #[test]
-    fn one_shelf_cleaner_cleans_the_open_repository_on_open_and_then_once_a_period() {
-        let (open, opened) = mpsc::channel::<PathBuf>();
-        let (cleaned_tx, cleaned) = mpsc::channel::<PathBuf>();
+    fn one_shelf_cleaner_cleans_every_open_repository_on_open_and_then_once_a_period() {
+        let (open, opened) = mpsc::channel::<String>();
+        let (cleaned_tx, cleaned) = mpsc::channel::<String>();
+        let owners = Arc::new(Mutex::new(vec!["main".to_string()]));
+        let listed = owners.clone();
         let cleaner = thread::spawn(move || {
-            run_shelf_cleaner(opened, Duration::from_millis(150), |dir| {
-                cleaned_tx.send(dir.to_path_buf()).unwrap();
-            })
+            run_shelf_cleaner(
+                opened,
+                Duration::from_millis(150),
+                move || listed.lock().unwrap().clone(),
+                |owner| cleaned_tx.send(owner.to_string()).unwrap(),
+            )
         });
         let next = || cleaned.recv_timeout(Duration::from_secs(5)).unwrap();
 
-        open.send(PathBuf::from("/a")).unwrap();
-        assert_eq!(next(), Path::new("/a"));
-        assert_eq!(next(), Path::new("/a"));
-        open.send(PathBuf::from("/b")).unwrap();
-        while next() != Path::new("/b") {}
-        assert_eq!(next(), Path::new("/b"));
-        assert_eq!(next(), Path::new("/b"));
+        open.send("main".to_string()).unwrap();
+        assert_eq!(next(), "main");
+        assert_eq!(next(), "main");
+        owners.lock().unwrap().push("main-2".to_string());
+        open.send("main-2".to_string()).unwrap();
+        // Both are cleaned in the periods that follow.
+        let mut seen = HashSet::new();
+        while seen.len() < 2 {
+            seen.insert(next());
+        }
+        assert_eq!(
+            seen,
+            HashSet::from(["main".to_string(), "main-2".to_string()])
+        );
 
         drop(open);
         cleaner.join().unwrap();
+    }
+
+    // The folders the cleaner serves: one per open window, added on open and removed on close.
+    #[test]
+    fn the_shelf_cleaner_keeps_every_open_repository() {
+        let folders = ShelfFolders::default();
+        folders.open("main", PathBuf::from("/data/a"));
+        folders.open("main-2", PathBuf::from("/data/b"));
+        assert_eq!(
+            folders.dirs(),
+            [PathBuf::from("/data/a"), PathBuf::from("/data/b")]
+        );
+
+        folders.close("main");
+        assert_eq!(folders.dirs(), [PathBuf::from("/data/b")]);
+        assert_eq!(folders.dir_of("main"), None);
+        assert_eq!(folders.dir_of("main-2"), Some(PathBuf::from("/data/b")));
+
+        // A window that opens another repository (This Window) takes its old one's place.
+        folders.open("main-2", PathBuf::from("/data/c"));
+        assert_eq!(folders.dirs(), [PathBuf::from("/data/c")]);
+        folders.close("main-2");
+        assert!(folders.dirs().is_empty());
     }
 
     #[test]
@@ -3225,9 +4845,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_main_window_stops_the_watcher() {
+    fn only_the_main_windows_stop_the_watcher() {
         assert!(owns_watcher(MAIN_WINDOW));
+        assert!(owns_watcher("main-2"));
         assert!(!owns_watcher(DIFF_WINDOW));
+        assert!(!owns_watcher("diff-2"));
     }
 
     #[test]
@@ -3382,16 +5004,16 @@ mod tests {
     }
 
     // The first line of the body: outside the lock, because `file_write` also takes it, and with `?`
-    // so as not to continue if it could not be saved.
+    // so as not to continue if it could not be saved. Every command saves its own window's diff.
     #[test]
     fn whatever_touches_the_repository_saves_the_diff_window_first() {
-        let source = [
-            include_str!("commands.rs"),
-            include_str!("vcs_commands.rs"),
-            include_str!("get_version.rs"),
-            include_str!("hosting/commands.rs"),
-        ]
-        .concat();
+        let own = "flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;";
+        let sources = [
+            (include_str!("commands.rs"), own),
+            (include_str!("vcs_commands.rs"), own),
+            (include_str!("get_version.rs"), own),
+            (include_str!("hosting/commands.rs"), own),
+        ];
         for name in [
             "rollback_files",
             "lines_rollback",
@@ -3432,14 +5054,16 @@ mod tests {
             "github_pr_show_in_log",
             "gpg_config_set",
         ] {
-            let start = source.find(&format!("pub async fn {name}(")).unwrap();
+            let header = format!("pub async fn {name}(");
+            let (source, expected) = sources
+                .iter()
+                .find(|(source, _)| source.contains(&header))
+                .unwrap();
+            let start = source.find(&header).unwrap();
             let mut lines = source[start..].lines();
             lines.find(|line| line.ends_with(" {")).unwrap();
             let first = lines.next().unwrap().trim();
-            assert_eq!(
-                first, "flush_diff_window(&app, &state, SAVE_ACTION).await?;",
-                "{name}"
-            );
+            assert_eq!(first, *expected, "{name}");
         }
     }
 
@@ -3854,6 +5478,188 @@ mod tests {
         assert_eq!(info.branch, None);
     }
 
+    // Review Focus 3: the root through a symbolic link, or with a trailing slash, is the one
+    // another window has open; the calling window's own session does not count.
+    #[test]
+    fn focus_open_matches_canonical_roots() {
+        let repo = TempRepo::new();
+        let other = TempRepo::new();
+        let links = TempDir::new().unwrap();
+        let link = links.path().join("link");
+        std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+        let state = AppState::default();
+        for (label, path) in [("main", other.path()), ("main-2", repo.path())] {
+            *session_of(&state, label).unwrap().repo.lock().unwrap() = Some(RepoSession {
+                path: path.to_path_buf(),
+            });
+        }
+        // A session without a repository holds nothing.
+        session_of(&state, "main-3").unwrap();
+
+        let open = claimed_roots(&state);
+        let slash = PathBuf::from(format!("{}/", repo.path().display()));
+        let canonical = fs::canonicalize(repo.path()).unwrap();
+        for root in [repo.path().to_path_buf(), link.clone(), slash, canonical] {
+            let found = window_with_root(&open, &root, "main");
+            assert_eq!(found.as_deref(), Some("main-2"), "{root:?}");
+            assert_eq!(window_with_root(&open, &root, "main-2"), None, "{root:?}");
+            let found = window_with_root(&open, &root, "main-3");
+            assert_eq!(found.as_deref(), Some("main-2"), "{root:?}");
+        }
+        assert_eq!(window_with_root(&open, links.path(), "main"), None);
+        assert_eq!(
+            window_with_root(&open, &links.path().join("missing"), "main"),
+            None
+        );
+    }
+
+    // A window built for a root holds it only as its initial target until its page opens it: in
+    // that gap the root is already open there.
+    #[test]
+    fn a_window_still_loading_its_target_counts_as_open() {
+        let repo = TempRepo::new();
+        let links = TempDir::new().unwrap();
+        let link = links.path().join("link");
+        std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+        let state = AppState::default();
+        let root = repo.path().display().to_string();
+        state
+            .initial_targets
+            .lock()
+            .unwrap()
+            .store("main-2", root.clone());
+        session_of(&state, "main-2").unwrap();
+
+        let found = claimed_by(&state, &link, "main", |_| true);
+        assert_eq!(found.as_deref(), Some("main-2"));
+        // A window that is gone holds nothing.
+        assert_eq!(
+            claimed_by(&state, &link, "main", |label| label != "main-2"),
+            None
+        );
+
+        // Once its first open is over, its repository (or nothing) is what counts.
+        let claim = claim_opening(&state, "main-2", repo.path(), |_| true).unwrap();
+        drop(claim);
+        assert_eq!(claimed_by(&state, &link, "main", |_| true), None);
+    }
+
+    #[test]
+    fn a_new_window_is_not_built_for_a_root_already_loading() {
+        let repo = TempRepo::new();
+        let other = TempRepo::new();
+        let state = AppState::default();
+        let taken = HashSet::from(["main".to_string()]);
+        let root = repo.path().display().to_string();
+
+        let first = plan_new_window(&state, &root, &taken, |_| true);
+        assert_eq!(first, NewWindowPlan::Build("main-2".to_string()));
+        let slash = format!("{root}/");
+        let second = plan_new_window(&state, &slash, &taken, |_| true);
+        assert_eq!(second, NewWindowPlan::Existing("main-2".to_string()));
+
+        let elsewhere = other.path().display().to_string();
+        let third = plan_new_window(&state, &elsewhere, &taken, |_| true);
+        assert_eq!(third, NewWindowPlan::Build("main-3".to_string()));
+        let mut targets = state.initial_targets.lock().unwrap();
+        assert_eq!(targets.target_for("main-3", || None), Some(elsewhere));
+    }
+
+    // Two This Window opens of one root in two windows: the second finds the first opening it.
+    #[test]
+    fn two_opens_of_one_root_cannot_both_proceed() {
+        let repo = TempRepo::new();
+        let state = AppState::default();
+        let slash = PathBuf::from(format!("{}/", repo.path().display()));
+
+        let first = claim_opening(&state, "main", repo.path(), |_| true).unwrap();
+        let second = claim_opening(&state, "main-2", &slash, |_| true);
+        assert_eq!(second.err().as_deref(), Some("main"));
+
+        // Whatever way the open ends, the claim goes with it.
+        drop(first);
+        assert!(session_of(&state, "main")
+            .unwrap()
+            .opening
+            .lock()
+            .unwrap()
+            .is_none());
+        let second = claim_opening(&state, "main-2", &slash, |_| true).unwrap();
+        assert_eq!(
+            claim_opening(&state, "main", repo.path(), |_| true)
+                .err()
+                .as_deref(),
+            Some("main-2")
+        );
+        drop(second);
+    }
+
+    // The body of the function `signature` starts in `source`, up to its closing brace.
+    fn body_of<'a>(source: &'a str, signature: &str) -> &'a str {
+        let start = source.find(signature).unwrap();
+        let end = source[start..].find("\n}\n").unwrap();
+        &source[start..start + end]
+    }
+
+    // Final review: a window brought to the front may have been hidden as the last one, with its
+    // watcher stopped: it watches again and reads its state, as the Dock icon does.
+    #[test]
+    fn focusing_a_project_window_watches_it_again() {
+        let body = body_of(include_str!("commands.rs"), "fn focus_main(");
+        let reveal = body.find("reveal(&window)").unwrap();
+        let resume = body.find("resume_and_notify(app, label);").unwrap();
+        assert!(reveal < resume, "{body}");
+    }
+
+    // Final review: New Window gets a path from the page; Rust resolves it to the repository
+    // root before checking the claims and storing it as the new window's target.
+    #[test]
+    fn a_new_window_resolves_its_root_first() {
+        let body = body_of(
+            include_str!("commands.rs"),
+            "pub async fn project_new_window(",
+        );
+        let mut lines = body.lines().skip_while(|line| !line.ends_with(" {"));
+        lines.next();
+        assert_eq!(
+            lines.next().unwrap().trim(),
+            "let root = blocking_api(move || resolve_project(Path::new(&root))).await?;"
+        );
+        assert_eq!(
+            lines.next().unwrap().trim(),
+            "new_main_window(&app, &state, &root)"
+        );
+    }
+
+    #[test]
+    fn resolving_a_project_gives_its_root() {
+        let repo = TempRepo::new();
+        repo.commit("sub/deep/a.txt", b"1", "one");
+        let links = TempDir::new().unwrap();
+        let link = links.path().join("link");
+        std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+
+        for target in [
+            repo.path().to_path_buf(),
+            repo.path().join("sub/deep"),
+            PathBuf::from(format!("{}/", repo.path().display())),
+            link.join("sub"),
+        ] {
+            assert_eq!(
+                resolve_project(&target).unwrap(),
+                root_of(&repo),
+                "{target:?}"
+            );
+        }
+        let outside = TempDir::new().unwrap();
+        let error = resolve_project(outside.path()).unwrap_err();
+        assert_eq!(error.kind, "not_a_repository");
+        assert_eq!(
+            error.message,
+            ApiError::from(repo_info(outside.path()).unwrap_err()).message
+        );
+    }
+
     #[test]
     fn repo_open_without_repository() {
         let dir = TempDir::new().unwrap();
@@ -3893,11 +5699,11 @@ mod tests {
 
     fn watching_state(repo: &TempRepo) -> (AppState, mpsc::Receiver<()>) {
         let state = AppState::default();
-        *state.repo.lock().unwrap() = Some(RepoSession {
+        *main_session(&state).repo.lock().unwrap() = Some(RepoSession {
             path: repo.path().to_path_buf(),
         });
         let (sender, receiver) = mpsc::channel();
-        resume_watching(&state, move |_| {
+        resume_watching(&state, MAIN_WINDOW, move |_| {
             let _ = sender.send(());
         })
         .unwrap();
@@ -3910,12 +5716,12 @@ mod tests {
     fn closing_stops_the_watcher() {
         let repo = TempRepo::new();
         let (state, receiver) = watching_state(&repo);
-        assert!(state.watcher.lock().unwrap().is_some());
+        assert!(main_session(&state).watcher.lock().unwrap().is_some());
 
-        stop_watching(&state);
+        stop_watching(&state, MAIN_WINDOW);
         fs::write(repo.path().join("a.txt"), b"hello").unwrap();
 
-        assert!(state.watcher.lock().unwrap().is_none());
+        assert!(main_session(&state).watcher.lock().unwrap().is_none());
         assert!(receiver.recv_timeout(Duration::from_millis(800)).is_err());
     }
 
@@ -3923,14 +5729,14 @@ mod tests {
     fn reopening_restarts_the_watcher() {
         let repo = TempRepo::new();
         let (state, _receiver) = watching_state(&repo);
-        stop_watching(&state);
+        stop_watching(&state, MAIN_WINDOW);
 
         let (sender, receiver) = mpsc::channel();
-        resume_watching(&state, move |_| {
+        resume_watching(&state, MAIN_WINDOW, move |_| {
             let _ = sender.send(());
         })
         .unwrap();
-        assert!(state.watcher.lock().unwrap().is_some());
+        assert!(main_session(&state).watcher.lock().unwrap().is_some());
         while receiver.recv_timeout(Duration::from_millis(500)).is_ok() {}
         fs::write(repo.path().join("a.txt"), b"hello").unwrap();
 
@@ -3940,8 +5746,8 @@ mod tests {
     #[test]
     fn reopening_without_repository_does_not_watch() {
         let state = AppState::default();
-        resume_watching(&state, |_| {}).unwrap();
-        assert!(state.watcher.lock().unwrap().is_none());
+        resume_watching(&state, MAIN_WINDOW, |_| {}).unwrap();
+        assert!(main_session(&state).watcher.lock().unwrap().is_none());
     }
 
     #[test]
@@ -3949,7 +5755,10 @@ mod tests {
         let repo = TempRepo::new();
         let (state, receiver) = watching_state(&repo);
 
-        resume_watching(&state, |_| panic!("must not create another watcher")).unwrap();
+        resume_watching(&state, MAIN_WINDOW, |_| {
+            panic!("must not create another watcher")
+        })
+        .unwrap();
         fs::write(repo.path().join("a.txt"), b"hello").unwrap();
 
         assert!(receiver.recv_timeout(Duration::from_secs(2)).is_ok());
@@ -5094,14 +6903,29 @@ mod tests {
             assert!(is_git_menu_item(id), "{id}");
             assert!(starts_disabled(id), "{id}");
             assert!(!driven_by_state(id), "{id}");
-            assert_eq!(action_window(id, true), VIEWER_WINDOW, "{id}");
-            assert_eq!(action_window(id, false), MAIN_WINDOW, "{id}");
+            assert_eq!(
+                action_window(id, MAIN_WINDOW, Some("viewer")),
+                "viewer",
+                "{id}"
+            );
+            assert_eq!(action_window(id, MAIN_WINDOW, None), MAIN_WINDOW, "{id}");
+            assert_eq!(
+                action_window(id, MAIN_WINDOW, Some("main")),
+                MAIN_WINDOW,
+                "{id}"
+            );
         }
         assert!(!is_git_menu_item(FILE_GROUP));
         assert!(is_git_menu_item("Vcs.Show.Log"));
         assert!(!starts_disabled("Vcs.Show.Log"));
-        assert_eq!(action_window("Vcs.Show.Log", true), MAIN_WINDOW);
-        assert_eq!(action_window("ChangesView.Revert", true), MAIN_WINDOW);
+        assert_eq!(
+            action_window("Vcs.Show.Log", MAIN_WINDOW, Some("viewer")),
+            MAIN_WINDOW
+        );
+        assert_eq!(
+            action_window("ChangesView.Revert", MAIN_WINDOW, Some("viewer")),
+            MAIN_WINDOW
+        );
     }
 
     // `ChangesView.Shelve` is an executor action, hidden with the staging area like Create Patch;
@@ -5236,7 +7060,10 @@ mod tests {
         assert!(starts_hidden(GITHUB_GROUP));
         assert!(!starts_hidden(FILE_GROUP));
         assert!(!starts_disabled(VIEW_PULL_REQUESTS));
-        assert_eq!(action_window(VIEW_PULL_REQUESTS, true), MAIN_WINDOW);
+        assert_eq!(
+            action_window(VIEW_PULL_REQUESTS, MAIN_WINDOW, Some("viewer")),
+            MAIN_WINDOW
+        );
 
         let ids =
             |names: &[&str]| -> Vec<String> { names.iter().map(|id| id.to_string()).collect() };
@@ -5475,12 +7302,12 @@ mod tests {
         granted.sort();
 
         let all = vec![
-            "diff".to_string(),
-            "main".to_string(),
-            "merge".to_string(),
-            "viewer".to_string(),
+            "diff*".to_string(),
+            "main*".to_string(),
+            "merge*".to_string(),
+            "viewer*".to_string(),
         ];
-        let main = vec!["main".to_string()];
+        let main = vec!["main*".to_string()];
         let sorted = |mut windows: Vec<String>| {
             windows.sort();
             windows
@@ -5496,7 +7323,7 @@ mod tests {
                 // The selection history only listens to its updates.
                 (
                     "core:event:default".to_string(),
-                    vec!["selection-history".to_string()]
+                    vec!["selection-history*".to_string()]
                 ),
                 ("dialog:allow-open".to_string(), main.clone()),
                 ("dialog:allow-save".to_string(), main),
@@ -5508,6 +7335,9 @@ mod tests {
     fn closing_the_merge_window_is_asked_of_its_page() {
         assert_eq!(close_event_of(MERGE_WINDOW), MERGE_CLOSE_EVENT);
         assert_eq!(close_event_of(DIFF_WINDOW), DIFF_CLOSE_EVENT);
+        assert_eq!(close_event_of("merge-2"), MERGE_CLOSE_EVENT);
+        assert_eq!(close_event_of("diff-2"), DIFF_CLOSE_EVENT);
+        assert!(!owns_watcher("merge-2"));
         assert!(!owns_watcher(MERGE_WINDOW));
     }
 
@@ -5602,10 +7432,13 @@ mod tests {
         let start = source.find("pub async fn repo_open(").unwrap();
         let mut lines = source[start..].lines();
         lines.find(|line| line.ends_with(" {")).unwrap();
-        lines.next();
         assert_eq!(
             lines.next().unwrap().trim(),
-            "leave_merge_window(&app, &state, OPEN_ACTION).await?;"
+            "flush_diff_window(&app, &state, &window, OPEN_ACTION).await?;"
+        );
+        assert_eq!(
+            lines.next().unwrap().trim(),
+            "leave_merge_window(&app, &state, &window, OPEN_ACTION).await?;"
         );
     }
 
@@ -5654,5 +7487,785 @@ mod tests {
         );
         let result: MergeResult = serde_json::from_str("\"theirs\"").unwrap();
         assert_eq!(result, MergeResult::Theirs);
+    }
+
+    fn open_repo(state: &AppState, label: &str, repo: &Path) {
+        *session_of(state, label).unwrap().repo.lock().unwrap() = Some(RepoSession {
+            path: repo.to_path_buf(),
+        });
+    }
+
+    // Review Focus 2: closing `main-2` while its push waits for a password. The question goes
+    // to `main-2`, which is still there (its session too); the close waits for the push, and
+    // only then are its auxiliary windows and its session dropped. `main` is not touched.
+    #[test]
+    fn closing_a_window_waits_for_its_writes_and_shows_its_prompts() {
+        const WAIT: Duration = Duration::from_secs(20);
+        let first = TempRepo::new();
+        let second = TempRepo::new();
+        let state = Arc::new(AppState::default());
+        open_repo(&state, "main", first.path());
+        open_repo(&state, "main-2", second.path());
+        state.open_order.lock().unwrap().push("main-2".to_string());
+        state.console.output("main", "a line of main");
+        state.console.output("main-2", "a line of main-2");
+        // What happened, in order.
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (asked, prompts) = mpsc::channel();
+        let asked = Mutex::new(asked);
+        let (seen_state, seen_events) = (state.clone(), events.clone());
+        let server = Server::start_with_program(
+            PathBuf::from("/the/app"),
+            move |owner: &str, id, _| {
+                // `start_askpass` shows the question in the window with this label.
+                let open = seen_state.sessions.lock().unwrap().contains_key(owner);
+                seen_events
+                    .lock()
+                    .unwrap()
+                    .push(format!("prompt in {owner}, session: {open}"));
+                asked.lock().unwrap().send(id).is_ok()
+            },
+            |_: &str, _| {},
+        )
+        .unwrap();
+        state.tasks.use_askpass(server.handle());
+        let (entered, inside) = mpsc::channel();
+        let (ask, asking) = mpsc::channel::<()>();
+        let pushed = events.clone();
+        let push = state.tasks.start(
+            "main-2",
+            second.path(),
+            crate::task::TaskKind::Write,
+            "push".to_string(),
+            move |ctx| {
+                entered.send(()).unwrap();
+                asking.recv_timeout(WAIT).unwrap();
+                let answer = ctx
+                    .ask_as_git("Password for 'https://example.com':")
+                    .map_err(|error| GitError::Io(error.to_string()))?;
+                let answered = !answer.is_empty();
+                pushed
+                    .lock()
+                    .unwrap()
+                    .push(format!("push answered: {answered}"));
+                Ok(())
+            },
+        );
+        inside.recv_timeout(WAIT).unwrap();
+
+        thread::scope(|scope| {
+            let closing = scope.spawn(|| {
+                finish_closing(
+                    &state,
+                    "main-2",
+                    WAIT,
+                    || Ok(()),
+                    || {},
+                    || true,
+                    || {
+                        let open = state.sessions.lock().unwrap().contains_key("main-2");
+                        events
+                            .lock()
+                            .unwrap()
+                            .push(format!("auxiliary windows destroyed, session: {open}"));
+                    },
+                ) == CloseOutcome::Closed
+            });
+            // The question comes during the wait.
+            ask.send(()).unwrap();
+            let id = prompts.recv_timeout(WAIT).unwrap();
+            assert!(!closing.is_finished(), "it did not wait for the push");
+            // Another window cannot answer it; the closing one can.
+            assert!(!server.answer("main", id, Some("wrong".to_string())));
+            assert!(server.answer("main-2", id, Some("secret".to_string())));
+            assert!(closing.join().unwrap());
+        });
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "prompt in main-2, session: true",
+                "push answered: true",
+                "auxiliary windows destroyed, session: true",
+            ]
+        );
+        assert!(!state.tasks.cancel("main-2", push), "the push had ended");
+        assert!(!state.sessions.lock().unwrap().contains_key("main-2"));
+        assert!(state.console.lines_of("main-2").is_empty());
+        assert_eq!(*state.open_order.lock().unwrap(), ["main"]);
+        // `main` keeps its repository, its console and its writes.
+        assert_eq!(repo_of(&state, "main").unwrap(), first.path());
+        assert_eq!(state.console.lines_of("main").len(), 1);
+        let (done, finished) = mpsc::channel();
+        state.tasks.listen(move |event| {
+            if event.state != crate::task::TaskState::Running {
+                let _ = done.send(event.state);
+            }
+        });
+        state.tasks.start(
+            "main",
+            first.path(),
+            crate::task::TaskKind::Write,
+            "write".to_string(),
+            |_| Ok(()),
+        );
+        assert_eq!(
+            finished.recv_timeout(WAIT).unwrap(),
+            crate::task::TaskState::Done
+        );
+    }
+
+    // Past the limit the window stays as it was, and writes again.
+    #[test]
+    fn a_close_whose_writes_do_not_finish_keeps_the_window() {
+        let repo = TempRepo::new();
+        let state = AppState::default();
+        open_repo(&state, "main-2", repo.path());
+        state.open_order.lock().unwrap().push("main-2".to_string());
+        let (release, released) = mpsc::channel::<()>();
+        let (entered, inside) = mpsc::channel();
+        state.tasks.start(
+            "main-2",
+            repo.path(),
+            crate::task::TaskKind::Write,
+            "slow".to_string(),
+            move |_| {
+                entered.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(20));
+                Ok(())
+            },
+        );
+        inside.recv_timeout(Duration::from_secs(20)).unwrap();
+        let mut destroyed = false;
+
+        let closed = finish_closing(
+            &state,
+            "main-2",
+            Duration::from_millis(100),
+            || Ok(()),
+            || {},
+            || true,
+            || destroyed = true,
+        );
+
+        assert_eq!(closed, CloseOutcome::TimedOut);
+        assert!(!destroyed);
+        assert_eq!(repo_of(&state, "main-2").unwrap(), repo.path());
+        assert_eq!(*state.open_order.lock().unwrap(), ["main", "main-2"]);
+        release.send(()).unwrap();
+        // It writes again: `resume_writes_of` lifted the refusal.
+        let (done, finished) = mpsc::channel();
+        state.tasks.listen(move |event| {
+            if event.title == "after" && event.state != crate::task::TaskState::Running {
+                let _ = done.send(event.state);
+            }
+        });
+        state.tasks.start(
+            "main-2",
+            repo.path(),
+            crate::task::TaskKind::Write,
+            "after".to_string(),
+            |_| Ok(()),
+        );
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(20)).unwrap(),
+            crate::task::TaskState::Done
+        );
+    }
+
+    // Review Focus 5: a Git menu action while an auxiliary window of `main-2` has the focus goes
+    // to `main-2` or its viewer, never to `main`, whatever else is open.
+    #[test]
+    fn a_menu_action_goes_to_the_focused_owner() {
+        let id = FILE_MENU[0];
+        assert_eq!(action_window(id, "main-2", Some("viewer-2")), "viewer-2");
+        assert_eq!(
+            action_window("Vcs.Show.Log", "main-2", Some("viewer-2")),
+            "main-2"
+        );
+        // The first window's viewer has the focus, but the menu belongs to `main-2`.
+        assert_eq!(action_window(id, "main-2", Some("viewer")), "main-2");
+        assert_eq!(action_window(id, "main-2", Some("main-2")), "main-2");
+        assert_eq!(action_window(id, "main-2", Some("diff-2")), "main-2");
+        assert_eq!(action_window(id, "main-2", None), "main-2");
+
+        // An auxiliary window gaining the focus makes its owner the menu's.
+        let state = AppState::default();
+        assert_eq!(menu_owner(&state), "main");
+        assert_eq!(menu_follows(&state, "viewer-2").as_deref(), Some("main-2"));
+        assert_eq!(menu_owner(&state), "main-2");
+        assert_eq!(menu_follows(&state, "viewer-2"), None);
+        assert_eq!(menu_follows(&state, "diff").as_deref(), Some("main"));
+        assert_eq!(menu_owner(&state), "main");
+        // A window that belongs to no project window leaves it as it was.
+        assert_eq!(menu_follows(&state, "settings"), None);
+        assert_eq!(menu_owner(&state), "main");
+    }
+
+    // The menu state a window sends before the native focus event made it the owner is refused;
+    // the owner change itself names who must send it again, and nobody else.
+    #[test]
+    fn a_new_menu_owner_is_asked_to_send_its_menu_state_again() {
+        let state = AppState::default();
+        assert!(!menu_accepts(&state, "main-2"));
+        // The page's `focus` reached Rust first: refused, and nothing re-sends it by itself.
+        assert_eq!(menu_follows(&state, "main-2").as_deref(), Some("main-2"));
+        assert!(menu_accepts(&state, "main-2"));
+        assert!(!menu_accepts(&state, "main"));
+        // The same owner again, or a window of no project, asks nobody.
+        assert_eq!(menu_follows(&state, "viewer-2"), None);
+        assert_eq!(menu_follows(&state, "settings"), None);
+        // An auxiliary window of another project: that project is asked, not the one focused.
+        assert_eq!(menu_follows(&state, "viewer").as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn menu_state_from_an_unfocused_window_is_ignored() {
+        let state = AppState::default();
+        *state.last_focused_main.lock().unwrap() = "main-2".to_string();
+        assert!(!menu_accepts(&state, "main"));
+        assert!(!menu_accepts(&state, "viewer"));
+        assert!(menu_accepts(&state, "main-2"));
+        assert!(menu_accepts(&state, "viewer-2"));
+        assert!(!menu_accepts(&state, "settings"));
+    }
+
+    // The recent list leaves out the repository of the window that owns the menu.
+    #[test]
+    fn recent_projects_leave_out_the_focused_windows_repository() {
+        let state = AppState::default();
+        open_repo(&state, "main", Path::new("/work/a"));
+        open_repo(&state, "main-2", Path::new("/work/b"));
+        *state.last_focused_main.lock().unwrap() = "main-2".to_string();
+        let projects = vec!["/work/a".to_string(), "/work/b".to_string()];
+
+        let current = menu_repo(&state);
+        let entries = recent::menu_entries(&projects, current.as_deref(), None);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/work/a"]
+        );
+
+        *state.last_focused_main.lock().unwrap() = "main".to_string();
+        let current = menu_repo(&state);
+        let entries = recent::menu_entries(&projects, current.as_deref(), None);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/work/b"]
+        );
+    }
+
+    // The open list: the windows' repositories in their opening order, a window being opened
+    // with the target it was built for, and the last focused one; a closed window leaves it, and
+    // when it was the last focused another window takes that place.
+    #[test]
+    fn the_open_list_follows_the_windows() {
+        let state = AppState::default();
+        open_repo(&state, "main", Path::new("/work/a"));
+        open_repo(&state, "main-3", Path::new("/work/c"));
+        state
+            .initial_targets
+            .lock()
+            .unwrap()
+            .store("main-4", "/work/d".to_string());
+        *state.open_order.lock().unwrap() = ["main", "main-3", "main-2", "main-4"]
+            .map(String::from)
+            .to_vec();
+        // `main-2` has no repository: it is not listed.
+        open_repo(&state, "main-2", Path::new("/work/b"));
+        *session_of(&state, "main-2").unwrap().repo.lock().unwrap() = None;
+        *state.last_focused_main.lock().unwrap() = "main-3".to_string();
+        let exists = |label: &str| label != "main-5";
+
+        let open = open_snapshot(&state, exists);
+
+        assert_eq!(open.projects, ["/work/a", "/work/c", "/work/d"]);
+        assert_eq!(open.last_focused.as_deref(), Some("/work/c"));
+
+        assert_eq!(
+            finish_closing(
+                &state,
+                "main-3",
+                Duration::from_secs(5),
+                || Ok(()),
+                || {},
+                || true,
+                || {}
+            ),
+            CloseOutcome::Closed
+        );
+        let open = open_snapshot(&state, exists);
+        assert_eq!(open.projects, ["/work/a", "/work/d"]);
+        assert_eq!(*state.last_focused_main.lock().unwrap(), "main");
+        assert_eq!(open.last_focused.as_deref(), Some("/work/a"));
+    }
+
+    // Review Focus 4: quitting while `main-2`, not focused, has a half-done merge. The question
+    // is asked in `merge-2`, the user keeps the merge, and the quit stops for every window:
+    // nothing exits, `main-3` is not asked, and `main` goes on as before.
+    #[test]
+    fn quit_stops_when_any_window_refuses() {
+        let first = TempRepo::new();
+        let state = Arc::new(AppState::default());
+        open_repo(&state, "main", first.path());
+        for owner in ["main", "main-2", "main-3"] {
+            *session_of(&state, owner)
+                .unwrap()
+                .merge_ready
+                .lock()
+                .unwrap() = true;
+        }
+        // Only `main-2` and `main-3` have a merge window.
+        let exists = |label: &str| label == "merge-2" || label == "merge-3";
+        let left = Arc::new(Mutex::new(Vec::<String>::new()));
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut exited = false;
+
+        let quit = tauri::async_runtime::block_on(quit_flow(
+            ["main", "main-2", "main-3"].map(String::from).to_vec(),
+            |owner| {
+                let (state, left, asked) = (state.clone(), left.clone(), asked.clone());
+                async move {
+                    left.lock().unwrap().push(owner.clone());
+                    assert!(flush_request(&state, &owner, |_| false)?.is_none());
+                    let Some((merge, answer)) = merge_leave_request(&state, &owner, exists)? else {
+                        return Ok(());
+                    };
+                    asked.lock().unwrap().push(merge.clone());
+                    // The page of that merge window acknowledges, then the user keeps the merge.
+                    let session = session_of(&state, &merge)?;
+                    answer_merge_received(&session);
+                    answer_merge_leave(&session, false);
+                    wait_for_merge(
+                        &answer,
+                        Duration::from_secs(5),
+                        Duration::from_secs(5),
+                        QUIT_ACTION,
+                    )
+                }
+            },
+            |_| false,
+            || exited = true,
+        ));
+
+        let (owner, message) = quit.unwrap_err();
+        assert_eq!(owner, "main-2");
+        assert!(message.contains("half-done merge"), "{message}");
+        assert!(message.contains(QUIT_ACTION), "{message}");
+        assert!(!exited);
+        assert_eq!(*left.lock().unwrap(), ["main", "main-2"]);
+        assert_eq!(*asked.lock().unwrap(), ["merge-2"]);
+        // `main` is untouched: its repository, nothing queued, and its writes still run.
+        assert_eq!(repo_of(&state, "main").unwrap(), first.path());
+        assert!(session_of(&state, "main")
+            .unwrap()
+            .merge_leave
+            .lock()
+            .unwrap()
+            .is_empty());
+        let (done, finished) = mpsc::channel();
+        state.tasks.listen(move |event| {
+            if event.state != crate::task::TaskState::Running {
+                let _ = done.send(event.state);
+            }
+        });
+        state.tasks.start(
+            "main",
+            first.path(),
+            crate::task::TaskKind::Write,
+            "write".to_string(),
+            |_| Ok(()),
+        );
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(20)).unwrap(),
+            crate::task::TaskState::Done
+        );
+    }
+
+    // With every window agreeing, the quit goes on to wait for the writes and exit.
+    #[test]
+    fn quit_goes_on_when_every_window_agrees() {
+        let mut exited = false;
+        let mut left = Vec::new();
+
+        let quit = tauri::async_runtime::block_on(quit_flow(
+            ["main", "main-2"].map(String::from).to_vec(),
+            |owner| {
+                left.push(owner);
+                async { Ok(()) }
+            },
+            |_| false,
+            || exited = true,
+        ));
+
+        assert!(quit.is_ok());
+        assert!(exited);
+        assert_eq!(left, ["main", "main-2"]);
+    }
+
+    // Final review: `app-activated` names the project window of the window that got the focus,
+    // an auxiliary one included, so that only that main page looks at the clipboard.
+    #[test]
+    fn activation_names_the_activated_project_window() {
+        assert_eq!(activated_owner("main").as_deref(), Some("main"));
+        assert_eq!(activated_owner("viewer-2").as_deref(), Some("main-2"));
+        assert_eq!(activated_owner("merge-3").as_deref(), Some("main-3"));
+        assert_eq!(activated_owner("settings"), None);
+    }
+
+    // Final review: a second Quit while one runs does nothing; the first one goes on.
+    #[test]
+    fn a_second_quit_while_one_runs_does_nothing() {
+        let state = AppState::default();
+
+        assert!(begin_quit(&state));
+        assert!(!begin_quit(&state));
+        assert!(state.quitting.load(Ordering::SeqCst));
+
+        // A quit that did not go ahead lets the next one start.
+        state.quitting.store(false, Ordering::SeqCst);
+        assert!(begin_quit(&state));
+    }
+
+    // Final review: a window whose close is finishing is not asked, and one that closes while it
+    // is asked does not stop the quit: its leave flow fails only because it has gone.
+    #[test]
+    fn quit_skips_the_windows_that_closed() {
+        let state = AppState::default();
+        open_repo(&state, "main", Path::new("/work/a"));
+        open_repo(&state, "main-2", Path::new("/work/b"));
+        open_repo(&state, "main-3", Path::new("/work/c"));
+        assert_eq!(
+            finish_closing(
+                &state,
+                "main-2",
+                Duration::from_secs(5),
+                || Ok(()),
+                || {},
+                || true,
+                || {}
+            ),
+            CloseOutcome::Closed
+        );
+        let left = Mutex::new(Vec::<String>::new());
+        let mut exited = false;
+
+        let quit = tauri::async_runtime::block_on(quit_flow(
+            ["main", "main-2", "main-3"].map(String::from).to_vec(),
+            |owner| {
+                left.lock().unwrap().push(owner.clone());
+                let state = &state;
+                async move {
+                    if owner == "main-3" {
+                        // It finishes closing while its leave flow runs.
+                        forget_window(state, &owner);
+                    }
+                    session_of(state, &owner).map(drop)
+                }
+            },
+            |owner| state.closed_owners.lock().unwrap().contains(owner),
+            || exited = true,
+        ));
+
+        assert!(quit.is_ok(), "{quit:?}");
+        assert!(exited);
+        assert_eq!(*left.lock().unwrap(), ["main", "main-3"]);
+    }
+
+    // Fix round 1: closing `main` and then `main-2` before `main` is gone. Only `main` is
+    // destroyed; `main-2`, the last one, is hidden and keeps its session and its place in the
+    // open list. A close whose other windows have all gone meanwhile hides instead.
+    #[test]
+    fn two_closes_in_flight_destroy_one_and_hide_the_last() {
+        let state = AppState::default();
+        open_repo(&state, "main", Path::new("/work/a"));
+        open_repo(&state, "main-2", Path::new("/work/b"));
+        state.open_order.lock().unwrap().push("main-2".to_string());
+        let mains = ["main", "main-2"].map(String::from).to_vec();
+
+        assert_eq!(start_close(&state, "main", &mains), CloseStart::Close);
+        assert_eq!(
+            start_close(&state, "main", &mains),
+            CloseStart::AlreadyClosing
+        );
+        assert_eq!(start_close(&state, "main-2", &mains), CloseStart::Hide);
+
+        let closed = finish_closing(
+            &state,
+            "main",
+            Duration::from_secs(5),
+            || Ok(()),
+            || {},
+            || other_main_remains(&state, "main", &mains),
+            || {},
+        );
+        assert_eq!(closed, CloseOutcome::Closed);
+        assert_eq!(repo_of(&state, "main-2").unwrap(), Path::new("/work/b"));
+        assert_eq!(
+            open_snapshot(&state, |label| label == "main-2").projects,
+            ["/work/b"]
+        );
+
+        // `main-3` starts closing with `main-4` there, which goes before `main-3` is done.
+        open_repo(&state, "main-3", Path::new("/work/c"));
+        state.open_order.lock().unwrap().push("main-3".to_string());
+        let both = ["main-3", "main-4"].map(String::from).to_vec();
+        assert_eq!(start_close(&state, "main-3", &both), CloseStart::Close);
+        let alone = ["main-3"].map(String::from).to_vec();
+        let mut destroyed = false;
+        let kept = finish_closing(
+            &state,
+            "main-3",
+            Duration::from_secs(5),
+            || Ok(()),
+            || {},
+            || other_main_remains(&state, "main-3", &alone),
+            || destroyed = true,
+        );
+        assert_eq!(kept, CloseOutcome::Hide);
+        assert!(!destroyed);
+        assert_eq!(repo_of(&state, "main-3").unwrap(), Path::new("/work/c"));
+        assert!(state
+            .open_order
+            .lock()
+            .unwrap()
+            .contains(&"main-3".to_string()));
+    }
+
+    // Fix round 1: what was typed in the diff window during the wait is saved before that window
+    // is destroyed; if it cannot be saved, nothing is closed and the window writes again.
+    #[test]
+    fn a_close_saves_the_diff_window_again_before_destroying_it() {
+        let repo = TempRepo::new();
+        let state = AppState::default();
+        open_repo(&state, "main-2", repo.path());
+        let events = Mutex::new(Vec::<String>::new());
+        let (release, released) = mpsc::channel::<()>();
+        let (entered, inside) = mpsc::channel();
+        let written = Arc::new(AtomicBool::new(false));
+        let done = written.clone();
+        state.tasks.start(
+            "main-2",
+            repo.path(),
+            crate::task::TaskKind::Write,
+            "write".to_string(),
+            move |_| {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(20)).unwrap();
+                done.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        inside.recv_timeout(Duration::from_secs(20)).unwrap();
+        release.send(()).unwrap();
+
+        let closed = finish_closing(
+            &state,
+            "main-2",
+            Duration::from_secs(20),
+            || {
+                let write = written.load(Ordering::SeqCst);
+                events
+                    .lock()
+                    .unwrap()
+                    .push(format!("diff saved, write done: {write}"));
+                Ok(())
+            },
+            || {},
+            || true,
+            || events.lock().unwrap().push("destroyed".to_string()),
+        );
+
+        assert_eq!(closed, CloseOutcome::Closed);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["diff saved, write done: true", "destroyed"]
+        );
+
+        // A refused save keeps everything.
+        let other = TempRepo::new();
+        open_repo(&state, "main-3", other.path());
+        let mut destroyed = false;
+        let refused = finish_closing(
+            &state,
+            "main-3",
+            Duration::from_secs(5),
+            || Err(failed("The diff window is not responding".to_string())),
+            || {},
+            || true,
+            || destroyed = true,
+        );
+        assert_eq!(
+            refused,
+            CloseOutcome::Refused("The diff window is not responding".to_string())
+        );
+        assert!(!destroyed);
+        assert_eq!(repo_of(&state, "main-3").unwrap(), other.path());
+        let (send, finished) = mpsc::channel();
+        state.tasks.listen(move |event| {
+            if event.title == "after" && event.state != crate::task::TaskState::Running {
+                let _ = send.send(event.state);
+            }
+        });
+        state.tasks.start(
+            "main-3",
+            other.path(),
+            crate::task::TaskKind::Write,
+            "after".to_string(),
+            |_| Ok(()),
+        );
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(20)).unwrap(),
+            crate::task::TaskState::Done
+        );
+    }
+
+    // Final review: the page stays usable during the wait, so what was typed in the commit
+    // message then is saved again once the writes ended, after the diff window, before anything
+    // is destroyed. A close that does not go ahead saves nothing more: the window stays.
+    #[test]
+    fn a_close_saves_the_commit_draft_again_after_the_wait() {
+        let repo = TempRepo::new();
+        let state = AppState::default();
+        open_repo(&state, "main-2", repo.path());
+        let events = Mutex::new(Vec::<String>::new());
+        let (release, released) = mpsc::channel::<()>();
+        let (entered, inside) = mpsc::channel();
+        let written = Arc::new(AtomicBool::new(false));
+        let done = written.clone();
+        state.tasks.start(
+            "main-2",
+            repo.path(),
+            crate::task::TaskKind::Write,
+            "write".to_string(),
+            move |_| {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(20)).unwrap();
+                done.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        inside.recv_timeout(Duration::from_secs(20)).unwrap();
+        release.send(()).unwrap();
+
+        let closed = finish_closing(
+            &state,
+            "main-2",
+            Duration::from_secs(20),
+            || {
+                events.lock().unwrap().push("diff saved".to_string());
+                Ok(())
+            },
+            || {
+                let write = written.load(Ordering::SeqCst);
+                events
+                    .lock()
+                    .unwrap()
+                    .push(format!("draft saved, write done: {write}"));
+            },
+            || true,
+            || events.lock().unwrap().push("destroyed".to_string()),
+        );
+
+        assert_eq!(closed, CloseOutcome::Closed);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["diff saved", "draft saved, write done: true", "destroyed"]
+        );
+
+        let other = TempRepo::new();
+        open_repo(&state, "main-3", other.path());
+        let mut saved = false;
+        let refused = finish_closing(
+            &state,
+            "main-3",
+            Duration::from_secs(5),
+            || Err(failed("The diff window is not responding".to_string())),
+            || saved = true,
+            || true,
+            || {},
+        );
+        assert!(matches!(refused, CloseOutcome::Refused(_)));
+        assert!(!saved);
+    }
+
+    // Final review: a window that is closing, or closed, opens no merge window: it would come
+    // after the leave flow asked its merge window, and be destroyed with a half-done merge.
+    #[test]
+    fn a_closing_window_opens_no_merge_window() {
+        let state = AppState::default();
+        open_repo(&state, "main-2", Path::new("/work/b"));
+        let mains = ["main", "main-2"].map(String::from).to_vec();
+        assert!(merge_open_session(&state, "main-2").is_ok());
+
+        assert_eq!(start_close(&state, "main-2", &mains), CloseStart::Close);
+
+        for label in ["main-2", "diff-2", "viewer-2"] {
+            let refused = merge_open_session(&state, label).map(drop).unwrap_err();
+            assert!(
+                refused.message.contains(MERGE_OPEN_ACTION),
+                "{}",
+                refused.message
+            );
+        }
+        assert!(merge_open_session(&state, "main").is_ok());
+    }
+
+    // Fix round 1: a closed window's label never gets a session again, and a window that is
+    // closing opens no repository.
+    #[test]
+    fn a_closed_window_gets_no_session_and_a_closing_one_opens_nothing() {
+        let state = AppState::default();
+        open_repo(&state, "main-2", Path::new("/work/b"));
+        assert_eq!(
+            finish_closing(
+                &state,
+                "main-2",
+                Duration::from_secs(5),
+                || Ok(()),
+                || {},
+                || true,
+                || {}
+            ),
+            CloseOutcome::Closed
+        );
+
+        assert!(session_of(&state, "main-2").is_err());
+        assert!(session_of(&state, "diff-2").is_err());
+        assert!(!state.sessions.lock().unwrap().contains_key("main-2"));
+        assert!(refuse_if_closing(&state, "main-2").is_err());
+
+        let mains = ["main", "main-3"].map(String::from).to_vec();
+        assert!(refuse_if_closing(&state, "main-3").is_ok());
+        assert_eq!(start_close(&state, "main-3", &mains), CloseStart::Close);
+        let refused = refuse_if_closing(&state, "main-3").unwrap_err();
+        assert!(refused.message.contains(OPEN_ACTION), "{}", refused.message);
+        assert!(session_of(&state, "main").is_ok());
+    }
+
+    // Fix round 1: the open list is not written while the app quits.
+    #[test]
+    fn quitting_writes_no_open_list() {
+        let dir = TempDir::new().unwrap();
+        let state = AppState::default();
+        open_repo(&state, "main", Path::new("/work/a"));
+
+        assert!(write_open_list(&state, dir.path(), |_| true).unwrap());
+        let file = dir.path().join(open_projects::FILE);
+        assert_eq!(
+            open_projects::load(dir.path()).unwrap().projects,
+            ["/work/a"]
+        );
+
+        fs::remove_file(&file).unwrap();
+        state.quitting.store(true, Ordering::SeqCst);
+        assert!(!write_open_list(&state, dir.path(), |_| true).unwrap());
+        assert!(!file.exists());
     }
 }

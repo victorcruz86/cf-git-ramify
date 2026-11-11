@@ -424,6 +424,7 @@ mod tests {
             let (remote, branch) = (remote.to_string(), branch.to_string());
             let options = options.to_vec();
             self.runner.start(
+                "main",
                 self.repo.path(),
                 TaskKind::Read,
                 "Pull".to_string(),
@@ -448,6 +449,7 @@ mod tests {
             let sync = self.sync.clone();
             let remote_branch = remote_branch.to_string();
             self.runner.start(
+                "main",
                 self.repo.path(),
                 TaskKind::Read,
                 "Update".to_string(),
@@ -481,6 +483,7 @@ mod tests {
             let sync = self.sync.clone();
             let options = options.to_vec();
             let id = self.runner.start(
+                "main",
                 self.repo.path(),
                 TaskKind::Read,
                 "Pull".to_string(),
@@ -500,7 +503,7 @@ mod tests {
                 assert!(Instant::now() < deadline, "the command did not arrive");
                 thread::sleep(Duration::from_millis(20));
             }
-            self.runner.cancel(id);
+            self.runner.cancel("main", id);
             receive.recv_timeout(WAIT).unwrap()
         }
 
@@ -531,7 +534,9 @@ mod tests {
         }
 
         fn incoming(&self, file: &str, contents: &str) -> String {
-            let head = self.colleague.commit(file, contents.as_bytes(), "from outside");
+            let head = self
+                .colleague
+                .commit(file, contents.as_bytes(), "from outside");
             self.colleague.git(&["push", "-q", "origin", "main"]);
             head
         }
@@ -554,14 +559,14 @@ mod tests {
 
         fn ran(&self, command: &str) -> bool {
             self.console
-                .lines()
+                .lines_of("main")
                 .iter()
                 .any(|line| line.command && line.text.ends_with(command))
         }
 
         fn ran_anything_with(&self, word: &str) -> bool {
             self.console
-                .lines()
+                .lines_of("main")
                 .iter()
                 .any(|line| line.command && line.text.split(' ').any(|part| part == word))
         }
@@ -759,7 +764,7 @@ mod tests {
     }
 
     fn ran_submodule_update(harness: &Harness) -> bool {
-        let lines = harness.console.lines();
+        let lines = harness.console.lines_of("main");
         lines
             .iter()
             .any(|line| line.command && line.text.contains(" submodule update "))
@@ -1113,6 +1118,7 @@ mod tests {
         let data = harness.data.path().to_path_buf();
         let sync = harness.sync.clone();
         harness.runner.start(
+            "main",
             harness.repo.path(),
             TaskKind::Read,
             "Pull".to_string(),

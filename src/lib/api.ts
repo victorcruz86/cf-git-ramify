@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
+import { emitToOwner, listenOwn } from "./windows";
 
 export interface DiffTiming {
   sidesMs: number;
@@ -428,6 +429,9 @@ export type IncomingCheck = "auto" | "always" | "never";
 
 export type UpdateMethod = "merge" | "rebase";
 
+// `GeneralSettings.confirmOpenNewProject2`: where opening a project goes.
+export type OpenProjectIn = "ask" | "new" | "current";
+
 export interface Settings {
   gitPath: string | null;
   stagingArea: boolean;
@@ -463,6 +467,10 @@ export interface Settings {
   showDropCommitDialog: boolean;
   // `Connection timeout:` of the GitHub page, in milliseconds (`0..60000`, default 5000).
   githubConnectionTimeoutMs: number;
+  // `Open project in:` (`confirmOpenNewProject2`).
+  openProjectIn: OpenProjectIn;
+  // `Reopen projects on startup` (`reopenLastProject`).
+  reopenProjects: boolean;
 }
 
 export type CommitMode = "modal" | "non-modal";
@@ -808,7 +816,7 @@ export const viewerContent = (path: string, revision: string | null) =>
   invoke<ViewerContent>("viewer_content", { path, revision });
 // `viewer_open` sends it to the viewer only (`emit_to`).
 export const onViewerOpen = (handler: () => void) =>
-  listen("viewer-open", () => handler(), { target: ownWindow() });
+  listenOwn("viewer-open", () => handler());
 // A file in a commit (`GitFileRevision`): what `Annotate Revision` and `Annotate Previous
 // Revision` open.
 export interface AnnotationTarget {
@@ -877,9 +885,7 @@ export const annotateRefresh = (request: AnnotateRefreshRequest) =>
 export const annotationShowInLog = (hash: string) =>
   invoke<void>("annotation_show_in_log", { hash });
 export const onAnnotationShowInLog = (handler: (hash: string) => void) =>
-  listen<string>("annotation-show-in-log", (event) => handler(event.payload), {
-    target: ownWindow(),
-  });
+  listenOwn<string>("annotation-show-in-log", (event) => handler(event.payload));
 // Show History for Selection: the local file, its selected lines (from 0, both included) and its
 // text as the viewer shows it. `stream` tells one run's updates from another's.
 export interface SelectionRequest {
@@ -923,11 +929,9 @@ export const selectionHistoryStart = (request: SelectionRequest) =>
 // Cancels the stream and closes the window.
 export const selectionHistoryClose = () => invoke<void>("selection_history_close");
 export const onSelectionHistoryOpen = (handler: () => void) =>
-  listen("selection-history-open", () => handler(), { target: ownWindow() });
+  listenOwn("selection-history-open", () => handler());
 export const onSelectionHistoryUpdate = (handler: (update: SelectionUpdate) => void) =>
-  listen<SelectionUpdate>("selection-history-update", (event) => handler(event.payload), {
-    target: ownWindow(),
-  });
+  listenOwn<SelectionUpdate>("selection-history-update", (event) => handler(event.payload));
 // `Show All Affected Files` of a row, which the main window's `Changes` window shows.
 export interface AffectedFiles {
   hash: string;
@@ -936,9 +940,7 @@ export interface AffectedFiles {
 export const selectionHistoryShowAffected = (affected: AffectedFiles) =>
   invoke<void>("selection_history_show_affected", { affected });
 export const onSelectionHistoryShowAffected = (handler: (affected: AffectedFiles) => void) =>
-  listen<AffectedFiles>("selection-history-show-affected", (event) => handler(event.payload), {
-    target: ownWindow(),
-  });
+  listenOwn<AffectedFiles>("selection-history-show-affected", (event) => handler(event.payload));
 // An entry of the Project tree: `path` is relative to the repository, exactly as the disk spells it.
 export interface TreeEntry {
   name: string;
@@ -958,6 +960,42 @@ export const treeListAt = (revision: string, dir: string) =>
 export const showWindow = () => invoke<void>("show_window");
 export const hideWindow = () => invoke<void>("hide_window");
 export const repoOpen = (repo: string) => invoke<RepoInfo>("repo_open", { repo });
+// The open flow (`src/project/open.ts`). The repository root of a folder, as `repoOpen` would
+// open it: a subfolder gives its root, a folder outside any repository fails.
+export const projectResolve = (target: string) => invoke<string>("project_resolve", { target });
+// `true` if another window has `root` open: it was brought to the front.
+export const projectFocusOpen = (root: string) => invoke<boolean>("project_focus_open", { root });
+// The project widget's popup: the repositories open in the other windows, and the recent ones that
+// are not open in any window (at most 100). `homePath` is the path from `~` when it is inside the
+// home folder.
+export interface ProjectRow {
+  path: string;
+  name: string;
+  homePath: string;
+  // Whether the folder is still there.
+  exists: boolean;
+}
+export interface ProjectsList {
+  open: ProjectRow[];
+  recent: ProjectRow[];
+}
+export const projectsList = () => invoke<ProjectsList>("projects_list");
+// A new main window that opens `root`. `created: false`: another window already had `root` open
+// or was opening it, and was brought to the front instead.
+export interface NewWindow {
+  label: string;
+  created: boolean;
+}
+export const projectNewWindow = (root: string) => invoke<NewWindow>("project_new_window", { root });
+// Reopening on start: the first `main` page, once it has its initial target (the open list's first
+// project), asks for the others, which open in new windows. `missing` are the paths of the list
+// that no longer exist, which this window reports.
+export interface Reopened {
+  missing: string[];
+}
+export const openProjectsReopen = () => invoke<Reopened>("open_projects_reopen");
+// The answer to `commit-draft-save`: the draft is saved, the window may close.
+export const commitDraftSaved = () => invoke<void>("commit_draft_saved");
 export const repoState = () => invoke<RepoState>("repo_state");
 // Turns on in the Git menu the entries of the operation in progress that apply, and turns off the others.
 export const gitMenuEnable = (ids: string[]) => invoke<void>("git_menu_enable", { ids });
@@ -978,9 +1016,7 @@ export interface GitFileActionRequest {
 export const gitFileAction = (action: GitFileActionRequest) =>
   invoke<void>("git_file_action", { action });
 export const onGitFileAction = (handler: (action: GitFileActionRequest) => void) =>
-  listen<GitFileActionRequest>("git-file-action", (event) => handler(event.payload), {
-    target: ownWindow(),
-  });
+  listenOwn<GitFileActionRequest>("git-file-action", (event) => handler(event.payload));
 export const logOpen = () => invoke<LogSummary>("log_open");
 export const logRows = (viewId: number, start: number, count: number) =>
   invoke<LogRow[]>("log_rows", { viewId, start, count });
@@ -1051,7 +1087,7 @@ export const branchOptionsGet = () => invoke<Record<string, unknown>>("branch_op
 export const branchOptionsSet = (options: unknown) =>
   invoke<void>("branch_options_set", { options });
 export const onBranchSyncChanged = (handler: () => void) =>
-  listen("branch-sync-changed", () => handler());
+  listenOwn("branch-sync-changed", () => handler());
 export const logViewClose = (tab: number) => invoke<void>("log_view_close", { tab });
 // By hash, its row in the view. Null if it is not seen.
 export const logFindRows = (viewId: number, hashes: string[]) =>
@@ -2021,7 +2057,6 @@ export const initRepository = (path: string, confirmed: boolean) =>
   invoke<number>("init_repository", { path, confirmed });
 // `false`: the file does not exist and nothing was done.
 export const openExcludeFile = () => invoke<boolean>("open_exclude_file");
-export const openInNewWindow = (path: string) => invoke<void>("open_in_new_window", { path });
 // Finder with the file selected. `path` must be absolute.
 export const revealInFinder = (path: string) => invoke<void>("reveal_in_finder", { path });
 // The browser, for an `https://` or `http://` URL only.
@@ -2542,9 +2577,9 @@ export interface RepoChange {
 }
 const NOTHING_KNOWN: RepoChange = { stash: false, shelf: false };
 export const onRepoChanged = (handler: (change: RepoChange) => void) =>
-  listen<RepoChange | null>("repo-changed", (event) => handler({ ...NOTHING_KNOWN, ...event?.payload }));
+  listenOwn<RepoChange | null>("repo-changed", (event) => handler({ ...NOTHING_KNOWN, ...event?.payload }));
 // Changelists do not go through the watcher: whoever changes them notifies the other window.
-export const notifyRepoChanged = () => emit("repo-changed");
+export const notifyRepoChanged = () => emitToOwner("repo-changed");
 
 // The diff window chooses lines of a file. `places` says where each chosen hunk is, so that
 // it is possible to count what was lost when it no longer exists.
@@ -2575,76 +2610,79 @@ export interface LostSelection extends SelectionLost {
 }
 
 export const emitSelectionChanged = (change: SelectionChange) =>
-  emit("selection-changed", change);
+  emitToOwner("selection-changed", change);
 export const onSelectionChanged = (handler: (change: SelectionChange) => void) =>
-  listen<SelectionChange>("selection-changed", (event) => handler(event.payload));
-export const emitSelectionState = (state: SelectionState) => emit("selection-state", state);
+  listenOwn<SelectionChange>("selection-changed", (event) => handler(event.payload));
+export const emitSelectionState = (state: SelectionState) => emitToOwner("selection-state", state);
 export const onSelectionState = (handler: (state: SelectionState) => void) =>
-  listen<SelectionState>("selection-state", (event) => handler(event.payload));
-export const emitSelectionLost = (lost: LostSelection) => emit("selection-lost", lost);
+  listenOwn<SelectionState>("selection-state", (event) => handler(event.payload));
+export const emitSelectionLost = (lost: LostSelection) => emitToOwner("selection-lost", lost);
 export const onSelectionLost = (handler: (lost: LostSelection) => void) =>
-  listen<LostSelection>("selection-lost", (event) => handler(event.payload));
+  listenOwn<LostSelection>("selection-lost", (event) => handler(event.payload));
 export const onSettingsChanged = (handler: (settings: Settings) => void) =>
   listen<Settings>("settings-changed", (event) => handler(event.payload));
-export const onOpenSettings = (handler: () => void) => listen("open-settings", handler);
+export const onOpenSettings = (handler: () => void) => listenOwn("open-settings", handler);
 // File > Recent Projects: the chosen repository, and whether its path still exists.
 export interface RecentProject {
   path: string;
   exists: boolean;
 }
 export const onOpenRecent = (handler: (project: RecentProject) => void) =>
-  listen<RecentProject>("open-recent", (event) => handler(event.payload));
+  listenOwn<RecentProject>("open-recent", (event) => handler(event.payload));
 export const recentProjectsRemove = (path: string) => invoke<void>("recent_projects_remove", { path });
+// A folder handed to the running app (`open -a Ramify <folder>`): it goes through the open flow.
+export const onOpenPath = (handler: (path: string) => void) =>
+  listenOwn<string>("open-path", (event) => handler(event.payload));
 // File > Open…: the main window shows the folder chooser.
 export const onOpenProjectChooser = (handler: () => void) =>
-  listen("open-project-chooser", handler);
-// The label of this page's window: the `?window=` its URL was loaded with (`main.ts`), the main
-// window having none. An event sent to one window (`emit_to`) also reaches every listener
-// registered without a target (`{ kind: "Any" }`), so those events are listened to with it.
-function ownWindow(): string {
-  return new URLSearchParams(location.search).get("window") ?? "main";
-}
-
+  listenOwn("open-project-chooser", handler);
 // A Git action that the interface outside the window requests, like the Git menu: its id arrives.
 export const onGitAction = (handler: (action: string) => void) =>
-  listen<string>("git-action", (event) => handler(event.payload), { target: ownWindow() });
-export const emitDiffReady = () => emit("diff-ready");
-export const emitDiffDrawn = (timing: DiffTiming) => emit("diff-drawn", timing);
+  listenOwn<string>("git-action", (event) => handler(event.payload));
+export const emitDiffReady = () => emitToOwner("diff-ready");
+export const emitDiffDrawn = (timing: DiffTiming) => emitToOwner("diff-drawn", timing);
 export const onDiffDrawn = (handler: (timing: DiffTiming) => void) =>
-  listen<DiffTiming>("diff-drawn", (event) => handler(event.payload));
+  listenOwn<DiffTiming>("diff-drawn", (event) => handler(event.payload));
 export const emitComparison = (comparison: StageComparison) =>
-  emit("diff-comparison", comparison);
+  emitToOwner("diff-comparison", comparison);
 export const onComparison = (handler: (comparison: StageComparison) => void) =>
-  listen<StageComparison>("diff-comparison", (event) => handler(event.payload));
+  listenOwn<StageComparison>("diff-comparison", (event) => handler(event.payload));
 // Closing or quitting could not be done: the diff window has text that could not be saved.
 export const onLeaveRefused = (handler: (message: string) => void) =>
-  listen<string>("leave-refused", (event) => handler(event.payload));
-export const onDiffReady = (handler: () => void) => listen("diff-ready", handler);
+  listenOwn<string>("leave-refused", (event) => handler(event.payload));
+// The window is about to close, or the app to quit: its commit message draft is saved first.
+export const onCommitDraftSave = (handler: () => void) => listenOwn("commit-draft-save", handler);
+export const onDiffReady = (handler: () => void) => listenOwn("diff-ready", handler);
 export const onDiffOpen = (handler: (path: string) => void) =>
-  listen<string>("diff-open", (event) => handler(event.payload));
+  listenOwn<string>("diff-open", (event) => handler(event.payload));
 // Sent to the diff window only (`emit_to`).
 export const onDiffRequest = (handler: (request: DiffRequest) => void) =>
-  listen<DiffRequest>("diff-request", (event) => handler(event.payload), {
-    target: ownWindow(),
-  });
+  listenOwn<DiffRequest>("diff-request", (event) => handler(event.payload));
 // Close: the window hides itself, after saving what was written.
-export const onDiffClose = (handler: () => void) => listen("diff-close", handler);
+export const onDiffClose = (handler: () => void) => listenOwn("diff-close", handler);
 // Another repository is going to replace this one: save and reply with `diffFlushed`.
-export const onDiffFlush = (handler: () => void) => listen("diff-flush", handler);
-// The app as a whole gained or lost the focus: moving between its own windows is neither.
-export const onAppActivated = (handler: () => void) => listen("app-activated", handler);
-export const onAppDeactivated = (handler: () => void) => listen("app-deactivated", handler);
+export const onDiffFlush = (handler: () => void) => listenOwn("diff-flush", handler);
+// The app as a whole gained or lost the focus: moving between its own windows is neither. Every
+// main window hears it; the payload is the project window that was activated (the owner of the
+// window that got the focus), `null` for a window of no project.
+export const onAppActivated = (handler: (owner: string | null) => void) =>
+  listenOwn<string | null>("app-activated", (event) => handler(event.payload ?? null));
+// This project window became the menu's owner: the menu shows another window's state until this
+// one says its own again. The payload is the label of the window that got the focus.
+export const onMenuOwnerGained = (handler: (focused: string | null) => void) =>
+  listenOwn<string | null>("menu-owner-gained", (event) => handler(event.payload ?? null));
+export const onAppDeactivated = (handler: () => void) => listenOwn("app-deactivated", handler);
 // Closing the merge window is its Cancel.
-export const onMergeClose = (handler: () => void) => listen("merge-close", handler);
+export const onMergeClose = (handler: () => void) => listenOwn("merge-close", handler);
 // Another repository or quitting the app would throw the merge away: it must be answered with `mergeLeft`.
-export const onMergeLeave = (handler: () => void) => listen("merge-leave", handler);
+export const onMergeLeave = (handler: () => void) => listenOwn("merge-leave", handler);
 // Each mode hears only its own: a conflict comes with `path`, the contents mode with `id`.
 export const onMergeDone = (handler: (done: MergeDone) => void) =>
-  listen<MergeDone | ContentsMergeDone>("merge-done", (event) => {
+  listenOwn<MergeDone | ContentsMergeDone>("merge-done", (event) => {
     if ("path" in event.payload) handler(event.payload);
   });
 export const onContentsMergeDone = (handler: (done: ContentsMergeDone) => void) =>
-  listen<MergeDone | ContentsMergeDone>("merge-done", (event) => {
+  listenOwn<MergeDone | ContentsMergeDone>("merge-done", (event) => {
     if ("id" in event.payload) handler(event.payload);
   });
 
@@ -2698,16 +2736,16 @@ export const editorAnswer = (id: number, text: string | null) =>
   invoke<void>("editor_answer", { id, text });
 export const consoleLines = () => invoke<ConsoleLine[]>("console_lines");
 export const onTaskChanged = (handler: (event: TaskEvent) => void) =>
-  listen<TaskEvent>("task-changed", (event) => handler(event.payload));
+  listenOwn<TaskEvent>("task-changed", (event) => handler(event.payload));
 export const onAskpassPrompt = (handler: (prompt: AskpassPrompt) => void) =>
-  listen<AskpassPrompt>("askpass-prompt", (event) => handler(event.payload));
+  listenOwn<AskpassPrompt>("askpass-prompt", (event) => handler(event.payload));
 // The git command no longer waits (it was cancelled or died): the question no longer makes sense.
 export const onAskpassDismissed = (handler: (id: number) => void) =>
-  listen<number>("askpass-dismissed", (event) => handler(event.payload));
+  listenOwn<number>("askpass-dismissed", (event) => handler(event.payload));
 export const onEditorRequest = (handler: (request: EditorRequest) => void) =>
-  listen<EditorRequest>("editor-request", (event) => handler(event.payload));
+  listenOwn<EditorRequest>("editor-request", (event) => handler(event.payload));
 // Git's editor no longer waits (the task was cancelled or ended): the dialog for that request is no longer needed.
 export const onEditorDismissed = (handler: (id: number) => void) =>
-  listen<number>("editor-dismissed", (event) => handler(event.payload));
+  listenOwn<number>("editor-dismissed", (event) => handler(event.payload));
 export const onConsoleLine = (handler: (line: ConsoleLine) => void) =>
-  listen<ConsoleLine>("console-line", (event) => handler(event.payload));
+  listenOwn<ConsoleLine>("console-line", (event) => handler(event.payload));

@@ -141,6 +141,7 @@ mod tests {
             let (send, receive) = mpsc::channel();
             let sync = self.sync.clone();
             self.runner.start(
+                "main",
                 self.repo.path(),
                 TaskKind::Read,
                 "Fetching…".to_string(),
@@ -157,6 +158,7 @@ mod tests {
             let sync = self.sync.clone();
             let remote = remote.to_string();
             self.runner.start(
+                "main",
                 self.repo.path(),
                 TaskKind::Read,
                 "Fetching…".to_string(),
@@ -174,7 +176,7 @@ mod tests {
         }
 
         fn commands(&self) -> Vec<String> {
-            let lines = self.console.lines();
+            let lines = self.console.lines_of("main");
             let commands = lines.into_iter().filter(|line| line.command);
             commands.map(|line| line.text).collect()
         }
@@ -221,9 +223,7 @@ mod tests {
         assert_eq!(result.pruned, ["origin/old"]);
         assert_eq!(result.failed, []);
         assert_eq!(
-            harness
-                .repo
-                .git(&["branch", "-r", "--list", "origin/old"]),
+            harness.repo.git(&["branch", "-r", "--list", "origin/old"]),
             ""
         );
     }

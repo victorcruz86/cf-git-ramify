@@ -10,9 +10,12 @@ import { compareBranches } from "../compare/actions";
 import LogPanel from "./LogPanel.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
-  emit: vi.fn(async () => {}),
+  emitTo: vi.fn(async () => {}),
 }));
 
 const MAIN_VIEW = 1;

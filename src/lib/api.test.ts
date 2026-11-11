@@ -39,7 +39,11 @@ import {
 } from "./api";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
+const current = vi.hoisted(() => ({ label: "main" }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: current.label }),
+}));
 
 const selection: LineSelection[] = [
   { hunk: "h1", lines: null },
@@ -237,30 +241,28 @@ describe("a_targeted_git_action_reaches_its_own_window_only", () => {
 
   it("the main window listens as main, the viewer as viewer", async () => {
     vi.mocked(listen).mockClear();
-    window.history.replaceState(null, "", "/index.html");
+    current.label = "main";
     await onGitAction(() => {});
     expect(targetOf("git-action")).toEqual({ target: "main" });
     await onGitFileAction(() => {});
     expect(targetOf("git-file-action")).toEqual({ target: "main" });
 
-    window.history.replaceState(null, "", "/index.html?window=viewer");
+    current.label = "viewer";
     await onGitAction(() => {});
     expect(targetOf("git-action")).toEqual({ target: "viewer" });
-    window.history.replaceState(null, "", "/");
   });
 
   // `viewer_open` sends `viewer-open` to the viewer and `diff_open` sends `diff-request` to the
   // diff window (`emit_to`): another window that imports these helpers does not hear them.
   it("the viewer and the diff window hear their own requests only", async () => {
     vi.mocked(listen).mockClear();
-    window.history.replaceState(null, "", "/index.html?window=viewer");
+    current.label = "viewer";
     await onViewerOpen(() => {});
     expect(targetOf("viewer-open")).toEqual({ target: "viewer" });
 
-    window.history.replaceState(null, "", "/index.html?window=diff");
+    current.label = "diff";
     await onDiffRequest(() => {});
     expect(targetOf("diff-request")).toEqual({ target: "diff" });
-    window.history.replaceState(null, "", "/");
   });
 });
 

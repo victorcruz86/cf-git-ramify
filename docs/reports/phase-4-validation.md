@@ -1367,6 +1367,136 @@ The final review of the part (range `aa48d58..47ff5da`, read only: nothing criti
 
 What can be tested without a screen, a keyboard, a real gpg or the real app is tested, with real git, real worktrees and submodules from local bare repositories, and real SSH signatures, and follows the 241 sources except for the differences in sections 2 and 3. Part 6 is not validated. It ends when you complete the list in section 5, with a real GPG key opened from Finder, a real worktree and submodule, and Update Project with a detached submodule as its main risks. Its final review and fix wave are done; what they left parked is at the end of section 2.
 
+## Multi-window part: several project windows
+
+Date: 2026-11-11. Spec: `docs/superpowers/specs/2026-11-10-multi-window-design.md`; plan: `docs/superpowers/plans/2026-11-10-multi-window.md`. The part has 16 commits after its start (`04f6ae0`): `04f6ae0..897b180`, 12 features or refactors and 4 fixes, in 13 tasks, each reviewed, plus this report. It was built on the branch `multi-window`, after phase 4.
+
+### Summary
+
+- Ramify now runs several project windows in one process, as IntelliJ IDEA CE 2024.1 does: every window has its own repository, log, watcher, tasks, console, diff, merge, viewer and selection history windows, and its own askpass and editor prompts. One-window use is unchanged.
+- Opening a project from Open…, Recent Projects, the project widget, a path handed to the running app or Clone asks `This Window` or `New Window` when the window already has a repository (`Open project in`, with `Don't ask again`); a repository already open elsewhere is focused instead of opened twice.
+- Closing a window waits for its own writes and remote tasks only; quitting runs the leave flow in every window and one refusal stops it; the open projects are written continuously and reopened at the next plain start.
+- The menu bar follows the focused window, the remote checks and the shelf cleaning serve every open repository, and the toolbar has the project widget.
+- **`done` means tests, not use**, as in the earlier parts. Nothing was run as a real multi-window app by the agents; section 5 is for the user.
+- The differences from IntelliJ that a user can notice are in section 3, each with its cost; the rulings are in section 2.
+
+### 1. What was built
+
+- **Window labels and owners (Task 1).** `windows.rs` maps a label (`main`, `main-2`, `diff-2`, `merge-2`, `viewer-2`, `selection-history-2`) to its owner and back, and `src/lib/windows.ts` has the frontend side (`listenOwn`, `emitToOwner`). Per-window events go out with `emit_to` per label, and every per-window listener passes its own label as target (Tauri delivers `emit_to` also to listeners registered with no target).
+- **Per-window sessions (Tasks 2 and 3).** `AppState` keeps one `WindowSession` per owner (repository, log, watcher, diff, merge, viewer, selection); every vcs and hosting command acts on its own window's repository and takes `RepoLocks` and `flush_diff_window` for that window.
+- **Events, tasks, console and prompts per window (Tasks 4 and 5).** `repo-changed`, tasks and console lines carry their owner; askpass and editor prompts are routed by token to the window that started the git process. `Runner::finish_writes_of(owner, limit)` waits for one owner's writes and remote tasks and refuses new ones.
+- **Auxiliary windows per owner (Task 6).** Diff, merge, viewer and selection history windows are built, found and destroyed per owner; the block history slot is per owner.
+- **Settings (Task 7).** `Open project in` (`New window`, `Current window`, `Ask`) and `Reopen projects on startup`, in the Settings view's `System` group.
+- **This Window / New Window and focusing (Task 8).** `project_resolve`, `project_focus_open` and `project_new_window`; the open flow in `src/project/open.ts` and `OpenProjectDialog.svelte`; `RunEvent::Opened` for a path handed to the running app; claims for opens still loading.
+- **Closing, quitting and reopening (Task 9).** Closing a project window runs the leave flow for it, saves its commit message draft to the changelist comment, waits for its tasks, destroys its auxiliary windows, drops its session and writes `open-projects.json`. Quit runs the flow in every window. Start reopens the listed projects, skipping and reporting missing folders, and focuses the last focused one once.
+- **The menu bar (Task 10).** The Git menu state, Recent Projects and the actions follow the focused window, or the owner of a focused auxiliary window; when the owner changes, Rust asks the new owner's windows to send their menu state again.
+- **Background loops (Task 11).** The remote check and the shelf cleaning serve every open repository whose window is visible.
+- **The project widget (Task 12).** `ProjectWidget.svelte`, `projectIcon.ts` and the `projects_list` command: icon and name first in the toolbar, with the sections of `ProjectToolbarWidgetAction`.
+- **Documentation and the release build (Task 13).** This part, `docs/reports/opening-projects.md`, two rows in section 2 of `docs/parity-matrix.md` and the README.
+
+### 2. Rulings that depart from IntelliJ
+
+Each one with what it costs if it turns out to be wrong.
+
+1. **The open list is a snapshot, never written on quit.** Cost: after a refused quit, the held-back list is written at the next change, not at once.
+2. **A closing window waits for every remote task, fetch included, up to 60 s, without cancelling it.** Why: no lost work, and a push waiting for a password must keep its prompt. Cost: a hung fetch holds that window's close for up to 60 s.
+3. **A multi-remote fetch caught between two remotes when a close starts is cancelled** (a read in a remote turn is waited for, a new one is not started). A cancelled read loses no work. Cost: a fetch skips its remaining remotes on close.
+4. **New remote tasks of a closing window are refused like writes.** Cost: none with one window.
+5. **`connection_of` has no window parameter**: it is keyed by repository path. Cost: one parameter added later if that changes.
+6. **Menu File > Open, Recent and Settings go to the last focused main window from Task 9**, ahead of the menu work of Task 10. Cost: none.
+7. **Opening the repository that is already open in the calling window focuses that window and opens nothing again**, as IntelliJ's `findAndFocusExistingProjectForPath` does, since it matches the calling frame too. Its auxiliary windows and its commit message draft stay. Until the final review's fix wave it reopened the repository there without asking. Cost: none; a reload of the window's state needs another repository opened first.
+8. **A stored initial target is dropped after the window's first open**, so a finished open stops counting as in progress. Cost: reloading a `main-<n>` page (development only) shows an empty window.
+9. **A window that is minimized is unminimized when it is focused** (opening an open project), otherwise the user would see nothing happen. Cost: none.
+10. **`Get from Version Control…` is in the widget** because 2024.1 has it in `ProjectWidget.Actions` (`JavaActions.xml`, lines 24 to 27 at the tag); it opens Clone. `New Project…` is not shown, since Ramify creates no projects.
+11. **The project icon's colour is `ColorPalette.select`** (`abs(path.hashCode()) % 9`), not 2024.1's persisted rotating counter, because Ramify keeps no per-project store. Cost: the same project can have another colour than in IntelliJ.
+12. **Only the recent section is capped at 100** (`MAX_RECENT_COUNT` caps open and recent together in IntelliJ). Cost: at most 100 rows plus the open ones; the stored list keeps 50, so in practice 50.
+13. **Menu sync from a window that is not the menu owner is ignored**, and a change of owner makes the new owner resend its state. Cost: one extra event per focus change between projects.
+
+**Parked after the reviews, none a correctness failure.** A failed or panicking close step can skip `resume_writes_of`; a late `Opened` event after the first project asked for its target opens the list and a folder; the reopen focus has no timeout; a `This Window` open of a closing window's repository focuses that closing window; the commit draft is saved only at close, so an old comment can come back after list round-trips; the pre-existing `log::signatures` cancel test failed once under a load average of about 15 and passed on rerun.
+
+**Fixed in the final review's fix wave** (`4c91ce3^..` this report's commit): the commit message draft is saved again after the close's wait, and a closing window opens no merge window; Apply Patch on the fly asks only in the activated window; opening the repository a window already has only focuses it (ruling 7); a focused window watches again; New Window resolves its root in Rust; a second Quit while one runs does nothing, and quit skips windows that closed; a Fixup or Squash Into proposal at close keeps the user's earlier draft; a panicking task ends as Failed instead of holding its window's close (in test and development builds only: the release build has `panic = "abort"` in `src-tauri/Cargo.toml`, so there a panic ends the whole process, as before); `Git > Current File` never keeps the previous owner's entries.
+
+### 3. Differences from IntelliJ that a user could notice
+
+- **`open -n` still starts a second process.** There is no single-instance plugin. The two processes do not know each other, and the open list and recent list are shared files where the last writer wins. Cost: the same repository can be open in two processes.
+- **No window frames per project.** New windows open at the default size, cascaded by macOS. Cost: windows are not restored at their last size and place.
+- **No Welcome screen, no Attach and no window tabs.**
+- **IntelliJ's recent and open projects are not imported.**
+- **No feedback while a close waits.** IntelliJ shows `Closing project` progress. Cost: a window with a slow push seems to ignore the red button.
+- **A closing window waits for remote tasks, fetch included, up to 60 s** (ruling 2), and a multi-remote fetch caught between remotes is cancelled (ruling 3).
+- **Reloading a `main-<n>` page shows an empty window** (ruling 8; development only).
+- **`Git > Current File` with a diff, merge or selection history window in front** has every entry off, also when that window belongs to the project that just took the menu. IntelliJ fills it from the focused frame's selection. Cost: Current File actions need the main window or the viewer in front.
+- **The project icon's colour** can differ from IntelliJ's (ruling 11).
+- **Recent projects:** capped at 100 apart from the open ones, stored at 50, and a project open in a window can still fall off the stored list at the 51st open (`docs/reports/opening-projects.md`).
+- **The Dock's Quit and logout cannot be stopped.** They keep the open list as it was, which is already right because it is written continuously.
+- **A start with a path argument** opens only that path; the earlier list is not kept for the next plain start beyond what the snapshot of that start holds.
+
+### 4. What was proven with tests
+
+- **Labels, owners and sessions (Review Focus 1, 3):** the label-to-owner tests of `windows.rs`, two sessions with two throwaway repositories keeping repository, tasks, console lines and `repo-changed` apart, and a write in window A flushing only A's diff window while B's unsaved text stays.
+- **Per-window events:** the frontend helper tests in `src/lib/windows.test.ts` and `src/App.test.ts` (a `main-2` listener ignores events for `main`), and the emit target tests in Rust.
+- **Closing (Review Focus 2):** a closing window's write is waited for, its reads are cancelled, its remote tasks (a push waiting for a password included) are waited for and no new ones start, while another window's tasks run on; concurrent closes keep the last window; a `repo_open` for a closing owner is refused; the diff window is flushed again before it is destroyed; the commit draft comes back in the Commit tool window.
+- **Quitting (Review Focus 4):** the leave flow in every window in turn, a refusal in an unfocused window's merge window stopping the quit, and the `quitting` flag keeping the open list from being written.
+- **The open list and reopening:** order, close removes, quit keeps, missing paths skipped and reported, the last focused one focused once.
+- **Opening (Review Focus 3):** `src/project/open.test.ts` for each `Open project in` value, the question, `Don't ask again`, no question without a repository, a subfolder, a trailing slash or a symlink of a repository open elsewhere focusing that window, and an open that is still loading counting as open.
+- **The menu (Review Focus 5):** the action going to the focused window's main window or viewer, never another project's; `menu_accepts` before and after the owner changes; the resync event.
+- **Background loops:** the remote check and the shelf cleaning for every open repository.
+- **The widget:** `ProjectWidget.test.ts` (name, tooltip, sections, focusing an open project, opening a recent one, text rendered as text) and `projectIcon.test.ts` (initials and colour against cases taken from the tag's algorithm).
+- **The guard tests follow the new shapes:** the source-pinning tests (`flush_diff_window`, the first line of `repo_open`, the `pub async fn` count, the shelve guards, `owns_watcher`, `action_window`) were rewritten, not deleted.
+
+**What the process left on record.** Several tasks wrote their Rust tests with the code and have no separate red run (Tasks 4, 10 and 11 most clearly); Task 5's fix was not followed by a full verification until Task 6.
+
+### 5. Checklist to verify by hand
+
+None of this could be checked automatically. Use throwaway repositories only, for example two folders made with `git init` under a temporary folder (`/tmp/ramify-multi/one` and `/tmp/ramify-multi/two`, each with a commit), a bare local remote for the push, and nothing from your real work. Build and open the app as in part 1, section 5.
+
+- [ ] **Two windows with two repositories:** open `one`, then `two` with `New Window`; each window shows its own branch, changes and log, and a change made in `one` from a terminal shows only in `one`.
+- [ ] **Cmd + backtick** cycles between the two project windows, and the title and focus follow.
+- [ ] **The Dock:** with two windows, Dock > right click lists both in the `Window` menu; clicking the Dock icon with every window hidden or closed shows the last focused one; closing the last window hides it and the Dock brings it back with the repository still open.
+- [ ] **This Window / New Window / Don't ask again:** with `one` open, `File > Open…` on `two` asks `Open project in`; `This Window` replaces `one`, `New Window` opens a second window, `Cancel` does nothing; `Don't ask again` with `New Window` makes the next open go straight to a new window, and the setting `Open project in` in the Settings view shows it and can be set back to `Ask`.
+- [ ] **A repository already open elsewhere:** open `one` again by typing its path with a trailing slash, by a subfolder and by a symlink; the window that has `one` is focused (also when minimized) and nothing opens twice.
+- [ ] **Closing with a running push:** start a push to the bare remote in window A that waits (for a password prompt, or a `pre-push` hook that sleeps); press the red button; the prompt shows in A, the window stays until the push ends, window B is not touched; there is no `Closing project` progress, as written in section 3.
+- [ ] **A fetch while closing:** close a window while a fetch runs; it closes within the 60 s limit.
+- [ ] **Quitting with a half-done merge in the unfocused window:** make a merge conflict in B's repository, open the merge window, focus A and press Cmd + Q; the question appears in B's merge window, refusing it stops the quit for every window, and accepting it quits.
+- [ ] **Unsaved text in a diff window:** type in B's diff window and write in A; B's text stays. Close B with unsaved text; it is saved first.
+- [ ] **Reopening after quit:** with two windows open, quit with Cmd + Q and start the app again with no path; both repositories open, the first in the initial window, and the last focused one ends focused. With `Reopen projects on startup` off, only an empty window opens. Rename one folder before the start: it is skipped, removed from the list and named in the notification.
+- [ ] **The commit message draft** typed in a window comes back when that repository is opened again after the window closed.
+- [ ] **The project widget popup:** it opens under the widget with the focus in the list, closes with Esc (also with the focus on the widget's button) and on a click outside, and shows `Open…`, `Get from Version Control…`, `Open Projects` and `Recent Projects` with the icon, the name and the path from `~`; choosing an open project focuses its window; choosing a recent one goes through the question.
+- [ ] **A recent project whose folder is gone:** rename a recent throwaway folder, choose it in the widget popup; `Reopen Project` appears with `OK` / `Remove From List`; `Remove From List` takes it out of the widget and of `File > Recent Projects`.
+- [ ] **`Get from Version Control…`** opens the Clone dialog.
+- [ ] **The menu following focus:** with `one` in A and `two` in B, focus A and see its Git menu state; focus B and see it change; click another project's viewer window (and a merge window) and see the menu follow that project; with a project that has a repository in a state that disables an action (for example a merge in progress) the enabled state matches the focused project; a Git action from the menu in B goes to B, never A.
+- [ ] **A path handed to the running app:** `open -a <the .app> /tmp/ramify-multi/two` while the app runs asks `Open project in` and opens or focuses `two`.
+- [ ] **A second process:** `open -n` on the app starts a second process (known gap); confirm it does not corrupt the lists beyond the last writer winning.
+- [ ] **Window titles and ⌘W:** ⌘W closes only the focused project window.
+
+### 6. What could not be checked
+
+- **No real multi-window run.** The agents made no run of the built app with several windows: real window creation, the Dock, Cmd + backtick, focus changes, the menu bar following focus (the native menu cannot be built without a running app), native `Opened` events for a path handed to the running app, the project widget's popup placement and focus, and reopening after a real quit were not seen. The tests simulate the Tauri API and use mock windows.
+- **No measurement.** Memory, start-up time and CPU with several windows and several watchers were not measured. No figure is given.
+- **Not compared with IntelliJ running:** the exact wording and timing of its close wait, the colour of an icon for a given project, and where it puts a new window.
+- **Not tested:** a close wait that hits the 60 s limit in a real hung fetch, two Ramify processes running at once, and a failing `destroy()` of a window.
+- **Load.** The tests run with 6 build jobs and 6 test threads; a timing-sensitive test failed once under a much higher load (ledger of Task 10 and 11) and passed on rerun.
+
+### 7. Verification
+
+Run on 2026-11-11 after the final review's fix wave, on the tree of `ad64e92` (the part's commits are `04f6ae0..` the commit of this report: the 16 of the part, the fixes and documentation that followed its first report, and the 8 commits of the fix wave, `4c91ce3^..ad64e92`, before this report's update), one suite at a time in the foreground, under `nice -n 15`, with `CARGO_BUILD_JOBS=6` and `--test-threads=6`.
+
+| Command | Result |
+|---|---|
+| `pnpm exec tsc --noEmit -p .` | no errors (exit 0) |
+| `pnpm vitest run --maxWorkers=2` | 135 files, 2,618 tests passed |
+| `cargo clippy --all-targets -- -D warnings` | no warnings (exit 0) |
+| `cargo test -- --test-threads=6` | library: 2,284 passed, 0 failed, 7 ignored (on purpose), 266.00 s; `askpass` 11, `crlf_fix` 1, `editor` 41 and `git_path` 2 passed; `phase_3_trace` 0 passed and 1 ignored (on purpose); `main.rs` and doc tests 0 tests; every `test result` line says `0 failed` |
+| `python3 -I -m unittest discover -s scripts` | 65 tests, OK |
+
+The 7 ignored library tests are the same as at the close of part 6.
+
+**Release build.** Not run in this wave. The controller runs `pnpm tauri build --bundles app` after this fix wave and will update this result; until then no `Ramify.app` of this part exists, so section 5 cannot start.
+
+### Conclusion
+
+The multi-window part is done in tests and not validated by hand: it ends when section 5 is completed on a built app with throwaway repositories.
+
 ## Phase 4 summary
 
 Date: 2026-11-10. Phase 4 was delivered in six parts, from 2026-11-03 to 2026-11-10, on the branch `phase-4`. Each part had its plan, its tasks reviewed one by one, its rows in `docs/parity-matrix.md`, its entries in `NOTICE` and its section above. The reference is IntelliJ IDEA CE 2024.1 (`IC-241.14494.240`); `phase-4-reference-change.md` says what changed from 2023.2.3 and what each part closed of it.

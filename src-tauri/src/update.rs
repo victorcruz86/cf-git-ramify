@@ -921,6 +921,7 @@ mod tests {
             let data = self.data.path().to_path_buf();
             let sync = self.sync.clone();
             let id = self.runner.start(
+                "main",
                 self.repo.path(),
                 TaskKind::Read,
                 "Update".to_string(),
@@ -949,7 +950,7 @@ mod tests {
         fn cancelled_at_mark(&self, method: UpdateMethod) -> UpdateResult {
             let (id, result) = self.start(method, UpdateOptions::default());
             self.wait_for_mark();
-            self.runner.cancel(id);
+            self.runner.cancel("main", id);
             result.recv_timeout(WAIT).unwrap()
         }
 
@@ -974,6 +975,7 @@ mod tests {
             let path = self.repo.path().to_path_buf();
             let data = self.data.path().to_path_buf();
             self.runner.start(
+                "main",
                 self.repo.path(),
                 TaskKind::Read,
                 "test".to_string(),
@@ -992,7 +994,9 @@ mod tests {
 
         // What someone else publishes.
         fn incoming(&self, file: &str, contents: &str) -> String {
-            let head = self.colleague.commit(file, contents.as_bytes(), "from outside");
+            let head = self
+                .colleague
+                .commit(file, contents.as_bytes(), "from outside");
             self.colleague.git(&["push", "-q", "origin", "main"]);
             head
         }
@@ -1019,7 +1023,7 @@ mod tests {
 
         fn ran(&self, command: &str) -> bool {
             self.console
-                .lines()
+                .lines_of("main")
                 .iter()
                 .any(|line| line.command && line.text.ends_with(command))
         }
@@ -1027,7 +1031,7 @@ mod tests {
         fn saved_anything(&self) -> bool {
             let stashed = self
                 .console
-                .lines()
+                .lines_of("main")
                 .iter()
                 .any(|line| line.command && line.text.contains("stash save"));
             stashed || self.stash_count() > 0 || !snapshots::list(self.data.path()).is_empty()
@@ -2334,7 +2338,9 @@ mod tests {
         let harness = Harness::new();
         let base = harness.head();
         harness.repo.commit("mine.txt", b"m\n", "own");
-        harness.colleague.commit("c.txt", b"c\n", "one from outside");
+        harness
+            .colleague
+            .commit("c.txt", b"c\n", "one from outside");
         let tip = harness.incoming("d.txt", "d\n");
 
         let result = harness.update(UpdateMethod::Merge);
@@ -2545,7 +2551,7 @@ mod tests {
 
     // The submodule commands the Console shows.
     fn submodule_commands(harness: &Harness) -> Vec<String> {
-        let lines = harness.console.lines().into_iter();
+        let lines = harness.console.lines_of("main").into_iter();
         lines
             .filter(|line| line.command && line.text.contains(" submodule "))
             .map(|line| line.text)
@@ -2621,7 +2627,7 @@ mod tests {
         // The new commit was missing: fetched in the submodule, against its own remote, first.
         let commands: Vec<String> = harness
             .console
-            .lines()
+            .lines_of("main")
             .into_iter()
             .filter(|line| line.command)
             .map(|line| line.text)
@@ -2657,7 +2663,7 @@ mod tests {
     }
 
     fn console_text(harness: &Harness) -> Vec<String> {
-        let lines = harness.console.lines().into_iter();
+        let lines = harness.console.lines_of("main").into_iter();
         lines
             .filter(|line| !line.command)
             .map(|line| line.text)
@@ -3020,6 +3026,7 @@ mod tests {
 
         let (send, committed) = mpsc::channel();
         harness.runner.start(
+            "main",
             harness.repo.path(),
             TaskKind::Write,
             "Commit".to_string(),
@@ -3074,7 +3081,7 @@ mod tests {
         assert_eq!(result.submodule_error, None);
         assert_eq!(head_of(&sub), second_outer);
         assert_eq!(head_of(&inner), second_inner);
-        let fetched = harness.console.lines().into_iter().filter(|line| {
+        let fetched = harness.console.lines_of("main").into_iter().filter(|line| {
             line.command
                 && line
                     .text
@@ -3104,7 +3111,7 @@ mod tests {
         assert_eq!(head_of(&sub), before);
         // The fetch ran first and did not bring it; `--no-fetch` then fails on it.
         let fetched =
-            harness.console.lines().into_iter().filter(|line| {
+            harness.console.lines_of("main").into_iter().filter(|line| {
                 line.command && line.text.ends_with(" fetch --recurse-submodules=no")
             });
         assert_eq!(fetched.count(), 1);

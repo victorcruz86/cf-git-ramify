@@ -7,6 +7,9 @@ import { trackTasks } from "../lib/tasks";
 import CommitView from "./CommitView.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const REPO: RepoInfo = {
@@ -44,6 +47,8 @@ const SETTINGS: Settings = {
   clearInitialCommitMessage: false,
   showDropCommitDialog: true,
   githubConnectionTimeoutMs: 5000,
+  openProjectIn: "ask",
+  reopenProjects: true,
 };
 
 const LISTS = {

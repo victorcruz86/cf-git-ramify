@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { get } from "svelte/store";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { open as chooseNative } from "@tauri-apps/plugin-dialog";
 import App from "./App.svelte";
 import { closeCommitDialog, openCommitDialog, requestCommit } from "./commit/dialogStore";
@@ -17,7 +17,10 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
-  emit: vi.fn(async () => {}),
+  emitTo: vi.fn(async () => {}),
+}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
 }));
 
 // jsdom has no ResizeObserver, which the changes tree needs.
@@ -34,11 +37,14 @@ vi.stubGlobal(
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 Element.prototype.scrollIntoView = () => {};
 
-function mockCommands(commands: Record<string, () => unknown>) {
-  vi.mocked(invoke).mockImplementation(async (command) => {
+// A command's handler gets its arguments.
+type Command = (args?: Record<string, unknown>) => unknown;
+
+function mockCommands(commands: Record<string, Command>) {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
     const handler = commands[command];
     if (!handler) throw new Error(`unexpected command: ${command}`);
-    return handler();
+    return handler(args as Record<string, unknown> | undefined);
   });
 }
 
@@ -95,14 +101,21 @@ const SETTINGS = {
   clearInitialCommitMessage: false,
   showDropCommitDialog: true,
   githubConnectionTimeoutMs: 5000,
+  openProjectIn: "ask",
+  reopenProjects: true,
 };
 
 const NON_MODAL = { ...SETTINGS, nonModalCommit: true };
+// `Open project in: Current window`: another repository replaces this one without asking.
+const CURRENT_WINDOW = { ...SETTINGS, openProjectIn: "current" };
 
-function mockApp(commands: Record<string, () => unknown> = {}) {
+function mockApp(commands: Record<string, Command> = {}) {
   mockCommands({
     app_version: () => "0.0.1",
     initial_target: () => null,
+    // The open flow: each target is its own root, and no other window has it open.
+    project_resolve: (args) => args?.target,
+    project_focus_open: () => false,
     perf_enabled: () => false,
     show_window: () => undefined,
     repo_status: () => [],
@@ -120,6 +133,9 @@ function mockApp(commands: Record<string, () => unknown> = {}) {
     repo_state: () => INFO.state,
     git_menu_enable: () => undefined,
     stash_list: finishing(STASH_LIST_TASK, []),
+    // Nothing of an earlier session to reopen.
+    open_projects_reopen: () => ({ missing: [] }),
+    commit_draft_saved: () => undefined,
     ...commands,
   });
 }
@@ -267,7 +283,11 @@ test("the stripe has Project and Git in modal mode", async () => {
 // The user's `window.layouts.xml`: Project (⌘1) before Commit on the left, Git at the bottom.
 // Changes and Repositories exist once something registers them, and another repository forgets them.
 test("the_stripe_shows_registered_windows_in_registry_order", async () => {
-  mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO, settings_get: () => NON_MODAL });
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_get: () => ({ ...NON_MODAL, openProjectIn: "current" }),
+  });
   render(App);
   await screen.findByRole("textbox", { name: "Commit Message" });
   expect(stripeLabels()).toEqual(["Project", "Commit", "Git"]);
@@ -283,7 +303,9 @@ test("the_stripe_shows_registered_windows_in_registry_order", async () => {
   await tick();
   expect(tabState("Changes")).toBe("true");
 
+  // Another repository replaces this one.
   const input = screen.getByLabelText("Repository path");
+  await fireEvent.input(input, { target: { value: "/repo/b" } });
   await fireEvent.submit(input.closest("form")!);
   await waitFor(() => expect(stripeLabels()).toEqual(["Project", "Commit", "Git"]));
   expect(tabState("Commit")).toBe("true");
@@ -518,7 +540,7 @@ test("a draft and a line selection of the Commit view survive switching to modal
     file_hunks: () => [{ id: "h1", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 }],
     diff_window_open: () => undefined,
   });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
   const check = () =>
     screen.getByRole("treeitem", { name: /a\.txt/ }).querySelector("[role=checkbox]");
@@ -547,7 +569,8 @@ test("a draft and a line selection of the Commit view survive switching to modal
   await fireEvent.dblClick(screen.getByRole("treeitem", { name: /a\.txt/ }));
   deliver("diff-ready");
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ selections: { "a.txt": [{ hunk: "h1", lines: [0] }] } }),
     ),
@@ -642,6 +665,7 @@ test("changing_repository_reloads_the_log", async () => {
   mockApp({
     initial_target: () => folder("/repo/a"),
     repo_open: () => INFO,
+    settings_get: () => CURRENT_WINDOW,
     log_open: () => ({ viewId: 1, count: 0 }),
   });
   render(App);
@@ -941,7 +965,7 @@ test("show_diff_opens_the_diff_window_and_tells_it_what_is_chosen", async () => 
     repo_status: () => [CHANGE],
     diff_window_open: () => undefined,
   });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
 
   await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
@@ -950,7 +974,8 @@ test("show_diff_opens_the_diff_window_and_tells_it_what_is_chosen", async () => 
   expect(calls("diff_window_open")[0][1]).toEqual({ path: "a.txt" });
   await fireEvent.click(screen.getByRole("treeitem", { name: /a\.txt/ }).querySelector("[role=checkbox]")!);
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ selections: {} }),
     ),
@@ -1005,7 +1030,7 @@ test("in modal mode a double click in Local Changes opens the diff window withou
     repo_status: () => [CHANGE],
     diff_window_open: () => undefined,
   });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
 
   await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
@@ -1015,7 +1040,7 @@ test("in modal mode a double click in Local Changes opens the diff window withou
   expect(calls("diff_window_open")[0][1]).toEqual({ path: "a.txt" });
   deliver("diff-ready");
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith("selection-state", {
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith("main", "selection-state", {
       owner: "none",
       included: [],
       selections: {},
@@ -1032,37 +1057,41 @@ test("switching to modal mode takes the line checkboxes away from an open diff w
     repo_status: () => [CHANGE],
     diff_window_open: () => undefined,
   });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
   await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
   await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
   deliver("diff-ready");
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ owner: "commit-view", included: ["a.txt"] }),
     ),
   );
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
 
   deliver("settings-changed", SETTINGS);
 
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ owner: "none", included: [], selections: {} }),
     ),
   );
   // The window asks again when it is reopened: what the Commit view kept is not sent.
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   deliver("diff-ready");
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ owner: "none" }),
     ),
   );
-  expect(vi.mocked(emit)).not.toHaveBeenCalledWith(
+  expect(vi.mocked(emitTo)).not.toHaveBeenCalledWith(
+    "main",
     "selection-state",
     expect.objectContaining({ owner: "commit-view" }),
   );
@@ -1074,7 +1103,8 @@ test("switching to modal mode takes the line checkboxes away from an open diff w
     places: {},
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
-  expect(vi.mocked(emit)).not.toHaveBeenCalledWith(
+  expect(vi.mocked(emitTo)).not.toHaveBeenCalledWith(
+    "main",
     "selection-state",
     expect.objectContaining({ selections: { "a.txt": expect.anything() } }),
   );
@@ -1100,7 +1130,7 @@ test("a diff window opened from the Commit Changes dialog follows the dialog and
       conflicted: false,
     }),
   });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
   await screen.findByRole("treeitem", { name: /a\.txt/ });
   await fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
@@ -1111,7 +1141,8 @@ test("a diff window opened from the Commit Changes dialog follows the dialog and
   await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
   deliver("diff-ready");
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ owner: "dialog", included: ["a.txt"], selections: {} }),
     ),
@@ -1125,7 +1156,8 @@ test("a diff window opened from the Commit Changes dialog follows the dialog and
     places: {},
   });
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({
         owner: "dialog",
@@ -1139,13 +1171,13 @@ test("a diff window opened from the Commit Changes dialog follows the dialog and
     ).toBe("mixed"),
   );
 
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   await fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
     key: "Escape",
   });
 
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith("selection-state", {
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith("main", "selection-state", {
       owner: "none",
       included: [],
       selections: {},
@@ -1185,7 +1217,7 @@ test("a line chosen in the diff window comes back to the Commit view when the di
     repo_status: () => [CHANGE],
     ...DIALOG_COMMANDS,
   });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
   await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
   await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
@@ -1193,7 +1225,8 @@ test("a line chosen in the diff window comes back to the Commit view when the di
   deliver("selection-changed", LINE_CHANGE);
   const chosen = { a: [{ hunk: "h1", lines: [0] }] };
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ owner: "commit-view", selections: { "a.txt": chosen.a } }),
     ),
@@ -1203,18 +1236,20 @@ test("a line chosen in the diff window comes back to the Commit view when the di
   openCommitDialog({ request: { kind: "project", paths: [], lists: [] }, executor: "commit" });
   const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ owner: "dialog", selections: {} }),
     ),
   );
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   await fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
     key: "Escape",
   });
 
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ owner: "commit-view", selections: { "a.txt": chosen.a } }),
     ),
@@ -1258,7 +1293,7 @@ test("a line lost by a commit that failed after the dialog closed reaches the di
       throw { kind: "selection_lost", message: "x", details: { path: "a.txt", hunks: ["h1"] } };
     },
   });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
   await screen.findByRole("treeitem", { name: /a\.txt/ });
   await fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
@@ -1278,7 +1313,8 @@ test("a line lost by a commit that failed after the dialog closed reaches the di
   await fireEvent.keyDown(message, { key: "Enter", metaKey: true });
 
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-lost",
       expect.objectContaining({ path: "a.txt", hunks: ["h1"] }),
     ),
@@ -1339,6 +1375,7 @@ test.each([
     mockApp({
       initial_target: () => folder("/repo/a"),
       repo_open: () => (++opened === 1 ? INFO : { ...INFO, path: "/repo/b" }),
+      settings_get: () => CURRENT_WINDOW,
       repo_status: () => [CHANGE],
       changelists_set_comment: () => LISTS,
       commit_changes: () => new Promise((resolve, reject) => (finish = { resolve, reject })),
@@ -1517,7 +1554,7 @@ test("in non-modal mode the Commit view still owns the line checkboxes of the di
     repo_status: () => [CHANGE],
     diff_window_open: () => undefined,
   });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
   await fireEvent.dblClick(await screen.findByRole("treeitem", { name: /a\.txt/ }));
   await vi.waitFor(() => expect(calls("diff_window_open")).toHaveLength(1));
@@ -1525,7 +1562,8 @@ test("in non-modal mode the Commit view still owns the line checkboxes of the di
   deliver("diff-ready");
 
   await vi.waitFor(() =>
-    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+      "main",
       "selection-state",
       expect.objectContaining({ owner: "commit-view" }),
     ),
@@ -1534,12 +1572,12 @@ test("in non-modal mode the Commit view still owns the line checkboxes of the di
 
 test("without_a_diff_window_nothing_is_emitted", async () => {
   mockApp({ initial_target: () => folder("/repo/a"), repo_open: () => INFO, repo_status: () => [CHANGE] });
-  vi.mocked(emit).mockClear();
+  vi.mocked(emitTo).mockClear();
   render(App);
 
   await screen.findByRole("treeitem", { name: /a\.txt/ });
 
-  expect(emit).not.toHaveBeenCalled();
+  expect(emitTo).not.toHaveBeenCalled();
 });
 
 test("the_selection_of_the_diff_window_reaches_the_commit_view", async () => {
@@ -1585,16 +1623,46 @@ test("if_another_repository_cannot_be_opened_the_current_one_stays", async () =>
       if (opened++ === 0) return INFO;
       throw { kind: "failed", message: "There are unsaved changes" };
     },
-    settings_get: () => NON_MODAL,
+    settings_get: () => ({ ...NON_MODAL, openProjectIn: "current" }),
     repo_status: () => [CHANGE],
   });
   render(App);
   const message = await screen.findByRole("textbox", { name: "Commit Message" });
   await fireEvent.input(message, { target: { value: "half done" } });
 
-  await fireEvent.submit(screen.getByLabelText("Repository path").closest("form")!);
+  const input = screen.getByLabelText("Repository path");
+  await fireEvent.input(input, { target: { value: "/repo/b" } });
+  await fireEvent.submit(input.closest("form")!);
 
   expect(await screen.findByText("There are unsaved changes")).toBeTruthy();
+  expect(
+    (screen.getByRole("textbox", { name: "Commit Message" }) as HTMLTextAreaElement).value,
+  ).toBe("half done");
+});
+
+// Final review: opening the repository this window already has brings the window to the front
+// and opens nothing again (`findAndFocusExistingProjectForPath` matches the calling frame): what
+// was typed stays.
+test("opening_the_repository_this_window_has_only_focuses_it", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_get: () => ({ ...NON_MODAL, openProjectIn: "current" }),
+    repo_status: () => [CHANGE],
+  });
+  render(App);
+  const message = await screen.findByRole("textbox", { name: "Commit Message" });
+  await fireEvent.input(message, { target: { value: "half done" } });
+  // The start shows the window once.
+  await waitFor(() => expect(calls("show_window")).toHaveLength(1));
+  const shown = calls("show_window").length;
+
+  const input = screen.getByLabelText("Repository path");
+  await fireEvent.input(input, { target: { value: "/repo/a" } });
+  await fireEvent.submit(input.closest("form")!);
+
+  await waitFor(() => expect(calls("show_window")).toHaveLength(shown + 1));
+  expect(calls("repo_open")).toHaveLength(1);
   expect(
     (screen.getByRole("textbox", { name: "Commit Message" }) as HTMLTextAreaElement).value,
   ).toBe("half done");
@@ -1613,6 +1681,32 @@ test("if_closing_is_not_possible_the_main_window_says_so", async () => {
   handlers.get("leave-refused")?.({ payload: "There are unsaved changes" });
 
   expect(await screen.findByText("There are unsaved changes")).toBeTruthy();
+});
+
+test("events of another window are not heard", async () => {
+  mockApp();
+  render(App);
+  await screen.findByText("0.0.1");
+
+  const options = (event: string) =>
+    vi.mocked(listen).mock.calls.filter(([name]) => name === event).map(([, , target]) => target);
+  for (const event of [
+    "repo-changed",
+    "open-recent",
+    "open-project-chooser",
+    "open-path",
+    "open-settings",
+    "leave-refused",
+    "commit-draft-save",
+    "app-activated",
+    "menu-owner-gained",
+    "git-action",
+  ]) {
+    expect(options(event), event).not.toHaveLength(0);
+    for (const target of options(event)) expect(target, event).toEqual({ target: "main" });
+  }
+  expect(options("settings-changed")).not.toHaveLength(0);
+  for (const target of options("settings-changed")) expect(target).toBeUndefined();
 });
 
 // What the backend notifies the windows about.
@@ -1722,6 +1816,110 @@ test("a recent project from the menu opens like a typed one", async () => {
   expect(calls("repo_open")[0][1]).toEqual({ repo: "/repo/a" });
 });
 
+test("a project open in another window is focused there and opens nothing here", async () => {
+  vi.mocked(chooseNative).mockReset();
+  vi.mocked(chooseNative).mockResolvedValueOnce("/repo/b/sub");
+  mockApp({
+    repo_open: () => INFO,
+    project_resolve: () => "/repo/b",
+    project_focus_open: () => true,
+  });
+  render(App);
+  await screen.findByText("0.0.1");
+
+  await fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+  await waitFor(() =>
+    expect(calls("project_focus_open")).toEqual([["project_focus_open", { root: "/repo/b" }]]),
+  );
+  expect(calls("project_resolve")).toEqual([["project_resolve", { target: "/repo/b/sub" }]]);
+  await tick();
+  expect(calls("repo_open")).toHaveLength(0);
+  expect(screen.queryByRole("dialog", { name: "Open Project" })).toBeNull();
+});
+
+test("with a repository open, Ask shows Open Project, and This Window opens here", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_save: (args) => args?.settings,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+  const input = screen.getByLabelText("Repository path");
+  await fireEvent.input(input, { target: { value: "/repo/b" } });
+
+  await fireEvent.submit(input.closest("form")!);
+
+  const dialog = await screen.findByRole("dialog", { name: "Open Project" });
+  expect(dialog.textContent).toContain("Where would you like to open the project 'b'?");
+  expect(calls("repo_open")).toHaveLength(1);
+  await fireEvent.click(within(dialog).getByRole("checkbox", { name: "Don't ask again" }));
+  await fireEvent.click(within(dialog).getByRole("button", { name: "This Window" }));
+
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(2));
+  expect(calls("repo_open")[1][1]).toEqual({ repo: "/repo/b" });
+  expect(calls("settings_save")).toEqual([
+    ["settings_save", { settings: { ...SETTINGS, openProjectIn: "current" } }],
+  ]);
+  expect(screen.queryByRole("dialog", { name: "Open Project" })).toBeNull();
+});
+
+test("New Window in Open Project opens a new window, and Cancel nothing", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    project_new_window: () => ({ label: "main-2", created: true }),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+
+  deliver("open-recent", { path: "/repo/b", exists: true });
+  let dialog = await screen.findByRole("dialog", { name: "Open Project" });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "New Window" }));
+  await waitFor(() =>
+    expect(calls("project_new_window")).toEqual([["project_new_window", { root: "/repo/b" }]]),
+  );
+
+  deliver("open-recent", { path: "/repo/c", exists: true });
+  dialog = await screen.findByRole("dialog", { name: "Open Project" });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Open Project" })).toBeNull());
+  expect(calls("project_new_window")).toHaveLength(1);
+  expect(calls("repo_open")).toHaveLength(1);
+  expect(calls("settings_save")).toHaveLength(0);
+});
+
+test("a root another window started opening meanwhile shows no error here", async () => {
+  mockApp({
+    repo_open: () => {
+      throw { kind: "open_elsewhere", message: "The project is already open in another window" };
+    },
+  });
+  render(App);
+  await screen.findByText("0.0.1");
+  const input = screen.getByLabelText("Repository path");
+  await fireEvent.input(input, { target: { value: "/repo/b" } });
+
+  await fireEvent.submit(input.closest("form")!);
+
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(screen.queryByText("The project is already open in another window")).toBeNull();
+});
+
+test("a folder handed to the app goes through the open flow", async () => {
+  mockApp({ repo_open: () => INFO });
+  render(App);
+  await screen.findByText("0.0.1");
+
+  deliver("open-path", "/repo/a/sub");
+
+  await waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+  expect(calls("project_resolve")).toEqual([["project_resolve", { target: "/repo/a/sub" }]]);
+  expect(calls("repo_open")[0][1]).toEqual({ repo: "/repo/a/sub" });
+});
+
 test("a recent project that no longer exists can be removed from the list", async () => {
   mockApp({ repo_open: () => INFO, recent_projects_remove: () => undefined });
   render(App);
@@ -1740,6 +1938,31 @@ test("a recent project that no longer exists can be removed from the list", asyn
   expect(calls("recent_projects_remove")[0][1]).toEqual({ path: "/gone/app" });
   expect(screen.queryByRole("dialog", { name: "Reopen Project" })).toBeNull();
   expect(calls("repo_open")).toHaveLength(0);
+});
+
+test("a missing recent project chosen in the project widget asks to reopen or remove it", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    projects_list: () => ({
+      open: [],
+      recent: [{ path: "/gone/app", name: "app", homePath: "/gone/app", exists: false }],
+    }),
+    recent_projects_remove: () => undefined,
+  });
+  render(App);
+  await screen.findByText("0.0.1");
+
+  await fireEvent.click(await screen.findByTitle("/repo/a"));
+  await fireEvent.click(await screen.findByText("app"));
+
+  const dialog = await screen.findByRole("dialog", { name: "Reopen Project" });
+  expect(dialog.textContent).toContain("The path /gone/app does not exist.");
+  await fireEvent.click(within(dialog).getByRole("button", { name: "Remove From List" }));
+  await waitFor(() => expect(calls("recent_projects_remove")).toEqual([["recent_projects_remove", { path: "/gone/app" }]]));
+  expect(calls("project_resolve")).toHaveLength(0);
+  // Only the start opened a repository.
+  expect(calls("repo_open")).toHaveLength(1);
 });
 
 test("with a modal dialog open, File > Open… and Recent Projects do nothing", async () => {
@@ -1809,7 +2032,7 @@ test("changing the git path refreshes what is shown", async () => {
 
   deliver("settings-changed", { ...SETTINGS, gitPath: "/other/git" });
 
-  await waitFor(() => expect(emit).toHaveBeenCalledWith("repo-changed"));
+  await waitFor(() => expect(emitTo).toHaveBeenCalledWith("main", "repo-changed", undefined));
 });
 
 test("the_toolbar_branch_follows_the_repository_without_remounting_the_views", async () => {
@@ -1866,6 +2089,70 @@ test("the_widget_goes_from_one_operation_to_another_with_repo_changed", async ()
     { ids: ["Git.Merge", "Git.Rebase", "Git.Fetch"] },
   ]);
 });
+
+// The menu bar is the app's: the window that gains the focus puts its own state in it again.
+test("gaining focus syncs the Git menu", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Git Branch: main" });
+  await waitFor(() => expect(calls("git_menu_enable").length).toBeGreaterThan(0));
+  const before = calls("git_menu_enable").length;
+
+  window.dispatchEvent(new Event("focus"));
+
+  await waitFor(() => expect(calls("git_menu_enable").length).toBe(before + 1));
+  expect(lastIdsOf()).toContain("Git.Merge");
+});
+
+// Rust hands the menu to this window (its own focus, or its viewer's): it says its state again.
+test("becoming the menu owner re-sends the Git menu state", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Git Branch: main" });
+  await waitFor(() => expect(calls("git_menu_enable").length).toBeGreaterThan(0));
+  const before = calls("git_menu_enable").length;
+
+  deliver("menu-owner-gained");
+
+  await waitFor(() => expect(calls("git_menu_enable").length).toBe(before + 1));
+  expect(lastIdsOf()).toContain("Git.Merge");
+});
+
+// Final review: the menu goes to this window while one of its windows other than the viewer has
+// the focus (its diff window, say), or before its own focus arrives. Current File is then this
+// window's, with nothing to act on, not the previous owner's. The viewer says its own.
+test("becoming the menu owner without the focus clears Current File", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    git_menu_current_file: () => undefined,
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Git Branch: main" });
+  await fireEvent.blur(window);
+  const before = calls("git_menu_current_file").length;
+
+  deliver("menu-owner-gained", "diff");
+
+  await waitFor(() => expect(calls("git_menu_current_file").length).toBe(before + 1));
+  const sent = calls("git_menu_current_file").at(-1)?.[1] as { title: string; items: { enabled: boolean }[] };
+  expect(sent.title).toBe("Current File");
+  expect(sent.items.every((item) => !item.enabled)).toBe(true);
+
+  deliver("menu-owner-gained", "viewer");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(calls("git_menu_current_file").length).toBe(before + 1);
+});
+
+function lastIdsOf(): string[] {
+  return (calls("git_menu_enable").at(-1)?.[1] as { ids: string[] }).ids;
+}
 
 test("opening_a_half_done_repository_shows_the_state", async () => {
   mockApp({
@@ -2048,7 +2335,7 @@ test("on_open_what_was_saved_comes_back_and_changing_repository_withdraws_it", a
   const pending = [{ sha: "abc", title: "Update", message: "Uncommitted changes before Update" }];
   const merging = { ...INFO.state, operation: "merging", label: "Merging main" };
   const opens = [{ ...INFO, pending, state: merging }, INFO];
-  mockApp({ repo_open: () => opens.shift() });
+  mockApp({ repo_open: () => opens.shift(), settings_get: () => CURRENT_WINDOW });
   render(App);
   await screen.findByText("0.0.1");
   const input = screen.getByLabelText("Repository path");
@@ -2057,6 +2344,10 @@ test("on_open_what_was_saved_comes_back_and_changing_repository_withdraws_it", a
 
   expect(await screen.findByRole("button", { name: "Restore Changes" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Abort" })).toBeTruthy();
+  // The first open has finished: another one is not ignored.
+  await waitFor(() =>
+    expect((screen.getByRole("button", { name: "Open" }) as HTMLButtonElement).disabled).toBe(false),
+  );
 
   await fireEvent.input(input, { target: { value: "/repo/b" } });
   await fireEvent.submit(input.closest("form")!);
@@ -2220,13 +2511,14 @@ test("clone_without_an_open_repository_opens_it_in_this_window", async () => {
   expect(calls("clone_repository")).toEqual([
     ["clone_repository", { url: "/srv/a.git", directory: "/work/copy" }],
   ]);
-  expect(calls("open_in_new_window")).toHaveLength(0);
+  expect(calls("project_new_window")).toHaveLength(0);
 });
 
-test("clone_with_an_open_repository_asks_the_system_for_another_window", async () => {
+test("clone_with_an_open_repository_goes_where_open_project_in_says", async () => {
   openWithBranches({
     clone_repository: finishing(6, { path: "/work/copy" }),
-    open_in_new_window: () => undefined,
+    settings_get: () => ({ ...SETTINGS, openProjectIn: "new" }),
+    project_new_window: () => ({ label: "main-2", created: true }),
   });
   render(App);
   await screen.findByRole("button", { name: "Git Branch: main" });
@@ -2235,8 +2527,9 @@ test("clone_with_an_open_repository_asks_the_system_for_another_window", async (
   await fillClone("/srv/a.git", "/work/copy");
 
   await waitFor(() =>
-    expect(calls("open_in_new_window")).toEqual([["open_in_new_window", { path: "/work/copy" }]]),
+    expect(calls("project_new_window")).toEqual([["project_new_window", { root: "/work/copy" }]]),
   );
+  expect(calls("project_resolve")).toEqual([["project_resolve", { target: "/work/copy" }]]);
   expect(calls("repo_open")).toHaveLength(1);
 });
 
@@ -3327,17 +3620,42 @@ test("on_the_fly_offers_the_dialog_once_per_clipboard_text", async () => {
   await new Promise((resolve) => setTimeout(resolve, 30));
   expect(calls("patch_clipboard")).toHaveLength(0);
 
-  deliver("app-activated");
+  deliver("app-activated", "main");
   const dialog = await screen.findByRole("dialog", { name: "Apply Patch" });
   expect(within(dialog).queryByRole("textbox", { name: "Patch file name:" })).toBeNull();
   expect(calls("patch_plan")[0][1]).toEqual({ source: { kind: "text", text }, mapping: { files: [] } });
   await fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
   deliver("app-deactivated");
-  deliver("app-activated");
+  deliver("app-activated", "main");
   await new Promise((resolve) => setTimeout(resolve, 30));
   expect(screen.queryByRole("dialog", { name: "Apply Patch" })).toBeNull();
   expect(calls("patch_plan")).toHaveLength(1);
+});
+
+// Final review: every main window hears `app-activated`, with the project window that got the
+// focus. Only that one looks at the clipboard: IntelliJ offers the patch in the activated frame.
+test("on_the_fly_asks_only_in_the_activated_window", async () => {
+  const text = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n";
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    patch_app_settings_get: () => ({ folder: null, detectPatchOnTheFly: true }),
+    patch_clipboard: () => ({ length: text.length, hash: "t1", patch: text }),
+    patch_plan: finishing(66, APPLY_PLAN),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+
+  // Another project window, or one of its auxiliary windows, was activated.
+  deliver("app-activated", "main-2");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(calls("patch_clipboard")).toHaveLength(0);
+  expect(screen.queryByRole("dialog", { name: "Apply Patch" })).toBeNull();
+
+  // This window was activated.
+  deliver("app-activated", "main");
+  expect(await screen.findByRole("dialog", { name: "Apply Patch" })).toBeTruthy();
 });
 
 // While a patch conflict is in the merge window the apply is modal: the Git menu does nothing.
@@ -3514,3 +3832,145 @@ test("compare_with_branch_follows_the_last_branch_list_read", async () => {
   };
   expect(last.items.find((item) => item.id === "Git.CompareWithBranch")?.enabled).toBe(false);
 });
+
+// §5.8 step 2: before a window closes (or the app quits) its commit message draft goes to the
+// active changelist's comment, the store the Commit Changes dialog keeps its draft in, and only
+// then does the window answer.
+test("the commit draft is saved to the changelist comment when the window closes", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_status: () => [CHANGE],
+    changelists_set_comment: () => LISTS,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  const message = screen.getByRole("textbox", { name: "Commit Message" });
+  await fireEvent.input(message, { target: { value: "half done" } });
+
+  deliver("commit-draft-save");
+
+  await vi.waitFor(() => expect(calls("commit_draft_saved")).toHaveLength(1));
+  expect(calls("changelists_set_comment")).toEqual([
+    ["changelists_set_comment", { id: "default", comment: "half done", repo: "/repo/a" }],
+  ]);
+  const order = vi.mocked(invoke).mock.calls.map(([name]) => name);
+  expect(order.lastIndexOf("changelists_set_comment")).toBeLessThan(
+    order.lastIndexOf("commit_draft_saved"),
+  );
+});
+
+test("the draft of an open Commit Changes dialog is kept as its Cancel keeps it", async () => {
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    changelists_set_comment: () => LISTS,
+    ...DIALOG_COMMANDS,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  await fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
+  const dialog = await screen.findByRole("dialog", { name: "Commit Changes" });
+  await within(dialog).findByRole("treeitem", { name: "a.txt" });
+  await fireEvent.input(within(dialog).getByRole("textbox", { name: "Commit Message" }), {
+    target: { value: "from the dialog" },
+  });
+
+  deliver("commit-draft-save");
+
+  await vi.waitFor(() => expect(calls("commit_draft_saved")).toHaveLength(1));
+  expect(calls("changelists_set_comment")).toEqual([
+    ["changelists_set_comment", { id: "default", comment: "from the dialog", repo: "/repo/a" }],
+  ]);
+});
+
+test("a window with no draft answers at once, without writing", async () => {
+  mockApp();
+  render(App);
+  await screen.findByText("0.0.1");
+
+  deliver("commit-draft-save");
+
+  await vi.waitFor(() => expect(calls("commit_draft_saved")).toHaveLength(1));
+  expect(calls("changelists_set_comment")).toHaveLength(0);
+});
+
+// §5.8 Starting: `main` opens the open list's first project as its initial target, the backend
+// opens the others in new windows, and the paths that no longer exist are reported once.
+test("at start the open projects reopen, the missing ones are reported", async () => {
+  mockApp({
+    initial_target: () => folder("/work/a"),
+    repo_open: () => INFO,
+    open_projects_reopen: () => ({ missing: ["/gone/first", "/gone/second"] }),
+  });
+  render(App);
+
+  await vi.waitFor(() => expect(calls("open_projects_reopen")).toHaveLength(1));
+  await vi.waitFor(() => expect(calls("repo_open")).toHaveLength(1));
+  expect(calls("repo_open")[0][1]).toEqual({ repo: "/work/a" });
+  const order = vi.mocked(invoke).mock.calls.map(([name]) => name);
+  expect(order.indexOf("initial_target")).toBeLessThan(order.indexOf("open_projects_reopen"));
+  await vi.waitFor(() =>
+    expect(get(notifications).map(({ kind, title }) => ({ kind, title }))).toEqual([
+      {
+        kind: "warning",
+        title:
+          "Some projects could not be reopened because their folders no longer exist: first, second",
+      },
+    ]),
+  );
+});
+
+test("a start with nothing missing reports nothing", async () => {
+  mockApp({ initial_target: () => folder("/work/a"), repo_open: () => INFO });
+  render(App);
+
+  await vi.waitFor(() => expect(calls("show_window")).toHaveLength(1));
+  expect(calls("open_projects_reopen")).toHaveLength(1);
+  expect(get(notifications)).toEqual([]);
+});
+
+// Fix round 1: the draft a closed window saved comes back in the Commit tool window when the
+// repository is opened again; a message emptied since (committed, say) clears the comment.
+test("a saved draft shows in the Commit Message box after reopening", async () => {
+  let lists = LISTS;
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    settings_get: () => NON_MODAL,
+    repo_status: () => [CHANGE],
+    changelists_get: () => lists,
+    changelists_set_comment: (args) => {
+      lists = {
+        ...lists,
+        lists: lists.lists.map((list) =>
+          list.id === args?.id ? { ...list, comment: args?.comment as string } : list,
+        ),
+      };
+      return lists;
+    },
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  await fireEvent.input(screen.getByRole("textbox", { name: "Commit Message" }), {
+    target: { value: "half done" },
+  });
+  deliver("commit-draft-save");
+  await vi.waitFor(() => expect(calls("commit_draft_saved")).toHaveLength(1));
+  cleanup();
+  // The new window's listeners only.
+  vi.mocked(listen).mockClear();
+
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+  const message = screen.getByRole("textbox", { name: "Commit Message" }) as HTMLTextAreaElement;
+  await vi.waitFor(() => expect(message.value).toBe("half done"));
+
+  await fireEvent.input(message, { target: { value: "" } });
+  deliver("commit-draft-save");
+  await vi.waitFor(() => expect(calls("commit_draft_saved")).toHaveLength(2));
+  expect(lists.lists[0].comment).toBe("");
+});
+

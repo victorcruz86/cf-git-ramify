@@ -2,11 +2,13 @@
 // the viewer (decision 7 of phase 4 part 4), with 241's defaults.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State, WebviewWindow};
 
 use std::collections::HashMap;
 
-use crate::commands::{blocking_api, current_repo, failed, ApiError, AppState, MAIN_WINDOW};
+use crate::commands::{
+    blocking_api, current_repo, failed, owner_label, try_emit_to_owner, ApiError, AppState,
+};
 use crate::diff::check_hash;
 use crate::git::{self, GitError};
 use crate::history::{self, Git, Starts, Walk};
@@ -603,25 +605,31 @@ pub fn translate_line(before: &str, after: &str, line: u32) -> u32 {
 #[tauri::command]
 pub async fn annotate_start(
     request: AnnotateRequest,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let title = LOADING_ANNOTATIONS.to_string();
-    Ok(state
-        .tasks
-        .start(&repo, TaskKind::Read, title, move |context| {
+    Ok(state.tasks.start(
+        &owner_label(&window),
+        &repo,
+        TaskKind::Read,
+        title,
+        move |context| {
             let mut git = |args: &[&str]| context.git(args).map(|output| output.stdout);
             annotate(&mut git, &request)
-        }))
+        },
+    ))
 }
 
 // The local file changed on disk or the repository did: closed, or the lines mapped again.
 #[tauri::command]
 pub async fn annotate_refresh(
     request: RefreshRequest,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Refreshed, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || {
         let mut git = |args: &[&str]| {
             git::run(&repo, args).map(|output| String::from_utf8_lossy(&output).into_owned())
@@ -633,9 +641,13 @@ pub async fn annotate_refresh(
 
 // A click on an annotated line: its commit in the main window's Log.
 #[tauri::command]
-pub fn annotation_show_in_log(hash: String, app: AppHandle) -> Result<(), ApiError> {
+pub fn annotation_show_in_log(
+    hash: String,
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<(), ApiError> {
     check_hash(&hash)?;
-    app.emit_to(MAIN_WINDOW, SHOW_IN_LOG_EVENT, hash)
+    try_emit_to_owner(&app, &owner_label(&window), SHOW_IN_LOG_EVENT, hash)
         .map_err(|error| failed(error.to_string()))
 }
 

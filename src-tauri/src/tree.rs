@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Component, Path};
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
 use crate::commands::{blocking_api, current_repo, failed, ApiError, AppState};
 use crate::diff::check_hash;
@@ -413,9 +413,10 @@ pub fn ls_tree(repo: &Path, revision: &str, dir: &str) -> Result<Vec<TreeEntry>,
 #[tauri::command]
 pub async fn tree_list(
     dir: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<TreeEntry>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(list_dir(&repo, &dir)?)).await
 }
 
@@ -424,9 +425,10 @@ pub async fn tree_list(
 pub async fn tree_list_at(
     revision: String,
     dir: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<TreeEntry>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(ls_tree(&repo, &revision, &dir)?)).await
 }
 

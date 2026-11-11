@@ -564,7 +564,7 @@ pub type AfterFetch = Arc<dyn Fn(&TaskContext, &Path, &str) + Send + std::marker
 #[derive(Default)]
 pub struct BranchSync {
     wake: Mutex<Option<Sender<Wake>>>,
-    seen: Mutex<Option<(PathBuf, ToFetch)>>,
+    seen: Mutex<HashMap<PathBuf, ToFetch>>,
     // `myAuthSuccessMap`: only valid in this session.
     authenticated: Mutex<HashSet<(PathBuf, String)>>,
     // Set once by the app's setup, and by the tests that need it. Without it a fetch does nothing
@@ -635,16 +635,15 @@ impl BranchSync {
     }
 
     pub fn store(&self, repo: &Path, found: ToFetch) {
-        *self.seen.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some((repo.to_path_buf(), found));
+        self.seen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(repo.to_path_buf(), found);
     }
 
     pub fn seen(&self, repo: &Path) -> ToFetch {
         let seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
-        match seen.as_ref() {
-            Some((path, found)) if path == repo => found.clone(),
-            _ => ToFetch::new(),
-        }
+        seen.get(repo).cloned().unwrap_or_default()
     }
 }
 
@@ -943,9 +942,13 @@ mod tests {
         assert!(has_external_agent(Some(link.as_os_str())));
         assert!(!has_external_agent(Some(plain.as_os_str())));
         // Missing: the check fails and that counts as not external.
-        assert!(!has_external_agent(Some(OsStr::new("/private/tmp/com.apple.launchd.nope/Listeners"))));
+        assert!(!has_external_agent(Some(OsStr::new(
+            "/private/tmp/com.apple.launchd.nope/Listeners"
+        ))));
         assert!(!has_external_agent(None));
-        assert!(has_external_agent(Some(OsStr::new("/Users/me/.1password/agent.sock"))));
+        assert!(has_external_agent(Some(OsStr::new(
+            "/Users/me/.1password/agent.sock"
+        ))));
     }
 
     #[test]
@@ -979,10 +982,7 @@ mod tests {
         assert!(!log.exists(), "ls-remote with Never");
 
         assert!(checked(&clone, IncomingCheck::Always, NO_AGENT).is_empty());
-        assert!(
-            log.exists(),
-            "the test must see the remote when it is used"
-        );
+        assert!(log.exists(), "the test must see the remote when it is used");
     }
 
     #[test]
@@ -1252,7 +1252,11 @@ mod tests {
         schedule.request();
 
         assert!(!schedule.should_run(false, now));
-        assert_eq!(schedule.wait(now), None, "no wake-up while it is not visible");
+        assert_eq!(
+            schedule.wait(now),
+            None,
+            "no wake-up while it is not visible"
+        );
 
         assert!(schedule.should_run(true, now + CHECK_PERIOD));
     }
@@ -1285,6 +1289,23 @@ mod tests {
 
         assert_eq!(sync.seen(Path::new("/one")), found);
         assert!(sync.seen(Path::new("/two")).is_empty());
+    }
+
+    // Two windows, two repositories: what one saw does not replace what the other saw.
+    #[test]
+    fn what_was_seen_is_kept_per_repository() {
+        let sync = BranchSync::default();
+        let one = ToFetch::from([("main".to_string(), "abc".to_string())]);
+        let two = ToFetch::from([("dev".to_string(), "def".to_string())]);
+
+        sync.store(Path::new("/one"), one.clone());
+        sync.store(Path::new("/two"), two.clone());
+
+        assert_eq!(sync.seen(Path::new("/one")), one);
+        assert_eq!(sync.seen(Path::new("/two")), two);
+        sync.store(Path::new("/one"), ToFetch::new());
+        assert!(sync.seen(Path::new("/one")).is_empty());
+        assert_eq!(sync.seen(Path::new("/two")), two);
     }
 
     #[test]

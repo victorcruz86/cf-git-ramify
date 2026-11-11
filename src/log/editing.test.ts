@@ -32,7 +32,7 @@ import CommitMessageDialog from "./CommitMessageDialog.svelte";
 import DropConfirmDialog from "./DropConfirmDialog.svelte";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 
 const H1 = "11111111".repeat(5);
 const H2 = "22222222".repeat(5);

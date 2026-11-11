@@ -10,7 +10,10 @@ import { branchOptions, defaultBranchOptions, favorites } from "./state";
 import { compareBranches } from "../compare/actions";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), emitTo: vi.fn() }));
 vi.mock("../compare/actions", () => ({
   compareBranches: vi.fn(async () => {}),
   showBranchesDiff: vi.fn(async () => {}),

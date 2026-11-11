@@ -8,7 +8,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 use crate::branches::Repo;
 use crate::commands::{
@@ -402,8 +402,9 @@ pub fn open_url_command(url: &str) -> Result<Command, String> {
 fn open_repo_dir(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    window: &WebviewWindow,
 ) -> Result<Option<PathBuf>, ApiError> {
-    match current_repo(state) {
+    match current_repo(state, window) {
         Ok(repo) => data_dir_of(app, &repo).map(Some),
         Err(_) => Ok(None),
     }
@@ -414,10 +415,11 @@ fn open_repo_dir(
 pub async fn github_accounts(
     tokens: Option<bool>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<AccountView>, ApiError> {
     let base = base_dir(&app)?;
-    let repo_dir = open_repo_dir(&app, &state)?;
+    let repo_dir = open_repo_dir(&app, &state, &window)?;
     let store = state.hosting.store.clone();
     blocking_api(move || {
         let default = default_of(repo_dir.as_deref());
@@ -438,10 +440,11 @@ pub async fn github_accounts(
 pub async fn github_account_details(
     id: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<AccountView, ApiError> {
     let base = base_dir(&app)?;
-    let repo_dir = open_repo_dir(&app, &state)?;
+    let repo_dir = open_repo_dir(&app, &state, &window)?;
     let client = state.hosting.client();
     let store = state.hosting.store.clone();
     blocking_api(move || {
@@ -459,19 +462,23 @@ pub async fn github_login(
     token: String,
     editing: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     // The server is checked before the token, as in `GithubLoginPanel`.
     let target = login_target(&server, editing)?;
     let token = Secret::new(clean_token(&token)?.to_string());
     let base = base_dir(&app)?;
-    let repo_dir = open_repo_dir(&app, &state)?;
+    let repo_dir = open_repo_dir(&app, &state, &window)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let place = base.clone();
-    Ok(state
-        .tasks
-        .start(&place, TaskKind::Read, LOGGING_IN.to_string(), move |ctx| {
+    Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
+        &place,
+        TaskKind::Read,
+        LOGGING_IN.to_string(),
+        move |ctx| {
             let check = || ctx.check_cancelled().map_err(|_| HostingError::Cancelled);
             let logged = log_in(
                 &client,
@@ -485,17 +492,19 @@ pub async fn github_login(
             .map_err(login_error);
             hosting.accounts_changed();
             logged
-        }))
+        },
+    ))
 }
 
 #[tauri::command]
 pub async fn github_remove(
     id: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let base = base_dir(&app)?;
-    let repo_dir = open_repo_dir(&app, &state)?;
+    let repo_dir = open_repo_dir(&app, &state, &window)?;
     let hosting = state.hosting.clone();
     blocking_api(move || {
         let removed = remove_account(hosting.store.as_ref(), &base, repo_dir.as_deref(), &id);
@@ -509,10 +518,11 @@ pub async fn github_remove(
 pub async fn github_set_default(
     id: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let base = base_dir(&app)?;
-    let repo_dir = data_dir_of(&app, &current_repo(&state)?)?;
+    let repo_dir = data_dir_of(&app, &current_repo(&state, &window)?)?;
     blocking_api(move || set_default(&base, &repo_dir, &id).map_err(failed)).await
 }
 
@@ -543,10 +553,11 @@ fn known_servers(base: &Path) -> Result<Vec<GithubServer>, String> {
 pub async fn github_links(
     target: LinkTarget,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<Reference>, ApiError> {
     let base = base_dir(&app)?;
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || {
         let servers = known_servers(&base).map_err(failed)?;
         Ok(links::references(&repo, &servers, &target)?)
@@ -557,9 +568,13 @@ pub async fn github_links(
 // The Pull Requests window: the GitHub repositories of the remotes, the accounts and the saved
 // choice. It reads git and local data only: no request to GitHub, and no token.
 #[tauri::command]
-pub async fn github_known(app: AppHandle, state: State<'_, AppState>) -> Result<Known, ApiError> {
+pub async fn github_known(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Known, ApiError> {
     let base = base_dir(&app)?;
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let data = data_dir_of(&app, &repo)?;
     blocking_api(move || Ok(pulls::known(&repo, &base, &data)?)).await
 }
@@ -571,16 +586,18 @@ pub async fn github_connect(
     remote: String,
     account: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
     let base = base_dir(&app)?;
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let data = data_dir_of(&app, &repo)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let place = repo.clone();
     let ticket = state.hosting.connections.start();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         VIEW_PULL_REQUESTS.to_string(),
@@ -613,9 +630,10 @@ pub async fn github_connect(
 #[tauri::command]
 pub async fn github_forget_connection(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let data = data_dir_of(&app, &repo)?;
     state.hosting.connections.forget(&repo);
     blocking_api(move || {
@@ -639,9 +657,13 @@ fn connect_error(error: HostingError) -> GitError {
 
 // What the list's requests start from: the app's data folder and the open repository's
 // connection.
-fn opened(app: &AppHandle, state: &State<'_, AppState>) -> Result<(PathBuf, PathBuf), ApiError> {
+fn opened(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    window: &WebviewWindow,
+) -> Result<(PathBuf, PathBuf), ApiError> {
     let base = base_dir(app)?;
-    let repo = current_repo(state)?;
+    let repo = current_repo(state, window)?;
     if state.hosting.connections.connection_of(&repo).is_none() {
         return Err(failed(NO_CONNECTION.to_string()));
     }
@@ -696,13 +718,15 @@ pub async fn github_pr_page(
     value: SearchValue,
     cursor: Option<String>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let (base, repo) = opened(&app, &state)?;
+    let (base, repo) = opened(&app, &state, &window)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let place = repo.clone();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         LOADING_PULL_REQUESTS.to_string(),
@@ -723,9 +747,10 @@ pub async fn github_pr_page(
 #[tauri::command]
 pub async fn github_pr_etag(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    let (base, repo) = opened(&app, &state)?;
+    let (base, repo) = opened(&app, &state, &window)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     blocking_api(move || {
@@ -765,14 +790,16 @@ fn in_session<T>(
 pub async fn github_pr_details(
     number: u64,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let (base, repo) = opened(&app, &state)?;
+    let (base, repo) = opened(&app, &state, &window)?;
     let connection = connection_of(&state, &repo)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let place = repo.clone();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         LOADING_DETAILS.to_string(),
@@ -838,17 +865,20 @@ fn shown_details(
 pub async fn github_pr_checkout(
     number: u64,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let (base, repo) = opened(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let (base, repo) = opened(&app, &state, &window)?;
     let connection = connection_of(&state, &repo)?;
     let data = data_dir_of(&app, &repo)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let handle = app.clone();
+    let owner = crate::commands::owner_label(&window);
     let place = repo.clone();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         CHECKING_OUT.to_string(),
@@ -858,8 +888,13 @@ pub async fn github_pr_checkout(
                 shown_details(&hosting, &client, &check, &base, &repo, &connection, number)?;
             let state = handle.state::<AppState>();
             let flush = || {
-                tauri::async_runtime::block_on(flush_diff_window(&handle, &state, SAVE_ACTION))
-                    .map_err(|error| GitError::Io(error.message))
+                tauri::async_runtime::block_on(flush_diff_window(
+                    &handle,
+                    &state,
+                    &window,
+                    SAVE_ACTION,
+                ))
+                .map_err(|error| GitError::Io(error.message))
             };
             let target = Repo {
                 ctx,
@@ -868,7 +903,7 @@ pub async fn github_pr_checkout(
             };
             let server = &connection.coordinates.server;
             let result = checkout::checkout(&target, &state.branch_sync, server, &shown, flush);
-            crate::commands::repo_changed(&handle);
+            crate::commands::repo_changed(&handle, &owner);
             result.map_err(git_failure)
         },
     ))
@@ -881,16 +916,19 @@ pub async fn github_pr_checkout(
 pub async fn github_pr_show_in_log(
     number: u64,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let (base, repo) = opened(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let (base, repo) = opened(&app, &state, &window)?;
     let connection = connection_of(&state, &repo)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let handle = app.clone();
+    let owner = crate::commands::owner_label(&window);
     let place = repo.clone();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         SHOWING_IN_LOG.to_string(),
@@ -902,7 +940,7 @@ pub async fn github_pr_show_in_log(
             let server = &connection.coordinates.server;
             let result = checkout::show_in_log(ctx, sync, server, &shown);
             // A remote may have been added, and the fetch moved a remote branch.
-            crate::commands::repo_changed(&handle);
+            crate::commands::repo_changed(&handle, &owner);
             result.map_err(git_failure)
         },
     ))
@@ -913,9 +951,10 @@ pub async fn github_pr_show_in_log(
 #[tauri::command]
 pub async fn github_pr_checked_out(
     number: u64,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<bool, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let Some(connection) = state.hosting.connections.connection_of(&repo) else {
         return Ok(false);
     };
@@ -938,13 +977,15 @@ pub async fn github_pr_checked_out(
 pub async fn github_pr_status(
     number: u64,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let (base, repo) = opened(&app, &state)?;
+    let (base, repo) = opened(&app, &state, &window)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let place = repo.clone();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         LOADING_STATUS.to_string(),
@@ -978,13 +1019,15 @@ fn load_commits(
 pub async fn github_pr_commits(
     number: u64,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let (base, repo) = opened(&app, &state)?;
+    let (base, repo) = opened(&app, &state, &window)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let place = repo.clone();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         LOADING_COMMITS.to_string(),
@@ -1009,6 +1052,7 @@ fn git_failure(error: GitError) -> GitError {
 // commits the dropdown loaded. `base_ref` is the base branch's name in `findPullRequest`; the
 // hashes are checked before git sees them.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn github_pr_changes(
     number: u64,
     base_ref: String,
@@ -1016,9 +1060,10 @@ pub async fn github_pr_changes(
     head_oid: String,
     selection: Option<usize>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let (base, repo) = opened(&app, &state)?;
+    let (base, repo) = opened(&app, &state, &window)?;
     crate::diff::check_hash(&base_oid)?;
     crate::diff::check_hash(&head_oid)?;
     let remote = state
@@ -1030,8 +1075,10 @@ pub async fn github_pr_changes(
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let handle = app.clone();
+    let owner = crate::commands::owner_label(&window);
     let place = repo.clone();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         LOADING_CHANGES.to_string(),
@@ -1045,7 +1092,7 @@ pub async fn github_pr_changes(
                 let sync = &handle.state::<AppState>().branch_sync;
                 let result = changes::fetch(ctx, sync, &remote, &base_ref, number);
                 // The fetches moved remote branches.
-                crate::commands::repo_changed(&handle);
+                crate::commands::repo_changed(&handle, &owner);
                 result.map_err(git_failure)?;
                 hosting.pulls.set_fetched(
                     &repo,
@@ -1090,13 +1137,15 @@ pub async fn github_pr_changes(
 pub async fn github_pr_chooser(
     kind: ChooserKind,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let (base, repo) = opened(&app, &state)?;
+    let (base, repo) = opened(&app, &state, &window)?;
     let client = state.hosting.client();
     let hosting = state.hosting.clone();
     let place = repo.clone();
     Ok(state.tasks.start(
+        &crate::commands::owner_label(&window),
         &place,
         TaskKind::Read,
         chooser_title(kind).to_string(),
@@ -1125,9 +1174,10 @@ fn chooser_title(kind: ChooserKind) -> &'static str {
 #[tauri::command]
 pub async fn github_pr_search_saved(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<SavedSearch, ApiError> {
-    let data = data_dir_of(&app, &current_repo(&state)?)?;
+    let data = data_dir_of(&app, &current_repo(&state, &window)?)?;
     blocking_api(move || Ok(list::saved_search(&data))).await
 }
 
@@ -1137,9 +1187,10 @@ pub async fn github_pr_search_save(
     value: SearchValue,
     remember: bool,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<SavedSearch, ApiError> {
-    let data = data_dir_of(&app, &current_repo(&state)?)?;
+    let data = data_dir_of(&app, &current_repo(&state, &window)?)?;
     blocking_api(move || {
         list::save_search(&data, &value, remember)
             .map_err(|error| failed(format!("Could not save the pull requests search: {error}")))

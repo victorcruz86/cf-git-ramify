@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,14 +43,18 @@ pub type Listener<T> = Arc<dyn Fn(&T) + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConsoleLine {
+    // The project window whose command wrote it: each window's console shows only its own, like
+    // IntelliJ's console per project.
+    pub owner: String,
     pub time: String,
     pub command: bool,
     pub text: String,
 }
 
+// `CAPACITY` lines per project window.
 #[derive(Default)]
 pub struct Console {
-    lines: Mutex<VecDeque<ConsoleLine>>,
+    lines: Mutex<HashMap<String, VecDeque<ConsoleLine>>>,
     listener: Mutex<Option<Listener<ConsoleLine>>>,
 }
 
@@ -60,31 +64,45 @@ impl Console {
     }
 
     // What is launched, in the format of `GitImplBase`: `[<folder>] git <arguments>`.
-    pub fn command(&self, repo: &Path, args: &[&str]) {
+    pub fn command(&self, owner: &str, repo: &Path, args: &[&str]) {
         let folder = repo
             .file_name()
             .unwrap_or(repo.as_os_str())
             .to_string_lossy();
-        self.push(true, format!("[{folder}] git {}", args.join(" ")));
+        self.push(owner, true, format!("[{folder}] git {}", args.join(" ")));
     }
 
-    pub fn output(&self, text: &str) {
-        self.push(false, text.to_string());
+    pub fn output(&self, owner: &str, text: &str) {
+        self.push(owner, false, text.to_string());
     }
 
-    pub fn lines(&self) -> Vec<ConsoleLine> {
+    // The lines of the project window `owner`, oldest first.
+    pub fn lines_of(&self, owner: &str) -> Vec<ConsoleLine> {
         let lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
-        lines.iter().cloned().collect()
+        lines
+            .get(owner)
+            .map(|lines| lines.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
-    fn push(&self, command: bool, text: String) {
+    // The project window `owner` was closed: its lines go with it.
+    pub fn forget(&self, owner: &str) {
+        self.lines
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(owner);
+    }
+
+    fn push(&self, owner: &str, command: bool, text: String) {
         let line = ConsoleLine {
+            owner: owner.to_string(),
             time: clock(),
             command,
             text: shorten(hide_credentials(&text)),
         };
         {
-            let mut lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut all = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
+            let lines = all.entry(owner.to_string()).or_default();
             if lines.len() == CAPACITY {
                 lines.pop_front();
             }
@@ -264,8 +282,8 @@ mod tests {
     #[test]
     fn console_truncates_to_10000_characters() {
         let console = Console::default();
-        console.output(&"é".repeat(25_000));
-        let lines = console.lines();
+        console.output("main", &"é".repeat(25_000));
+        let lines = console.lines_of("main");
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text.chars().count(), MAX_CHARS);
         assert!(lines[0].text.ends_with('…'));
@@ -275,9 +293,9 @@ mod tests {
     fn console_keeps_the_last_2000_lines() {
         let console = Console::default();
         for index in 0..CAPACITY + 5 {
-            console.output(&format!("line {index}"));
+            console.output("main", &format!("line {index}"));
         }
-        let lines = console.lines();
+        let lines = console.lines_of("main");
         assert_eq!(lines.len(), CAPACITY);
         assert_eq!(lines[0].text, "line 5");
     }
@@ -285,9 +303,13 @@ mod tests {
     #[test]
     fn the_command_carries_time_folder_and_arguments() {
         let console = Console::default();
-        console.command(Path::new("/tmp/project"), &["-c", "a=b", "fetch", "origin"]);
-        console.output("From /tmp/other");
-        let lines = console.lines();
+        console.command(
+            "main",
+            Path::new("/tmp/project"),
+            &["-c", "a=b", "fetch", "origin"],
+        );
+        console.output("main", "From /tmp/other");
+        let lines = console.lines_of("main");
         assert!(is_clock(&lines[0].time), "{}", lines[0].time);
         assert!(lines[0].command);
         assert_eq!(lines[0].text, "[project] git -c a=b fetch origin");
@@ -301,13 +323,46 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         console.listen(move |line| sink.lock().unwrap().push(line.clone()));
-        console.command(Path::new("/r"), &["push", "https://u:pass@host/r"]);
-        console.output("fatal: https://u:pass@host/r does not respond");
+        console.command("main", Path::new("/r"), &["push", "https://u:pass@host/r"]);
+        console.output("main", "fatal: https://u:pass@host/r does not respond");
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].text, "[r] git push https://u:***@host/r");
         assert_eq!(seen[1].text, "fatal: https://u:***@host/r does not respond");
-        assert_eq!(*seen, console.lines());
+        assert_eq!(*seen, console.lines_of("main"));
+    }
+
+    #[test]
+    fn lines_are_kept_per_window() {
+        let console = Console::default();
+        console.command("main", Path::new("/repos/a"), &["fetch"]);
+        console.output("main-2", "from b");
+        let texts = |owner: &str| -> Vec<(String, String)> {
+            console
+                .lines_of(owner)
+                .into_iter()
+                .map(|line| (line.owner, line.text))
+                .collect()
+        };
+
+        assert_eq!(
+            texts("main"),
+            [("main".to_string(), "[a] git fetch".to_string())]
+        );
+        assert_eq!(
+            texts("main-2"),
+            [("main-2".to_string(), "from b".to_string())]
+        );
+        assert!(console.lines_of("main-3").is_empty());
+
+        // The limit is per window: a busy window does not push out another's lines.
+        for index in 0..CAPACITY + 5 {
+            console.output("main", &format!("line {index}"));
+        }
+        let main = console.lines_of("main");
+        assert_eq!(main.len(), CAPACITY);
+        assert_eq!(main[0].text, "line 5");
+        assert_eq!(texts("main-2").len(), 1);
     }
 
     #[test]

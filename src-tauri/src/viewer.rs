@@ -7,17 +7,20 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Mutex, PoisonError};
+use std::sync::PoisonError;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-use crate::commands::{self, blocking_api, current_repo, failed, reveal, ApiError, AppState};
+use crate::commands::{
+    self, blocking_api, current_repo, failed, owner_label, reveal, session_of, try_emit_to_owner,
+    ApiError, AppState, WindowSession,
+};
 use crate::diff::check_hash;
 use crate::git::{self, GitError};
+use crate::windows::{self, WindowKind};
 use crate::worktree_diff;
 
-pub const VIEWER_WINDOW: &str = "viewer";
 const VIEWER_WINDOW_URL: &str = "index.html?window=viewer";
 // The page takes what is waiting with `viewer_targets`: on mounting, and on each of these.
 const VIEWER_OPEN_EVENT: &str = "viewer-open";
@@ -41,8 +44,6 @@ const TEXT_EXTENSIONS: &str = "txt md markdown java kt kts groovy gradle scala x
     svg css scss sass less js mjs cjs jsx ts mts cts tsx json json5 yaml yml toml ini cfg conf \
     properties sh bash zsh fish bat cmd ps1 py rb go rs c h cc cpp cxx hpp hh m mm swift cs fs php \
     pl lua r sql svelte vue dart ex exs erl hs clj elm tf proto graphql csv tsv log diff patch";
-
-static PENDING: Mutex<Vec<ViewerTarget>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewerTarget {
@@ -502,9 +503,29 @@ fn locate(file: &Path) -> Result<(PathBuf, String), GitError> {
     Ok((root, parts.join("/")))
 }
 
+// Per main window: what the open flow stored for it wins, and only the first `main` reads the
+// command line. Without a path there, the first time `main` asks, it reopens the first project
+// of the open list (`commands::reopen_first`); a start with a path does not read the list.
 #[tauri::command]
-pub fn initial_target() -> Result<Option<InitialTarget>, ApiError> {
-    initial_target_of(commands::first_argument(env::args_os()))
+pub fn initial_target(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<InitialTarget>, ApiError> {
+    let argument = {
+        let mut targets = state.initial_targets.lock().unwrap();
+        let first_ask = !targets.asked(window.label());
+        targets.target_for(window.label(), || {
+            commands::first_argument(env::args_os()).or_else(|| {
+                if first_ask {
+                    commands::reopen_first(&app)
+                } else {
+                    None
+                }
+            })
+        })
+    };
+    initial_target_of(argument)
 }
 
 // `ChangesUtil.iterateFiles`: a local file that is not on disk is skipped (Edit Source of a
@@ -526,8 +547,11 @@ fn openable(repo: &Path, targets: Vec<ViewerTarget>) -> Result<Vec<ViewerTarget>
     Ok(kept)
 }
 
-fn pending() -> std::sync::MutexGuard<'static, Vec<ViewerTarget>> {
-    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+fn pending(session: &WindowSession) -> std::sync::MutexGuard<'_, Vec<ViewerTarget>> {
+    session
+        .viewer_pending
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 // One viewer window, reused, with a tab per file. Like the diff window, it is created hidden and its
@@ -536,9 +560,10 @@ fn pending() -> std::sync::MutexGuard<'static, Vec<ViewerTarget>> {
 pub async fn viewer_open(
     targets: Vec<ViewerTarget>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let title = repo
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -547,22 +572,21 @@ pub async fn viewer_open(
     if targets.is_empty() {
         return Ok(());
     }
-    pending().extend(targets);
-    let opened = match app.get_webview_window(VIEWER_WINDOW) {
-        Some(window) => {
-            reveal(&window).and_then(|()| window.emit_to(VIEWER_WINDOW, VIEWER_OPEN_EVENT, ()))
+    let session = session_of(&state, window.label())?;
+    pending(&session).extend(targets);
+    let owner = owner_label(&window);
+    let label = windows::label_for(WindowKind::Viewer, &owner);
+    let opened = match app.get_webview_window(&label) {
+        Some(viewer) => {
+            reveal(&viewer).and_then(|()| try_emit_to_owner(&app, &owner, VIEWER_OPEN_EVENT, ()))
         }
-        None => WebviewWindowBuilder::new(
-            &app,
-            VIEWER_WINDOW,
-            WebviewUrl::App(VIEWER_WINDOW_URL.into()),
-        )
-        .title(title)
-        .inner_size(1000.0, 800.0)
-        .visible(false)
-        .background_color(tauri::webview::Color(0x1e, 0x1f, 0x22, 0xff))
-        .build()
-        .map(drop),
+        None => WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(VIEWER_WINDOW_URL.into()))
+            .title(title)
+            .inner_size(1000.0, 800.0)
+            .visible(false)
+            .background_color(tauri::webview::Color(0x1e, 0x1f, 0x22, 0xff))
+            .build()
+            .map(drop),
     };
     opened.map_err(|error| failed(error.to_string()))
 }
@@ -571,33 +595,41 @@ pub async fn viewer_open(
 #[tauri::command]
 pub async fn viewer_openable(
     targets: Vec<ViewerTarget>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Vec<ViewerTarget>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || openable(&repo, targets)).await
 }
 
 #[tauri::command]
 pub async fn viewer_stamp(
     path: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(stamp(&repo, &path))).await
 }
 
 #[tauri::command]
-pub fn viewer_targets() -> Vec<ViewerTarget> {
-    std::mem::take(&mut *pending())
+pub fn viewer_targets(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Vec<ViewerTarget>, ApiError> {
+    let session = session_of(&state, window.label())?;
+    let targets = std::mem::take(&mut *pending(&session));
+    Ok(targets)
 }
 
 #[tauri::command]
 pub async fn viewer_content(
     path: String,
     revision: Option<String>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<ViewerContent, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     let target = ViewerTarget {
         path,
         revision,
@@ -608,11 +640,18 @@ pub async fn viewer_content(
 }
 
 // Closing it, or opening another repository: its tabs go with it.
-pub fn close(app: &AppHandle) {
-    pending().clear();
-    if let Some(window) = app.get_webview_window(VIEWER_WINDOW) {
+pub fn close(app: &AppHandle, owner: &str) {
+    if let Ok(session) = session_of(&app.state::<AppState>(), owner) {
+        release(&session);
+    }
+    if let Some(window) = app.get_webview_window(&windows::label_for(WindowKind::Viewer, owner)) {
         let _ = window.destroy();
     }
+}
+
+// What the window leaves behind: no target waiting.
+pub fn release(session: &WindowSession) {
+    pending(session).clear();
 }
 
 #[cfg(test)]

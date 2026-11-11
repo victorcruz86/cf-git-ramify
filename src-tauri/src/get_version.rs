@@ -12,7 +12,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::commands::{
     blocking_api, current_repo, flush_diff_window, repo_data_dir, ApiError, AppState, RepoLocks,
@@ -668,10 +668,11 @@ pub fn get_locked(
 pub async fn revision_get_check(
     items: Vec<GetItem>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<GetCheck, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let repo = current_repo(&state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let repo = current_repo(&state, &window)?;
     blocking_api(move || Ok(check(&repo, &items)?)).await
 }
 
@@ -682,11 +683,12 @@ pub async fn revision_get(
     expected_head: String,
     seen: Vec<Seen>,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Got, ApiError> {
-    flush_diff_window(&app, &state, SAVE_ACTION).await?;
-    let repo = current_repo(&state)?;
-    let dir = repo_data_dir(&app, &state)?;
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    let repo = current_repo(&state, &window)?;
+    let dir = repo_data_dir(&app, &state, &window)?;
     let locks = state.operations.clone();
     blocking_api(move || get_locked(&locks, &repo, &dir, &items, &expected_head, &seen)).await
 }

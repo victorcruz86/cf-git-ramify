@@ -20,9 +20,12 @@ import { openLogTab } from "./tabKinds";
 import { ROW_HEIGHT } from "./draw";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
-  emit: vi.fn(async () => {}),
+  emitTo: vi.fn(async () => {}),
 }));
 
 const HASH_A = "a".repeat(40);

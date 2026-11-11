@@ -509,6 +509,17 @@
     if (texts.options) storeSignOff(repo.path, signOff);
   }
 
+  // The window closes or the app quits with the dialog open (§5.8): its draft is kept as Cancel
+  // keeps it, and the dialog stays.
+  export async function saveDraft(): Promise<void> {
+    if (!current) return;
+    const versioned = versionedKeys.every((key) => chosenKeys.has(key));
+    const save = onClosed({ committed: false, draft: message, list: current, fullyIncluded: versioned });
+    if (!save) return;
+    drafts.set(save.id, save.comment);
+    await changelistsSetComment(save.id, save.comment, repo.path);
+  }
+
   function cancel() {
     saveOptions();
     if (current) {

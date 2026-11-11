@@ -2,7 +2,7 @@ import { EditorView } from "@codemirror/view";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emitTo } from "@tauri-apps/api/event";
 import type { MergeBlock, ThreeSides } from "../lib/api";
 import { loadOptions, type DiffOptions } from "./options";
 import ThreeVersionsPane from "./ThreeVersionsPane.svelte";
@@ -12,7 +12,10 @@ import ThreeVersionsPane from "./ThreeVersionsPane.svelte";
 const wrapped = (view: EditorView) => view.contentDOM.classList.contains("cm-lineWrapping");
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emitTo: vi.fn() }));
 
 // jsdom does no layout: CodeMirror measures with this.
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
@@ -116,8 +119,8 @@ beforeEach(() => {
   notices.length = 0;
   fallbacks = 0;
   vi.mocked(invoke).mockReset();
-  vi.mocked(emit).mockReset();
-  vi.mocked(emit).mockResolvedValue(undefined);
+  vi.mocked(emitTo).mockReset();
+  vi.mocked(emitTo).mockResolvedValue(undefined);
 });
 
 afterEach(cleanup);
@@ -166,7 +169,7 @@ test("stage_of_a_range_writes_the_index", async () => {
   );
   expect(text("base")).toBe("a\nB\nc\nD\n");
   expect(text("right")).toBe(SIDES.local);
-  await waitFor(() => expect(vi.mocked(emit).mock.calls.map(([name]) => name)).toContain("repo-changed"));
+  await waitFor(() => expect(vi.mocked(emitTo).mock.calls.map(([, name]) => name)).toContain("repo-changed"));
   expect(calls("file_write")).toHaveLength(0);
 });
 

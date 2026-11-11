@@ -10,18 +10,19 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use similar::{capture_diff_slices_deadline, Algorithm, DiffOp};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::commands::{
-    blocking_api, current_repo, failed, reveal, ApiError, AppState, MAIN_WINDOW,
+    blocking_api, current_repo, emit_to_owner, failed, owner_label, reveal, session_of,
+    try_emit_to_owner, ApiError, AppState, WindowSession,
 };
 use crate::diff::check_hash;
 use crate::git::{self, GitError};
 use crate::history::{self, Git, Starts, Walk};
 use crate::task::{Runner, TaskId, TaskKind};
+use crate::windows::{self, WindowKind};
 use crate::worktree_diff;
 
-pub const SELECTION_HISTORY_WINDOW: &str = "selection-history";
 const WINDOW_URL: &str = "index.html?window=selection-history";
 // The page takes what is waiting with `selection_history_target`: on mounting, and on each of these.
 const OPEN_EVENT: &str = "selection-history-open";
@@ -464,11 +465,9 @@ fn blob_text(git: &mut Git, revision: &str, path: &str) -> Result<String, GitErr
 // The window
 //
 
-// What `selection_history_open` left for the page, and the stream it runs.
-static PENDING: Mutex<Option<SelectionRequest>> = Mutex::new(None);
-static RUNNING: Mutex<Option<TaskId>> = Mutex::new(None);
-
-fn locked<T>(mutex: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
+// What `selection_history_open` left for the page, and the stream it runs, live in the project
+// window's session.
+fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -479,33 +478,38 @@ fn locked<T>(mutex: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
 pub async fn selection_history_open(
     request: SelectionRequest,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     worktree_diff::check_inside(&repo, &request.path)?;
-    *locked(&PENDING) = Some(request);
-    let opened = match app.get_webview_window(SELECTION_HISTORY_WINDOW) {
-        Some(window) => {
-            reveal(&window).and_then(|()| window.emit_to(SELECTION_HISTORY_WINDOW, OPEN_EVENT, ()))
+    let session = session_of(&state, window.label())?;
+    *locked(&session.selection_pending) = Some(request);
+    let owner = owner_label(&window);
+    let label = windows::label_for(WindowKind::SelectionHistory, &owner);
+    let opened = match app.get_webview_window(&label) {
+        Some(history) => {
+            reveal(&history).and_then(|()| try_emit_to_owner(&app, &owner, OPEN_EVENT, ()))
         }
-        None => WebviewWindowBuilder::new(
-            &app,
-            SELECTION_HISTORY_WINDOW,
-            WebviewUrl::App(WINDOW_URL.into()),
-        )
-        .title(TITLE)
-        .inner_size(900.0, 700.0)
-        .visible(false)
-        .background_color(tauri::webview::Color(0x1e, 0x1f, 0x22, 0xff))
-        .build()
-        .map(drop),
+        None => WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(WINDOW_URL.into()))
+            .title(TITLE)
+            .inner_size(900.0, 700.0)
+            .visible(false)
+            .background_color(tauri::webview::Color(0x1e, 0x1f, 0x22, 0xff))
+            .build()
+            .map(drop),
     };
     opened.map_err(|error| failed(error.to_string()))
 }
 
 #[tauri::command]
-pub fn selection_history_target() -> Option<SelectionRequest> {
-    locked(&PENDING).take()
+pub fn selection_history_target(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<SelectionRequest>, ApiError> {
+    let session = session_of(&state, window.label())?;
+    let request = locked(&session.selection_pending).take();
+    Ok(request)
 }
 
 // The stream of a selection: a task that a newer one, closing the window or the status bar
@@ -514,19 +518,24 @@ pub fn selection_history_target() -> Option<SelectionRequest> {
 pub async fn selection_history_start(
     request: SelectionRequest,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ApiError> {
-    let repo = current_repo(&state)?;
+    let repo = current_repo(&state, &window)?;
     worktree_diff::check_inside(&repo, &request.path)?;
     let path = repo.join(&request.path);
     let local_time = blocking_api(move || Ok(modified_seconds(&path))).await?;
+    let owner = owner_label(&window);
+    let session = session_of(&state, window.label())?;
     Ok(start_stream(
         &state.tasks,
+        &session.selection_running,
+        &owner.clone(),
         &repo,
         request,
         local_time,
         move |update| {
-            let _ = app.emit_to(SELECTION_HISTORY_WINDOW, UPDATE_EVENT, update);
+            emit_to_owner(&app, &owner, UPDATE_EVENT, update);
         },
     ))
 }
@@ -534,39 +543,47 @@ pub async fn selection_history_start(
 // The stream's task, in place of the one before it, which is cancelled.
 fn start_stream(
     tasks: &Runner,
+    slot: &Mutex<Option<(String, TaskId)>>,
+    owner: &str,
     repo: &Path,
     request: SelectionRequest,
     local_time: Option<i64>,
     emit: impl Fn(SelectionUpdate) + Send + 'static,
 ) -> TaskId {
-    let mut running = locked(&RUNNING);
-    if let Some(previous) = running.take() {
-        tasks.cancel(previous);
+    let mut running = locked(slot);
+    if let Some((previous_owner, previous)) = running.take() {
+        tasks.cancel(&previous_owner, previous);
     }
-    let id = tasks.start(repo, TaskKind::Read, TITLE.to_string(), move |context| {
-        let mut git = |args: &[&str]| context.git(args).map(|output| output.stdout);
-        selection_history(
-            &mut git,
-            &request,
-            local_time,
-            // A cancelled stream says nothing more: a reopened window starts its streams anew.
-            &mut |update| {
-                if context.check_cancelled().is_ok() {
-                    emit(update);
-                }
-            },
-            &|| context.check_cancelled(),
-        )
-    });
-    *running = Some(id);
+    let id = tasks.start(
+        owner,
+        repo,
+        TaskKind::Read,
+        TITLE.to_string(),
+        move |context| {
+            let mut git = |args: &[&str]| context.git(args).map(|output| output.stdout);
+            selection_history(
+                &mut git,
+                &request,
+                local_time,
+                // A cancelled stream says nothing more: a reopened window starts its streams anew.
+                &mut |update| {
+                    if context.check_cancelled().is_ok() {
+                        emit(update);
+                    }
+                },
+                &|| context.check_cancelled(),
+            )
+        },
+    );
+    *running = Some((owner.to_string(), id));
     id
 }
 
 // What closing the window leaves behind: no selection waiting, no stream running.
-fn release(tasks: &Runner) {
-    locked(&PENDING).take();
-    if let Some(id) = locked(&RUNNING).take() {
-        tasks.cancel(id);
+pub fn release(tasks: &Runner, session: &WindowSession) {
+    locked(&session.selection_pending).take();
+    if let Some((owner, id)) = locked(&session.selection_running).take() {
+        tasks.cancel(&owner, id);
     }
 }
 
@@ -592,22 +609,28 @@ pub struct AffectedFiles {
 pub fn selection_history_show_affected(
     affected: AffectedFiles,
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<(), ApiError> {
     check_hash(&affected.hash)?;
-    app.emit_to(MAIN_WINDOW, SHOW_AFFECTED_EVENT, affected)
+    try_emit_to_owner(&app, &owner_label(&window), SHOW_AFFECTED_EVENT, affected)
         .map_err(|error| failed(error.to_string()))
 }
 
 // `closeOnEsc` from the page.
 #[tauri::command]
-pub fn selection_history_close(app: AppHandle) {
-    close(&app);
+pub fn selection_history_close(app: AppHandle, window: WebviewWindow) {
+    close(&app, &owner_label(&window));
 }
 
 // Closing it, or opening another repository: its stream is cancelled and the window goes.
-pub fn close(app: &AppHandle) {
-    release(&app.state::<AppState>().tasks);
-    if let Some(window) = app.get_webview_window(SELECTION_HISTORY_WINDOW) {
+pub fn close(app: &AppHandle, owner: &str) {
+    let state = app.state::<AppState>();
+    if let Ok(session) = session_of(&state, owner) {
+        release(&state.tasks, &session);
+    }
+    if let Some(window) =
+        app.get_webview_window(&windows::label_for(WindowKind::SelectionHistory, owner))
+    {
         let _ = window.destroy();
     }
 }
@@ -1008,8 +1031,11 @@ mod tests {
         let (updates, received) = mpsc::channel();
         let (resume, resumed) = mpsc::channel::<()>();
         let resumed = Mutex::new(resumed);
+        let session = WindowSession::default();
         start_stream(
             &runner,
+            &session.selection_running,
+            "main",
             repo.path(),
             request("a.txt", 0, 0, "a\nb\nc\nd\n"),
             None,
@@ -1026,14 +1052,45 @@ mod tests {
             seen.push(received.recv_timeout(Duration::from_secs(30)).unwrap());
         }
 
-        *locked(&PENDING) = Some(request("b.txt", 0, 0, ""));
-        release(&runner);
+        *locked(&session.selection_pending) = Some(request("b.txt", 0, 0, ""));
+        release(&runner, &session);
         resume.send(()).unwrap();
 
         // The task ends, and drops its sender, without another block.
         seen.extend(received.iter());
         assert_eq!(blocks(&seen).len(), 2);
-        assert_eq!(*locked(&RUNNING), None);
-        assert_eq!(*locked(&PENDING), None);
+        assert_eq!(*locked(&session.selection_running), None);
+        assert_eq!(*locked(&session.selection_pending), None);
+    }
+
+    // Window B's stream does not cancel window A's: each project window has its own slot.
+    #[test]
+    fn a_stream_of_another_window_does_not_cancel_this_one() {
+        let repo = TempRepo::new();
+        repo.commit("a.txt", b"a\n", "one");
+        let runner = Runner::new(Arc::default(), Arc::default());
+        let first = WindowSession::default();
+        let second = WindowSession::default();
+        for (session, owner) in [(&first, "main"), (&second, "main-2")] {
+            start_stream(
+                &runner,
+                &session.selection_running,
+                owner,
+                repo.path(),
+                request("a.txt", 0, 0, "a\n"),
+                None,
+                |_| {},
+            );
+        }
+        let kept = locked(&first.selection_running).clone();
+        assert_eq!(kept.map(|(owner, _)| owner), Some("main".to_string()));
+        assert_eq!(
+            locked(&second.selection_running)
+                .clone()
+                .map(|(owner, _)| owner),
+            Some("main-2".to_string())
+        );
+        release(&runner, &second);
+        assert!(locked(&first.selection_running).is_some());
     }
 }
