@@ -1154,3 +1154,16 @@ describe("the Shelve Changes executor", () => {
     expect(within(shelve).queryByRole("treeitem", { name: /^Unversioned Files/ })).toBeNull();
   });
 });
+
+test("the_dialog_browser_does_not_drag", async () => {
+  mockCommands();
+  await open();
+
+  const source = row("a.txt");
+  const y = parseFloat(source.style.top) + 12;
+  await fireEvent.pointerDown(source, { button: 0, clientX: 40, clientY: y });
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 40, clientY: y + 40 });
+
+  expect(document.querySelector(".drag-label")).toBeNull();
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: y + 40 });
+});

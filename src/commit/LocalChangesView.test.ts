@@ -617,3 +617,354 @@ test("an_emptied_changelist_is_deleted", async () => {
   await view.component.removeIfEmpty("other");
   expect(calls("changelists_remove")).toEqual([["changelists_remove", { id: "other" }]]);
 });
+
+// Drag and drop between changelists (`ChangesViewDnDSupport`). Rows sit at `top`, 24 px high.
+const yOf = (element: HTMLElement) => parseFloat(element.style.top) + 12;
+const dragLabel = () => document.querySelector<HTMLElement>(".drag-label");
+
+async function startDrag(from: string | RegExp) {
+  const source = row(from);
+  await fireEvent.pointerDown(source, { button: 0, clientX: 40, clientY: yOf(source) });
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 40, clientY: yOf(source) + 10 });
+}
+
+async function moveOver(to: string | RegExp) {
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 40, clientY: yOf(row(to)) });
+}
+
+async function dropOn(to: string | RegExp) {
+  await moveOver(to);
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: yOf(row(to)) });
+}
+
+const movingCommands = () => mockCommands({ changelists_move: () => LISTS });
+
+test("dragging_a_file_onto_another_list_highlights_it_and_drops_there", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag("a.txt");
+  await moveOver(/^Other/);
+  expect(row(/^Other/).hasAttribute("data-drop-target")).toBe(true);
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: yOf(row(/^Other/)) });
+
+  await waitFor(() =>
+    expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+      { paths: ["a.txt"], id: "other" },
+    ]),
+  );
+  expect(row(/^Other/).hasAttribute("data-drop-target")).toBe(false);
+});
+
+test("a_drop_on_a_file_row_lands_on_its_list", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag("a.txt");
+  expect(row("c.txt").hasAttribute("data-drop-target")).toBe(false);
+  await moveOver("c.txt");
+  expect(row(/^Other/).hasAttribute("data-drop-target")).toBe(true);
+  await dropOn("c.txt");
+
+  await waitFor(() =>
+    expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+      { paths: ["a.txt"], id: "other" },
+    ]),
+  );
+});
+
+test("a_drop_on_the_source_list_runs_nothing_and_shows_no_highlight", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag("a.txt");
+  await moveOver(/^Changes/);
+  expect(row(/^Changes/).hasAttribute("data-drop-target")).toBe(false);
+  expect(screen.getByRole("tree").classList.contains("no-drop")).toBe(true);
+  await dropOn("b.txt");
+
+  expect(calls("changelists_move")).toHaveLength(0);
+});
+
+test("a_move_under_5_points_is_a_click", async () => {
+  movingCommands();
+  await open();
+
+  const source = row("a.txt");
+  await fireEvent.pointerDown(source, { button: 0, clientX: 40, clientY: yOf(source) });
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 43, clientY: yOf(source) + 3 });
+  expect(dragLabel()).toBeNull();
+  await fireEvent.pointerUp(window, { clientX: 43, clientY: yOf(source) + 3 });
+  await fireEvent.click(source);
+
+  expect(row("a.txt").getAttribute("aria-selected")).toBe("true");
+  expect(calls("changelists_move")).toHaveLength(0);
+});
+
+test("dragging_an_unselected_row_selects_it_alone", async () => {
+  movingCommands();
+  await open();
+  await fireEvent.click(row("b.txt"));
+
+  await startDrag("a.txt");
+  expect(row("a.txt").getAttribute("aria-selected")).toBe("true");
+  expect(row("b.txt").getAttribute("aria-selected")).toBe("false");
+  await dropOn(/^Other/);
+
+  await waitFor(() =>
+    expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+      { paths: ["a.txt"], id: "other" },
+    ]),
+  );
+});
+
+test("dragging_a_selected_row_keeps_the_whole_selection", async () => {
+  movingCommands();
+  await open();
+  await fireEvent.click(row("a.txt"));
+  await fireEvent.click(row("b.txt"), { metaKey: true });
+
+  await startDrag("a.txt");
+  expect(dragLabel()?.textContent?.trim()).toBe("2 files");
+  await dropOn(/^Other/);
+
+  await waitFor(() =>
+    expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+      { paths: ["a.txt", "b.txt"], id: "other" },
+    ]),
+  );
+});
+
+test("dragging_a_list_header_moves_every_file_and_keeps_the_list", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag(/^Changes/);
+  expect(dragLabel()?.textContent?.trim()).toBe("2 files");
+  await dropOn(/^Other/);
+
+  await waitFor(() =>
+    expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+      { paths: ["a.txt", "b.txt"], id: "other" },
+    ]),
+  );
+  expect(calls("changelists_remove")).toHaveLength(0);
+});
+
+test("the_label_says_1_file_next_to_the_pointer", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag("a.txt");
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 120, clientY: 200 });
+
+  const label = dragLabel();
+  expect(label?.textContent?.trim()).toBe("1 file");
+  expect(label?.style.left).toBe("120px");
+  expect(label?.style.top).toBe("200px");
+});
+
+test("escape_cancels_and_releasing_runs_nothing", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag("a.txt");
+  await moveOver(/^Other/);
+  await fireEvent.keyDown(window, { key: "Escape" });
+  expect(dragLabel()).toBeNull();
+  expect(row(/^Other/).hasAttribute("data-drop-target")).toBe(false);
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: yOf(row(/^Other/)) });
+
+  expect(calls("changelists_move")).toHaveLength(0);
+});
+
+test("no_click_follows_a_drop", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag("a.txt");
+  await dropOn("c.txt");
+  await fireEvent.click(row("c.txt"));
+
+  expect(row("a.txt").getAttribute("aria-selected")).toBe("true");
+  expect(row("c.txt").getAttribute("aria-selected")).toBe("false");
+});
+
+test("the_tree_scrolls_when_the_pointer_nears_an_edge", async () => {
+  movingCommands();
+  await open();
+  const tree = screen.getByRole("tree");
+  tree.getBoundingClientRect = () =>
+    ({ top: 0, bottom: 100, height: 100, left: 0, right: 300, width: 300 }) as DOMRect;
+
+  await startDrag("a.txt");
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 40, clientY: 95 });
+
+  await waitFor(() => expect(tree.scrollTop).toBeGreaterThan(0));
+  await fireEvent.keyDown(window, { key: "Escape" });
+});
+
+test("a_drop_of_unversioned_files_adds_them_then_moves_them_to_the_target_not_the_active_list", async () => {
+  await listenToTasks();
+  addingCommands();
+  await open();
+
+  await startDrag(/^Unversioned Files/);
+  await dropOn(/^Other/);
+
+  await waitFor(() =>
+    expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+      { paths: ["new.txt"], id: "other" },
+    ]),
+  );
+  expect(calls("changes_add").map(([, args]) => args)).toEqual([
+    { repo: "/repo", paths: ["new.txt"] },
+  ]);
+});
+
+test("a_mixed_drop_moves_first_then_adds", async () => {
+  await listenToTasks();
+  addingCommands();
+  await open();
+  await fireEvent.click(row("a.txt"));
+  await fireEvent.click(row(/^Unversioned Files/), { metaKey: true });
+
+  await startDrag("a.txt");
+  await dropOn(/^Other/);
+
+  await waitFor(() => expect(calls("changelists_move")).toHaveLength(2));
+  const order = vi
+    .mocked(invoke)
+    .mock.calls.filter(([name]) => name === "changelists_move" || name === "changes_add")
+    .map(([name, args]) => [name, (args as { paths: string[] }).paths]);
+  expect(order).toEqual([
+    ["changelists_move", ["a.txt"]],
+    ["changes_add", ["new.txt"]],
+    ["changelists_move", ["new.txt"]],
+  ]);
+});
+
+test("a_failed_add_after_a_drop_shows_failed_to_add_files", async () => {
+  await listenToTasks();
+  addingCommands("fatal: pathspec did not match");
+  await open();
+
+  await startDrag(/^Unversioned Files/);
+  await dropOn(/^Other/);
+
+  await waitFor(() => expect(get(notifications)).toHaveLength(1));
+  expect(get(notifications)[0]).toMatchObject({ kind: "error", title: "Failed to add files" });
+  expect(calls("changelists_move")).toHaveLength(0);
+});
+
+test("releasing_outside_the_tree_runs_nothing_even_at_a_lists_height", async () => {
+  movingCommands();
+  await open();
+  const tree = screen.getByRole("tree");
+  tree.getBoundingClientRect = () =>
+    ({ top: 0, bottom: 400, height: 400, left: 0, right: 300, width: 300 }) as DOMRect;
+
+  await startDrag("a.txt");
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 500, clientY: yOf(row(/^Other/)) });
+  expect(row(/^Other/).hasAttribute("data-drop-target")).toBe(false);
+  await fireEvent.pointerUp(window, { clientX: 500, clientY: yOf(row(/^Other/)) });
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: 1000 });
+
+  expect(calls("changelists_move")).toHaveLength(0);
+});
+
+test("below_the_tree_it_neither_scrolls_nor_drops", async () => {
+  movingCommands();
+  await open();
+  const tree = screen.getByRole("tree");
+  tree.getBoundingClientRect = () =>
+    ({ top: 0, bottom: 100, height: 100, left: 0, right: 300, width: 300 }) as DOMRect;
+
+  await startDrag("a.txt");
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 40, clientY: 300 });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  expect(tree.scrollTop).toBe(0);
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: 300 });
+
+  expect(calls("changelists_move")).toHaveLength(0);
+});
+
+test("a_move_without_the_button_held_ends_the_drag", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag("a.txt");
+  await fireEvent.pointerMove(window, { clientX: 40, clientY: yOf(row(/^Other/)), buttons: 0 });
+  expect(dragLabel()).toBeNull();
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: yOf(row(/^Other/)) });
+
+  expect(calls("changelists_move")).toHaveLength(0);
+});
+
+test("losing_the_window_focus_ends_the_drag", async () => {
+  movingCommands();
+  await open();
+
+  await startDrag("a.txt");
+  await fireEvent.blur(window);
+  expect(dragLabel()).toBeNull();
+});
+
+test("an_empty_list_does_not_start_a_drag", async () => {
+  mockCommands({
+    changelists_get: () => ({ ...LISTS, assignments: { "a.txt": "default", "b.txt": "default", "c.txt": "default" } }),
+    changelists_move: () => LISTS,
+  });
+  await open();
+
+  await startDrag(/^Other/);
+
+  expect(dragLabel()).toBeNull();
+});
+
+test("a_split_file_dropped_moves_only_the_hunks_of_its_list", async () => {
+  const split: Changelists = {
+    ...LISTS,
+    lists: [...LISTS.lists, { id: "feature", name: "Feature", comment: "" }],
+    hunkAssignments: { "a.txt": { h1: "default", h2: "other" } },
+  };
+  mockCommands({
+    changelists_get: () => split,
+    changelists_move: () => split,
+    changelists_move_hunks: () => split,
+  });
+  await open();
+
+  await startDrag(/^Changes/);
+  await dropOn(/^Feature/);
+
+  await waitFor(() =>
+    expect(calls("changelists_move_hunks").map(([, args]) => args)).toEqual([
+      { path: "a.txt", hunks: ["h1"], id: "feature" },
+    ]),
+  );
+  expect(calls("changelists_move").map(([, args]) => args)).toEqual([
+    { paths: ["b.txt"], id: "feature" },
+  ]);
+});
+
+test("a_double_click_and_modified_clicks_still_work_with_drag_on", async () => {
+  movingCommands();
+  await open();
+
+  const source = row("a.txt");
+  await fireEvent.pointerDown(source, { button: 0, clientX: 40, clientY: yOf(source) });
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: yOf(source) });
+  await fireEvent.click(source);
+  await fireEvent.pointerDown(row("c.txt"), { button: 0, metaKey: true, clientX: 40, clientY: yOf(row("c.txt")) });
+  await fireEvent.pointerMove(window, { buttons: 1, clientX: 40, clientY: yOf(row("c.txt")) + 30 });
+  expect(dragLabel()).toBeNull();
+  await fireEvent.click(row("c.txt"), { metaKey: true });
+  expect(row("a.txt").getAttribute("aria-selected")).toBe("true");
+  expect(row("c.txt").getAttribute("aria-selected")).toBe("true");
+
+  await fireEvent.pointerDown(row(/^Changes/), { button: 0, clientX: 40, clientY: yOf(row(/^Changes/)) });
+  await fireEvent.pointerUp(window, { clientX: 40, clientY: yOf(row(/^Changes/)) });
+  await fireEvent.dblClick(row(/^Changes/));
+  expect(screen.queryByRole("treeitem", { name: "a.txt" })).toBeNull();
+});

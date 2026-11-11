@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import Icon from "../lib/Icon.svelte";
   import { visibleRange } from "../log/rowCache";
+  import { canDrop, dragCount, dragLoad, dragText, dropRoot, type DragLoad } from "./drag";
   import { rangeIds, reconcileSelection, sameIds, toggleId } from "./selection";
   import {
     CONFLICTS_ID,
@@ -23,6 +24,11 @@
   // With no measurements yet (first paint) a tall window is assumed.
   const FALLBACK_HEIGHT = 600;
   const CHECKED = { on: "true", off: "false", mixed: "mixed" } as const;
+  // `awt.dnd.drag.threshold`: how far a press moves before it is a drag.
+  const DRAG_THRESHOLD = 5;
+  // While dragging near the top or bottom edge, the tree scrolls this much every tick.
+  const EDGE_SCROLL = ROW_HEIGHT / 2;
+  const EDGE_TICK = 50;
 
   interface Props {
     roots: TreeNode[];
@@ -39,6 +45,8 @@
     // The icon shown when hovering a row, as in `HoverChangesTree`.
     hoverIcon?: (node: TreeNode) => { icon: string; label: string } | null;
     onhover?: (node: TreeNode) => void;
+    // `ChangesViewDnDSupport`: only the Local Changes tree passes it; without it there is no drag.
+    ondrop?: (target: TreeNode, load: DragLoad) => void;
   }
 
   let {
@@ -54,6 +62,7 @@
     onresolve,
     hoverIcon,
     onhover,
+    ondrop,
   }: Props = $props();
 
   let scroller: HTMLDivElement;
@@ -61,6 +70,16 @@
   let height = $state(0);
   let anchor: string | null = null;
   let leadIndex = 0;
+
+  // A press on a row that may become a drag, and the drag once it started.
+  let press: { x: number; y: number; row: TreeRow } | null = null;
+  let drag = $state<{ load: DragLoad; text: string } | null>(null);
+  let dropTarget = $state<string | null>(null);
+  let pointer = $state({ x: 0, y: 0 });
+  let edgeTimer: ReturnType<typeof setInterval> | null = null;
+  let edgeStep = 0;
+  // The click that follows a drop must not change the selection.
+  let afterDrop = false;
 
   const rows = $derived(flattenTree(roots, collapsed));
   const range = $derived(
@@ -147,6 +166,7 @@
   }
 
   function click(event: MouseEvent, row: TreeRow) {
+    if (afterDrop) return;
     const id = row.node.id;
     if (event.shiftKey) {
       selected = new Set(rangeIds(rows, anchor ?? lead, id));
@@ -247,6 +267,132 @@
     return index;
   }
 
+  // The row under a point of the window, from the geometry: rows are virtual and positioned.
+  // `getPathForLocation`: a point outside the tree is on no row. jsdom gives an empty box.
+  function rowAt(x: number, y: number): TreeRow | null {
+    const bounds = scroller.getBoundingClientRect();
+    const sized = bounds.width > 0 && bounds.height > 0;
+    if (sized && (x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom)) {
+      return null;
+    }
+    const index = Math.floor((y - bounds.top + scroller.scrollTop - PADDING_Y) / ROW_HEIGHT);
+    return rows[index] ?? null;
+  }
+
+  function pointerDown(event: PointerEvent, row: TreeRow) {
+    if (!ondrop || event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(".chevron, .check, button")) return;
+    press = { x: event.clientX, y: event.clientY, row };
+    window.addEventListener("pointermove", pointerMove);
+    window.addEventListener("pointerup", pointerUp);
+    window.addEventListener("pointercancel", endDrag);
+    window.addEventListener("keydown", dragKey, true);
+    window.addEventListener("blur", endDrag);
+  }
+
+  function pointerMove(event: PointerEvent) {
+    if (!press) return;
+    // The release was lost (outside the window, a dialog, ⌘-Tab): the drag is over.
+    if ((event.buttons & 1) === 0) {
+      endDrag();
+      return;
+    }
+    if (!drag) {
+      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) <= DRAG_THRESHOLD) return;
+      if (!startDrag(press.row)) return;
+    }
+    pointer = { x: event.clientX, y: event.clientY };
+    updateTarget();
+    followEdge();
+  }
+
+  // Swing selects on press: a row that was not selected is dragged alone. As 241's
+  // `createDragStartBean`, a selection with no files starts no drag.
+  function startDrag(row: TreeRow): boolean {
+    if (!selected.has(row.node.id)) {
+      select(row.node.id);
+      leadIndex = rows.findIndex((current) => current.node.id === row.node.id);
+    }
+    const load = dragLoad(roots, selected);
+    if (load.versioned.length === 0 && load.unversioned.length === 0) {
+      endDrag();
+      return false;
+    }
+    drag = { load, text: dragText(dragCount(roots, selected)) };
+    return true;
+  }
+
+  function updateTarget() {
+    if (!drag) return;
+    const row = rowAt(pointer.x, pointer.y);
+    const root = row ? dropRoot(roots, row.node.id) : null;
+    dropTarget = root && canDrop(root, drag.load) ? root.id : null;
+  }
+
+  function followEdge() {
+    const bounds = scroller.getBoundingClientRect();
+    edgeStep = 0;
+    const inside =
+      bounds.height > 0 &&
+      pointer.x >= bounds.left &&
+      pointer.x <= bounds.right &&
+      pointer.y >= bounds.top &&
+      pointer.y <= bounds.bottom;
+    if (inside) {
+      if (pointer.y < bounds.top + ROW_HEIGHT) edgeStep = -EDGE_SCROLL;
+      else if (pointer.y > bounds.bottom - ROW_HEIGHT) edgeStep = EDGE_SCROLL;
+    }
+    if (edgeStep !== 0 && edgeTimer === null) {
+      edgeTimer = setInterval(() => {
+        scroller.scrollTop += edgeStep;
+        scrollTop = scroller.scrollTop;
+        updateTarget();
+      }, EDGE_TICK);
+    } else if (edgeStep === 0) stopEdge();
+  }
+
+  function stopEdge() {
+    if (edgeTimer !== null) clearInterval(edgeTimer);
+    edgeTimer = null;
+  }
+
+  function pointerUp(event: PointerEvent) {
+    const current = drag;
+    if (current) {
+      pointer = { x: event.clientX, y: event.clientY };
+      updateTarget();
+      const target = dropTarget ? roots.find((node) => node.id === dropTarget) : undefined;
+      afterDrop = true;
+      setTimeout(() => (afterDrop = false));
+      endDrag();
+      if (target) ondrop?.(target, current.load);
+      return;
+    }
+    endDrag();
+  }
+
+  function dragKey(event: KeyboardEvent) {
+    if (event.key !== "Escape" || !drag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    endDrag();
+  }
+
+  function endDrag() {
+    window.removeEventListener("pointermove", pointerMove);
+    window.removeEventListener("pointerup", pointerUp);
+    window.removeEventListener("pointercancel", endDrag);
+    window.removeEventListener("keydown", dragKey, true);
+    window.removeEventListener("blur", endDrag);
+    stopEdge();
+    press = null;
+    drag = null;
+    dropTarget = null;
+  }
+
+  $effect(() => endDrag);
+
   // `ChangesBrowserConflictsNode` does not count files; the staging `Unmerged` does.
   function label(node: TreeNode): string {
     if (node.kind === "file" || node.id === CONFLICTS_ID) return node.name;
@@ -259,6 +405,7 @@
   bind:this={scroller}
   bind:clientHeight={height}
   class="tree"
+  class:no-drop={drag !== null && dropTarget === null}
   role="tree"
   tabindex="0"
   aria-label="Changes"
@@ -285,6 +432,8 @@
         class:joined-up={selected.has(node.id) && selected.has(rows[index - 1]?.node.id)}
         class:joined-down={selected.has(node.id) && selected.has(rows[index + 1]?.node.id)}
         class:lead={lead === node.id}
+        class:drop-target={dropTarget === node.id}
+        data-drop-target={dropTarget === node.id ? "" : undefined}
         role="treeitem"
         aria-label={label(node)}
         aria-level={row.depth + 1}
@@ -292,6 +441,7 @@
         aria-expanded={isExpandable(node) ? isOpen(node) : undefined}
         style:top="{index * ROW_HEIGHT + PADDING_Y}px"
         style:padding-left="{PADDING_X + row.depth * INDENT}px"
+        onpointerdown={(event) => pointerDown(event, row)}
         onclick={(event) => click(event, row)}
         ondblclick={(event) => doubleClick(event, node)}
         oncontextmenu={(event) => {
@@ -377,6 +527,12 @@
     {/each}
   </div>
 </div>
+{#if drag}
+  <!-- `ChangesTreeDnDSupport.createDraggedImage`: above and to the left of the pointer. -->
+  <div class="drag-label" role="status" style:left="{pointer.x}px" style:top="{pointer.y}px">
+    {drag.text}
+  </div>
+{/if}
 
 <style>
   .tree {
@@ -434,6 +590,35 @@
 
   .tree:focus .row.selected::before {
     background: var(--selection);
+  }
+
+  /* `highlightDropNode`: a rectangle around the row of the target. */
+  .row.drop-target::after {
+    position: absolute;
+    inset: 0 8px;
+    z-index: 2;
+    pointer-events: none;
+    content: "";
+    border: 1px solid var(--focus);
+    border-radius: 4px;
+  }
+
+  .tree.no-drop,
+  .tree.no-drop .row {
+    cursor: no-drop;
+  }
+
+  .drag-label {
+    position: fixed;
+    z-index: 1000;
+    padding: 2px 6px;
+    pointer-events: none;
+    color: var(--text);
+    white-space: nowrap;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transform: translate(-100%, -100%);
   }
 
   .tree:focus-visible .row.lead::before {

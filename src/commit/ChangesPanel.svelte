@@ -20,6 +20,7 @@
     changelistsGet,
     changelistsImport,
     changelistsMove,
+    changelistsMoveHunks,
     changelistsRemove,
     changelistsRename,
     changelistsSetActive,
@@ -72,6 +73,7 @@
     stagingTargets,
     stagingTree,
   } from "./staging";
+  import { dropPlan, type DragLoad } from "./drag";
   import StagingView from "./StagingView.svelte";
   import {
     buildTree,
@@ -677,9 +679,12 @@
   // to the index and then to the active list or, in the dialog's browser, to the dialog's list, which
   // includes them in the commit (`moveAddedChangesTo`). Ignored files are not listed, so the
   // confirmation for them never applies.
-  async function addToVcs() {
-    const paths = selectedUnversioned.map((file) => file.path);
-    const target = browser ? list : lists?.active;
+  // `ScheduleForAdditionAction`: the selection goes to the dialog's list or the active one; a drop
+  // passes its files and the list it landed on.
+  async function addToVcs(
+    paths = selectedUnversioned.map((file) => file.path),
+    target = browser ? list : lists?.active,
+  ) {
     if (paths.length === 0 || !target) return;
     try {
       const copy = await taskResult<string | null>(await changesAdd(repo.path, paths));
@@ -700,6 +705,21 @@
       changes.filter((change) => change.state !== "untracked").map((change) => change.path),
     );
     onadded?.(paths.filter((path) => added.has(path)));
+  }
+
+  // `ChangesBrowserChangeListNode.acceptDrop`: the changes move first, then the unversioned files
+  // are added to Git in that list. The files are read again: Devin may write during the drag.
+  async function dropOnList(target: TreeNode, load: DragLoad) {
+    if (!target.list || !lists) return;
+    const plan = dropPlan(load, target.list.id, changes, lists);
+    if (!plan) return;
+    if (plan.versioned.length > 0 || plan.hunks.length > 0) {
+      await run(async () => {
+        if (plan.versioned.length > 0) await changelistsMove(plan.versioned, plan.list);
+        for (const { path, ids } of plan.hunks) await changelistsMoveHunks(path, ids, plan.list);
+      });
+    }
+    if (plan.unversioned.length > 0) await addToVcs(plan.unversioned, plan.list);
   }
 
   function stageSelected() {
@@ -840,7 +860,7 @@
         label: "Add to VCS",
         shortcut: "⌥⌘A",
         disabled: selectedUnversioned.length === 0,
-        run: addToVcs,
+        run: () => addToVcs(),
       });
     }
     if (!unversioned && selectedVersioned.length > 0) {
@@ -890,7 +910,7 @@
     // `ChangesView.AddUnversioned` is visible here only when enabled; `$Delete` and `Remove from VCS`,
     // the rest of its group, Ramify does not have.
     if (selectedUnversioned.length > 0) {
-      items.push(null, { label: "Add to VCS", shortcut: "⌥⌘A", run: addToVcs });
+      items.push(null, { label: "Add to VCS", shortcut: "⌥⌘A", run: () => addToVcs() });
     }
     items.push(null, { label: "New Changelist...", run: openNew });
     if (canRemove(singleList)) items.push({ label: "Delete Changelist", run: removeList });
@@ -1256,6 +1276,7 @@
         onopen={openNode}
         onmenu={openContextMenu}
         onresolve={() => onresolveconflicts?.()}
+        ondrop={browser ? undefined : dropOnList}
       />
     {/if}
   </div>

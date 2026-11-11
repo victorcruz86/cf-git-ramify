@@ -1497,6 +1497,74 @@ The 7 ignored library tests are the same as at the close of part 6.
 
 The multi-window part is done in tests and not validated by hand: it ends when section 5 is completed on a built app with throwaway repositories.
 
+## Part: drag between changelists
+
+Plan: `docs/superpowers/plans/2026-11-11-changes-drag-and-drop.md`. Branch `changes-drag-and-drop`.
+
+### 1. What was built
+
+In the Local Changes tree, which is also the tree of the non-modal Commit tool window, the selection is dragged onto a changelist, as 241's `ChangesViewDnDSupport`:
+
+- A drag carries every file under the selected rows: files, folders, or a whole changelist. A label `1 file` / `N files` follows the pointer, above and to its left.
+- The row under the pointer is walked up to its top-level row, so a drop on a file inside a list lands on that list. The target row gets a rectangle; where a drop is refused the pointer shows no-drop.
+- Only a changelist accepts, and not when any dragged change is already in it; `Unversioned Files` and `Merge Conflicts` accept nothing.
+- A drop first moves the changes (`changelists_move`, as `Move to Another Changelist...`), then adds the unversioned files to Git in that list (`changes_add`, as `Add to VCS`, which flushes the diff window, takes the repository lock and keeps a recoverable copy of the index). Nothing asks first, as in 241.
+- A file split between lists (some hunks in another list) moves only the hunks of the list it was dragged from, with `changelists_move_hunks`, as 241's `moveChangesTo` with a `ChangeListChange`; the other lists keep theirs.
+- The files are read again at the drop: a file removed during the drag is skipped, a file added meanwhile is only moved, and a list removed meanwhile runs nothing.
+- Only a point on the tree is a target: releasing beside it or below it runs nothing, and the edge scroll runs only inside it. A move with no button held, or the window losing focus, ends the drag. A selection with no files, such as an empty list, starts no drag.
+
+No Rust was changed.
+
+### 2. Ramify's calls, with their cost
+
+1. **Pointer events, not the platform's drag and drop.** Tauri's window-level file drop and WebKit's drag image make HTML5 drag and drop unreliable in the webview, and jsdom cannot test it. Cost: none for the user.
+2. **A 5-point threshold** before a press becomes a drag (the AWT default). Cost: a drag that starts slightly earlier or later than in IntelliJ.
+3. **A press on a row that is not selected, then a drag, drags that row alone**; a press on a selected row keeps the whole selection, and the click after a drop does not reselect. Only a plain press drags: with ⌘, ⇧ or ⌃ held the press only selects.
+4. **Edge scrolling:** within one row of the top or bottom edge the tree scrolls half a row every 50 ms. Cost: a speed different from IntelliJ's.
+5. **Out of scope:** the staging area's drag between Staged and Unstaged, dragging onto or from the Shelf, the `Ignored Files` node (Ramify does not show it) and the copy gesture (⌥), which in 241 only matters for shelves.
+6. **Escape cancels** a drag, and releasing outside a list runs nothing.
+7. **`Move to Another Changelist...` (⇧⌘M) still moves a split file whole**, with all its hunks, as before this part; only the drag moves just the dragged list's hunks. Cost: ⇧⌘M on a split file takes the hunks of the other lists with it, where 241 moves only the selected list's ranges.
+8. **A conflicted file is dragged as belonging to no list,** so a drag that mixes it with files of other lists is not refused when it is dropped on the conflicted file's own list, where 241 refuses it. The extra move changes nothing. Recorded as a deferred minor.
+
+### 3. Checklist to verify by hand
+
+Use a throwaway repository with two changelists and a few unversioned files, not your real work.
+
+- [ ] Drag a file from `Changes` onto another list's row: the row gets the rectangle while hovering, and the file moves there.
+- [ ] Drop a file onto a file row inside another list: it lands on that list.
+- [ ] Drag a list's header onto another list: every file moves, and the empty list stays.
+- [ ] Select two files with ⌘ and drag one of them: both move, and the label says `2 files`.
+- [ ] Drag `Unversioned Files` (or one unversioned file) onto a list that is not the active one: the files are added to Git and end up in that list.
+- [ ] Hover the source list: no rectangle, the pointer shows no-drop, and releasing does nothing.
+- [ ] Press Escape during a drag: the label goes away and nothing moves.
+- [ ] Drag a file sideways onto the diff preview at the height of another list, and release: nothing moves.
+- [ ] With a file split between two lists (move one hunk to another list from the diff), drag the file's own list onto a third list: only that list's hunks move; the hunk in the other list stays there.
+- [ ] With a long `Unversioned Files` expanded, scroll down, then drag a file up to the top edge: the tree scrolls until the lists show.
+- [ ] A plain click, a ⌘ click, a ⇧ click and a double click still select and open as before.
+
+### 4. What could not be checked
+
+- **No run of the built app.** The gesture was tested in jsdom with synthetic pointer events and a stubbed geometry. Not seen: the real cursor, the label's look, the scroll speed, and how WebKit treats a press on a row with a trackpad.
+- **Not compared with IntelliJ running:** the look of its drag image and the exact rectangle.
+
+### 5. Verification
+
+Run on 2026-11-11, under `nice -n 15`, with `CARGO_BUILD_JOBS=6` and `--test-threads=6`. The frontend suite and `tsc` ran again on the final code (`e17b810`), after the final review's fixes; `clippy` and `cargo test` ran once, before those fixes, which changed no Rust.
+
+| Command | Result |
+|---|---|
+| `pnpm exec tsc --noEmit -p .` | no errors (exit 0), on `e17b810` |
+| `pnpm vitest run --maxWorkers=2` | 136 files, 2,661 tests passed, on `e17b810` |
+| `cargo clippy --all-targets -- -D warnings` | no warnings (exit 0) |
+| `cargo test -- --test-threads=6` | library: 2,297 passed, 0 failed, 7 ignored (on purpose), 353.69 s; `askpass` 11, `crlf_fix` 1, `editor` 41 and `git_path` 2 passed; `phase_3_trace` 0 passed and 1 ignored (on purpose); `main.rs` and doc tests 0 tests |
+| `python3 -I -m unittest discover -s scripts` | 65 tests, OK |
+
+**Final review.** One independent reviewer read the branch against the plan and 241's source. It found 2 Important and 5 Minor issues. Both Important ones (a drop beside the tree landed on a list; a split file moved whole) and four Minor ones were fixed, each with a test that failed first. The fifth Minor issue is decision 8.
+
+### Conclusion
+
+Dragging between changelists is done in tests and not validated by hand: it ends when section 3 is completed on a built app.
+
 ## Phase 4 summary
 
 Date: 2026-11-10. Phase 4 was delivered in six parts, from 2026-11-03 to 2026-11-10, on the branch `phase-4`. Each part had its plan, its tasks reviewed one by one, its rows in `docs/parity-matrix.md`, its entries in `NOTICE` and its section above. The reference is IntelliJ IDEA CE 2024.1 (`IC-241.14494.240`); `phase-4-reference-change.md` says what changed from 2023.2.3 and what each part closed of it.
