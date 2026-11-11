@@ -1419,7 +1419,6 @@ Each one with what it costs if it turns out to be wrong.
 ### 3. Differences from IntelliJ that a user could notice
 
 - **`open -n` still starts a second process.** There is no single-instance plugin. The two processes do not know each other, and the open list and recent list are shared files where the last writer wins. Cost: the same repository can be open in two processes.
-- **No window frames per project.** New windows open at the default size, cascaded by macOS. Cost: windows are not restored at their last size and place.
 - **No Welcome screen, no Attach and no window tabs.**
 - **IntelliJ's recent and open projects are not imported.**
 - **No feedback while a close waits.** IntelliJ shows `Closing project` progress. Cost: a window with a slow push seems to ignore the red button.
@@ -1460,6 +1459,7 @@ None of this could be checked automatically. Use throwaway repositories only, fo
 - [ ] **Quitting with a half-done merge in the unfocused window:** make a merge conflict in B's repository, open the merge window, focus A and press Cmd + Q; the question appears in B's merge window, refusing it stops the quit for every window, and accepting it quits.
 - [ ] **Unsaved text in a diff window:** type in B's diff window and write in A; B's text stays. Close B with unsaved text; it is saved first.
 - [ ] **Reopening after quit:** with two windows open, quit with Cmd + Q and start the app again with no path; both repositories open, the first in the initial window, and the last focused one ends focused. With `Reopen projects on startup` off, only an empty window opens. Rename one folder before the start: it is skipped, removed from the list and named in the notification.
+- [ ] **Window frames:** open two throwaway projects in two windows, resize them and arrange them overlapped at different places (one maximized is a good variant); quit with Cmd + Q and start again; both come back where they were. Optional: save a frame on an external monitor, disconnect it and start again; the window opens at the default place, not off-screen.
 - [ ] **The commit message draft** typed in a window comes back when that repository is opened again after the window closed.
 - [ ] **The project widget popup:** it opens under the widget with the focus in the list, closes with Esc (also with the focus on the widget's button) and on a click outside, and shows `Open…`, `Get from Version Control…`, `Open Projects` and `Recent Projects` with the icon, the name and the path from `~`; choosing an open project focuses its window; choosing a recent one goes through the question.
 - [ ] **A recent project whose folder is gone:** rename a recent throwaway folder, choose it in the widget popup; `Reopen Project` appears with `OK` / `Remove From List`; `Remove From List` takes it out of the widget and of `File > Recent Projects`.

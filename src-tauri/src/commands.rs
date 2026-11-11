@@ -50,6 +50,7 @@ use crate::storage;
 use crate::task::{Runner, TaskId};
 use crate::viewer::{self, ViewerTarget};
 use crate::watch::{self, RepoChange, WatchedPaths, Watcher};
+use crate::window_frames;
 use crate::windows::{self, InitialTargets, ReopenFocus, WindowKind};
 use crate::worktree_diff::{self, Comparison, WorktreeSides};
 
@@ -940,6 +941,8 @@ pub struct AppState {
     pub closed_owners: Mutex<HashSet<String>>,
     // Set while a quit runs: the open list keeps what was open at quit.
     pub quitting: AtomicBool,
+    // The frame saves of the project windows that wait for their window to stay still.
+    pub frame_saves: Mutex<window_frames::Pending>,
 }
 
 // Reopening happens once per process, at the first `main` page's start.
@@ -977,6 +980,7 @@ impl Default for AppState {
             reopen_focus: Mutex::default(),
             closed_owners: Mutex::default(),
             quitting: AtomicBool::new(false),
+            frame_saves: Mutex::default(),
         }
     }
 }
@@ -1905,6 +1909,13 @@ pub fn quit(app: AppHandle) {
     // From here on the open list is not written: focus changes while windows go must not leave
     // a partial list. A quit that does not go ahead writes again. A second Quit while one runs
     // does nothing.
+    if app.state::<AppState>().quitting.load(Ordering::SeqCst) {
+        return;
+    }
+    // A window moved just before Quit has its frame saved now, not lost with the waiting save.
+    for label in main_windows(&app) {
+        save_frame_now(&app, &label);
+    }
     if !begin_quit(&app.state::<AppState>()) {
         return;
     }
@@ -2319,6 +2330,7 @@ fn hide_last_window(app: AppHandle, owner: String) {
 }
 
 fn hide_windows(app: &AppHandle, owner: &str) {
+    save_frame_now(app, owner);
     for label in close_labels(owner) {
         if let Some(window) = app.get_webview_window(&label) {
             let _ = window.hide();
@@ -2384,6 +2396,8 @@ async fn close_steps(app: &AppHandle, owner: &str) -> Result<(), String> {
     }
     // 6. The open list without it.
     write_open_projects(app);
+    // Its frame, as it is right before the window goes.
+    save_frame_now(app, owner);
     // 7.
     if let Some(window) = app.get_webview_window(owner) {
         window.destroy().map_err(|error| error.to_string())?;
@@ -2921,6 +2935,10 @@ pub async fn repo_open(
     replace_watcher(&session, Some(watcher));
     state.branch_sync.request();
     remember_recent(&app_for_diff, &info.path);
+    // The title bar names the project, as IntelliJ's frame title does.
+    let _ = window.set_title(&project_title(&info.path));
+    // And it sits where this project's window was the last time.
+    restore_frame(&app_for_diff, &window, &info.path);
     // It belonged to another repository; what it showed, and its selection, no longer apply.
     *session.merge_session.lock().unwrap() = None;
     *session.merge_ready.lock().unwrap() = false;
@@ -2935,6 +2953,180 @@ pub async fn repo_open(
     drop(_claim);
     write_open_projects(&app_for_diff);
     Ok(info)
+}
+
+// Window frames per project (`window_frames`). Failures are logged and never reach the caller.
+
+// The usable area of every screen, in logical points.
+fn screens(window: &WebviewWindow) -> Vec<window_frames::Monitor> {
+    window
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|monitor| {
+            let area = monitor.work_area();
+            let scale = monitor.scale_factor();
+            (
+                (f64::from(area.position.x) / scale).round() as i32,
+                (f64::from(area.position.y) / scale).round() as i32,
+                (f64::from(area.size.width) / scale).round() as u32,
+                (f64::from(area.size.height) / scale).round() as u32,
+            )
+        })
+        .collect()
+}
+
+// Where the window is now, in logical points, without the maximized and fullscreen flags.
+fn bounds_of(window: &WebviewWindow) -> Option<window_frames::Frame> {
+    let scale = window.scale_factor().ok()?;
+    let position = window.outer_position().ok()?;
+    let size = window.inner_size().ok()?;
+    Some(window_frames::Frame {
+        x: (f64::from(position.x) / scale).round() as i32,
+        y: (f64::from(position.y) / scale).round() as i32,
+        width: (f64::from(size.width) / scale).round() as u32,
+        height: (f64::from(size.height) / scale).round() as u32,
+        maximized: false,
+        fullscreen: false,
+    })
+}
+
+// `repo_open` succeeded in `window`: it takes the frame saved for `root`, if there is one and a
+// screen still shows its title bar. Without one the window stays where macOS put it.
+fn restore_frame(app: &AppHandle, window: &WebviewWindow, root: &str) {
+    if windows::kind_of(window.label()) != Some(WindowKind::Main) {
+        return;
+    }
+    let Ok(base) = app.path().app_data_dir() else {
+        return;
+    };
+    let frame = match window_frames::get(&base, root) {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("Could not read the window frames: {error}");
+            return;
+        }
+    };
+    if !window_frames::fits(&frame, &screens(window)) {
+        return;
+    }
+    // Back from a mode first, so that the bounds apply.
+    if !frame.fullscreen && window.is_fullscreen().unwrap_or(false) {
+        let _ = window.set_fullscreen(false);
+    }
+    if !frame.maximized && window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    }
+    let _ = window.set_size(tauri::LogicalSize::new(frame.width, frame.height));
+    let _ = window.set_position(tauri::LogicalPosition::new(frame.x, frame.y));
+    if frame.maximized {
+        let _ = window.maximize();
+    }
+    if frame.fullscreen {
+        let _ = window.set_fullscreen(true);
+    }
+}
+
+// A project window moved or resized: its frame is saved once it has stayed still for a moment.
+pub fn frame_changed(app: &AppHandle, label: &str) {
+    if windows::kind_of(label) != Some(WindowKind::Main) {
+        return;
+    }
+    let state = app.state::<AppState>();
+    if state.quitting.load(Ordering::SeqCst) {
+        return;
+    }
+    let first = state
+        .frame_saves
+        .lock()
+        .unwrap()
+        .touch(label, std::time::Instant::now());
+    if !first {
+        return;
+    }
+    let (app, label) = (app.clone(), label.to_string());
+    std::thread::spawn(move || loop {
+        let wait = app
+            .state::<AppState>()
+            .frame_saves
+            .lock()
+            .unwrap()
+            .check(&label, std::time::Instant::now());
+        match wait {
+            window_frames::Wait::Remaining(left) => std::thread::sleep(left),
+            window_frames::Wait::Due => {
+                save_frame(&app, &label);
+                break;
+            }
+            window_frames::Wait::Cancelled => break,
+        }
+    });
+}
+
+// Saves the frame now and drops the save that waits, for a window that closes or hides.
+fn save_frame_now(app: &AppHandle, label: &str) {
+    app.state::<AppState>()
+        .frame_saves
+        .lock()
+        .unwrap()
+        .cancel(label);
+    save_frame(app, label);
+}
+
+fn save_frame(app: &AppHandle, label: &str) {
+    let state = app.state::<AppState>();
+    if state.quitting.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(window) = app.get_webview_window(label) else {
+        return;
+    };
+    // A minimized window has no bounds worth keeping.
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    let root = {
+        let sessions = state.sessions.lock().unwrap();
+        let Some(session) = sessions.get(label) else {
+            return;
+        };
+        let repo = session.repo.lock().unwrap();
+        match repo.as_ref() {
+            Some(repo) => repo.path.to_string_lossy().into_owned(),
+            None => return,
+        }
+    };
+    let (Some(current), Ok(base)) = (bounds_of(&window), app.path().app_data_dir()) else {
+        return;
+    };
+    // One save at a time in this process: two windows settling together must not drop each
+    // other's entry between reading the file and writing it.
+    let _writing = window_frames::WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = match window_frames::get(&base, &root) {
+        Ok(previous) => previous,
+        Err(error) => {
+            eprintln!("Could not read the window frames: {error}");
+            None
+        }
+    };
+    let frame = window_frames::to_save(
+        previous,
+        current,
+        window.is_maximized().unwrap_or(false),
+        window.is_fullscreen().unwrap_or(false),
+    );
+    if let Err(error) = window_frames::record(&base, &root, frame) {
+        eprintln!("Could not save the window frames: {error}");
+    }
+}
+
+// The folder name of the repository, or the whole path when it has none (`/`).
+fn project_title(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
 }
 
 // The half-done operation and the widget text. `repo-changed` makes the interface read it again.

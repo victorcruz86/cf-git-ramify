@@ -57,6 +57,7 @@ pub mod update;
 pub mod vcs_commands;
 pub mod viewer;
 pub mod watch;
+pub mod window_frames;
 pub mod windows;
 pub mod worktree_diff;
 
@@ -422,6 +423,9 @@ pub fn run() {
             }
             if let WindowEvent::Focused(focused) = event {
                 commands::focus_changed(window.app_handle(), window.label(), *focused);
+            }
+            if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+                commands::frame_changed(window.app_handle(), window.label());
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
