@@ -1112,6 +1112,7 @@
                     ongraphclick={graphClick}
                     oncontext={(x, y) => logActions?.showContextMenu(x, y)}
                     notPicked={current.notPicked?.commits ?? null}
+                    onwidths={(columnWidths) => setOptions({ columnWidths })}
                   />
                 {/key}
                 {#if balloon}

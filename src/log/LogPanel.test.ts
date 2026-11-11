@@ -2079,3 +2079,59 @@ test("right_click_on_an_unchosen_file_chooses_only_it", async () => {
     within(changes()).getByRole("treeitem", { name: "a.txt" }).getAttribute("aria-selected"),
   ).toBe("false");
 });
+
+// `COLUMN_ID_WIDTH`: each tab keeps the widths set by dragging a border. jsdom gives no width.
+function wideTable() {
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 800 });
+  return () => {
+    delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
+  };
+}
+
+test("a_resized_column_is_saved_with_the_tabs_options", async () => {
+  const restore = wideTable();
+  try {
+    mock();
+    await panel();
+    // Subject 0-550, Author 550-700, Date 700-800.
+    await fireEvent.mouseDown(scroller(), { button: 0, clientX: 550, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 1, clientX: 500, clientY: 12 });
+    await fireEvent.mouseUp(window, { clientX: 500, clientY: 12 });
+
+    await waitFor(() =>
+      expect(JSON.stringify(calls("log_options_set").at(-1)?.[1])).toContain('"columnWidths":{"author":200}'),
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("saved_widths_come_back_when_the_repository_opens_again", async () => {
+  const restore = wideTable();
+  try {
+    mock({ log_options_get: () => ({ "0": { columnWidths: { author: 200 } } }) });
+    await panel();
+    await waitFor(() => expect(calls("log_view_open").length + calls("log_rows").length).toBeGreaterThan(0));
+
+    // Subject 0-500 now: the border is at 500, not 550.
+    await fireEvent.mouseMove(scroller(), { clientX: 501, clientY: 12 });
+    expect(scroller().style.cursor).toBe("col-resize");
+    await fireEvent.mouseMove(scroller(), { clientX: 551, clientY: 12 });
+    expect(scroller().style.cursor).not.toBe("col-resize");
+  } finally {
+    restore();
+  }
+});
+
+test("old_options_without_widths_load_as_automatic", async () => {
+  const restore = wideTable();
+  try {
+    mock({ log_options_get: () => ({ "0": { showDetails: false } }) });
+    await panel();
+
+    await fireEvent.mouseMove(scroller(), { clientX: 551, clientY: 12 });
+    expect(scroller().style.cursor).toBe("col-resize");
+  } finally {
+    restore();
+  }
+});

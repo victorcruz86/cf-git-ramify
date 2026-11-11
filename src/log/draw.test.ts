@@ -5,8 +5,12 @@ import verifiedSvg from "../lib/icons/signatureVerified.svg?raw";
 import {
   BADGE,
   BARS,
+  borderAt,
   CHECK,
   columnWidths,
+  dragWidths,
+  effectiveWidths,
+  readSavedWidths,
   drawRows,
   graphCellWidth,
   graphMetrics,
@@ -21,7 +25,7 @@ import {
 } from "./draw";
 import type { Signature } from "../lib/api";
 import { graphColor } from "./graphColor";
-import { defaultOptions, historyOptions, toggleColumn } from "./options";
+import { defaultOptions, historyOptions, toggleColumn, type LogColumn } from "./options";
 import { TOKENS } from "../lib/theme";
 
 interface Stroke {
@@ -662,4 +666,103 @@ test("the_signature_cell_draws_the_icon_of_each_state", () => {
   }
   expect(strokesOf(null)).toEqual([]);
   expect(strokesOf("verified", defaultOptions().columns)).toEqual([]);
+});
+
+// Resizable columns: `VcsLogGraphTable.updateDynamicColumnsWidth`, `isOnLeftBorder` and
+// `isOnRightBorder`, with `BORDER_THICKNESS = 3`.
+const AUTO = { author: 100, date: 80, hash: 70, signature: 24 };
+const AUTO_NARROW = { author: 150, date: 100, hash: 70, signature: 24 };
+const MAIN: LogColumn[] = ["subject", "author", "date"];
+const HISTORY: LogColumn[] = ["author", "date", "subject"];
+
+test("a_saved_width_wins_over_the_automatic_one", () => {
+  expect(effectiveWidths(AUTO, { author: 150 }, 800)).toEqual({ ...AUTO, author: 150 });
+});
+
+test("a_saved_width_wider_than_the_table_is_ignored", () => {
+  expect(effectiveWidths(AUTO, { author: 900 }, 800)).toEqual(AUTO);
+});
+
+test("zero_negative_and_nan_are_ignored", () => {
+  expect(effectiveWidths(AUTO, { author: 0, date: -5, hash: Number.NaN }, 800)).toEqual(AUTO);
+  expect(effectiveWidths(AUTO, undefined, 800)).toEqual(AUTO);
+});
+
+test("the_border_right_of_subject_resizes_the_column_after_it", () => {
+  // Subject 0-620, Author 620-720, Date 720-800.
+  const layout = tableLayout(800, MAIN, AUTO);
+  expect(borderAt(layout, MAIN, 620)).toMatchObject({ column: "author", left: "subject", right: "author", x: 620 });
+  expect(borderAt(layout, MAIN, 721)).toMatchObject({ column: "date", left: "author", right: "date", x: 720 });
+  expect(borderAt(layout, MAIN, 800)).toBeNull();
+  expect(borderAt(layout, MAIN, 400)).toBeNull();
+});
+
+test("a_column_left_of_subject_resizes_by_its_right_border", () => {
+  // Author 0-100, Date 100-180, Subject 180-800.
+  const layout = tableLayout(800, HISTORY, AUTO);
+  expect(borderAt(layout, HISTORY, 100)).toMatchObject({ column: "author", left: "author", right: "date" });
+  expect(borderAt(layout, HISTORY, 180)).toMatchObject({ column: "date", left: "date", right: "subject" });
+  expect(borderAt(layout, HISTORY, 0)).toBeNull();
+});
+
+test("three_points_from_a_border_is_on_it_and_four_is_not", () => {
+  const layout = tableLayout(800, MAIN, AUTO);
+  expect(borderAt(layout, MAIN, 617)).not.toBeNull();
+  expect(borderAt(layout, MAIN, 623)).not.toBeNull();
+  expect(borderAt(layout, MAIN, 616)).toBeNull();
+  expect(borderAt(layout, MAIN, 624)).toBeNull();
+});
+
+test("the_signature_column_has_no_border", () => {
+  const columns: LogColumn[] = ["subject", "author", "signature"];
+  // Subject 0-676, Author 676-776, Signature 776-800.
+  const layout = tableLayout(800, columns, AUTO);
+  expect(borderAt(layout, columns, 776)).toBeNull();
+  expect(borderAt(layout, columns, 676)).toMatchObject({ column: "author" });
+});
+
+test("dragging_the_subject_border_changes_only_that_column", () => {
+  const layout = tableLayout(800, MAIN, AUTO);
+  const border = borderAt(layout, MAIN, 620)!;
+  expect(dragWidths(AUTO, border, -50, 800, MAIN)).toEqual({ author: 150 });
+  expect(dragWidths(AUTO, border, 30, 800, MAIN)).toEqual({ author: 70 });
+});
+
+test("dragging_between_author_and_date_moves_width_from_one_to_the_other", () => {
+  const main = tableLayout(800, MAIN, AUTO);
+  expect(dragWidths(AUTO, borderAt(main, MAIN, 720)!, 20, 800, MAIN)).toEqual({ author: 120, date: 60 });
+  const history = tableLayout(800, HISTORY, AUTO);
+  expect(dragWidths(AUTO, borderAt(history, HISTORY, 100)!, 20, 800, HISTORY)).toEqual({ author: 120, date: 60 });
+  expect(dragWidths(AUTO, borderAt(history, HISTORY, 180)!, 20, 800, HISTORY)).toEqual({ date: 100 });
+});
+
+test("a_column_does_not_go_under_15_and_subject_keeps_15", () => {
+  const layout = tableLayout(800, MAIN, AUTO);
+  expect(dragWidths(AUTO, borderAt(layout, MAIN, 620)!, 500, 800, MAIN)).toEqual({ author: 15 });
+  // 800 - 80 (date) - 15 (subject) = 705 at most for Author.
+  expect(dragWidths(AUTO, borderAt(layout, MAIN, 620)!, -2000, 800, MAIN)).toEqual({ author: 705 });
+  expect(dragWidths(AUTO, borderAt(layout, MAIN, 720)!, 500, 800, MAIN)).toEqual({ author: 165, date: 15 });
+});
+
+test("read_saved_widths_keeps_only_known_positive_numbers", () => {
+  expect(readSavedWidths({ author: 120, date: "80", hash: -1, subject: 50, extra: 3 })).toEqual({ author: 120 });
+  expect(readSavedWidths(null)).toEqual({});
+  expect(readSavedWidths({ date: Number.POSITIVE_INFINITY, hash: 64 })).toEqual({ hash: 64 });
+});
+
+test("a_narrow_table_does_not_snap_a_column_on_the_first_pixel", () => {
+  // File history 250 wide: Author 0-150, Date 150-250, Subject 0 wide.
+  const layout = tableLayout(250, HISTORY, AUTO_NARROW);
+  const border = borderAt(layout, HISTORY, 250)!;
+  expect(dragWidths(AUTO_NARROW, border, 1, 250, HISTORY)).toEqual({ date: 100 });
+  expect(dragWidths(AUTO_NARROW, border, -1, 250, HISTORY)).toEqual({ date: 99 });
+});
+
+test("between_two_columns_neither_gets_wider_than_the_table", () => {
+  const wide = { ...AUTO, author: 300, date: 300 };
+  const layout = tableLayout(400, HISTORY, wide);
+  const border = borderAt(layout, HISTORY, 300)!;
+  const dragged = dragWidths(wide, border, 250, 400, HISTORY);
+  expect(dragged.author).toBeLessThanOrEqual(400);
+  expect((dragged.author ?? 0) + (dragged.date ?? 0)).toBe(600);
 });

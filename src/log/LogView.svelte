@@ -2,7 +2,10 @@
   import { onMount, untrack } from "svelte";
   import { logFindRows, logGraphHover, logRows, type GraphTarget, type LogRow } from "../lib/api";
   import {
+    borderAt,
     columnWidths,
+    dragWidths,
+    effectiveWidths,
     drawRows,
     MAX_ROWS_TO_MEASURE,
     ROW_HEIGHT,
@@ -12,6 +15,8 @@
     type GraphElement,
     type GraphHighlight,
     type LabelBounds,
+    type Border,
+    type SavedWidths,
   } from "./draw";
   import { arrowTooltip, type ArrowTooltip } from "./goto";
   import { elementAt, jumpRow, targetOf } from "./graphHit";
@@ -42,6 +47,8 @@
     oncontext?: (x: number, y: number) => void;
     // `Not Cherry-Picked Commits`: the commits that keep their style, the others in grey.
     notPicked?: ReadonlySet<string> | null;
+    // A border dragged or reset: the widths the user set, for the tab to keep (`COLUMN_ID_WIDTH`).
+    onwidths?: (widths: SavedWidths) => void;
   }
 
   let {
@@ -54,6 +61,7 @@
     ongraphclick,
     oncontext,
     notPicked = null,
+    onwidths,
   }: Props = $props();
 
   // Props are re-read on any change in the parent: a new cache, only if this changes.
@@ -95,6 +103,13 @@
   let signatureTip = $state.raw<{ text: string; x: number; y: number } | null>(null);
   const signatures = new SignatureColumn(() => schedule());
   const labelBounds = new Map<number, LabelBounds>();
+  // A border being dragged, the widths it gives so far, and what a view with no `onwidths` keeps.
+  let resizing: { border: Border; startX: number; start: ColumnWidths; moved: boolean } | null = null;
+  let live: SavedWidths | null = null;
+  let kept: SavedWidths | null = null;
+  let onBorder = $state(false);
+  // The click that ends a press on a border must not select.
+  let afterResize = false;
 
   export function scrollElement(): HTMLDivElement {
     return scroller;
@@ -266,7 +281,7 @@
         rowAt: (index) => cache.get(index),
         selected,
         options,
-        widths: widths ?? INITIAL_WIDTHS,
+        widths: shownWidths(),
         now: Date.now(),
         highlight,
         labelBounds,
@@ -314,10 +329,89 @@
     const { row, x } = rowAt(event);
     const found = row < count ? cache.get(row) : undefined;
     if (!found) return null;
-    const layout = tableLayout(scroller.clientWidth, options.columns, widths ?? INITIAL_WIDTHS);
+    const layout = tableLayout(scroller.clientWidth, options.columns, shownWidths());
     const cell = layout.cells.find((cell) => cell.column === "signature");
     if (!cell || x < cell.x || x >= cell.x + cell.width) return null;
     return signatureText(signatures.get(found.hash));
+  }
+
+  // `updateDynamicColumnsWidth`: the width being dragged, else the one the user set, else automatic.
+  function shownWidths(): ColumnWidths {
+    const saved = live ?? (onwidths ? options.columnWidths : (kept ?? options.columnWidths));
+    return effectiveWidths(widths ?? INITIAL_WIDTHS, saved, scroller.clientWidth);
+  }
+
+  function borderUnder(event: MouseEvent): Border | null {
+    const bounds = scroller.getBoundingClientRect();
+    const layout = tableLayout(scroller.clientWidth, options.columns, shownWidths());
+    return borderAt(layout, options.columns, event.clientX - bounds.left);
+  }
+
+  function savedNow(): SavedWidths {
+    return { ...(onwidths ? options.columnWidths : (kept ?? options.columnWidths)) };
+  }
+
+  function report(next: SavedWidths) {
+    if (onwidths) onwidths(next);
+    else kept = next;
+    schedule();
+  }
+
+  function mousedown(event: MouseEvent) {
+    if (event.button !== 0) return;
+    const border = borderUnder(event);
+    if (!border) return;
+    // No text selection or drag image; the table still takes the focus, as a press anywhere else.
+    event.preventDefault();
+    scroller.focus();
+    resizing = { border, startX: event.clientX, start: shownWidths(), moved: false };
+    onBorder = true;
+    window.addEventListener("mousemove", resizeMove);
+    window.addEventListener("mouseup", resizeEnd);
+    window.addEventListener("blur", resizeEnd);
+  }
+
+  function resizeMove(event: MouseEvent) {
+    if (!resizing) return;
+    // The release was lost (another window, ⌘-Tab, a menu): the resize ends where it was.
+    if ((event.buttons & 1) === 0) {
+      resizeEnd();
+      return;
+    }
+    const delta = event.clientX - resizing.startX;
+    if (delta !== 0) resizing.moved = true;
+    const dragged = dragWidths(resizing.start, resizing.border, delta, scroller.clientWidth, options.columns);
+    live = { ...savedNow(), ...dragged };
+    schedule();
+  }
+
+  function resizeEnd() {
+    const done = resizing;
+    const next = live;
+    stopResize();
+    afterResize = true;
+    setTimeout(() => (afterResize = false));
+    if (done?.moved && next) report(next);
+    else schedule();
+  }
+
+  function stopResize() {
+    window.removeEventListener("mousemove", resizeMove);
+    window.removeEventListener("mouseup", resizeEnd);
+    window.removeEventListener("blur", resizeEnd);
+    resizing = null;
+    live = null;
+  }
+
+  // A double click on a border: the column goes back to its automatic width.
+  function dblclick(event: MouseEvent) {
+    const border = borderUnder(event);
+    if (!border) return;
+    // `FileHistoryPanel.invokeOnDoubleClick`: no diff while a column is being resized.
+    event.stopPropagation();
+    const next = savedNow();
+    delete next[border.column];
+    report(next);
   }
 
   function resize() {
@@ -354,7 +448,7 @@
     const { row, x, y } = rowAt(event);
     const found = row < count ? cache.get(row) : undefined;
     // The graph is drawn where the Subject column starts, after Author and Date in a file history.
-    const { subjectX } = tableLayout(scroller.clientWidth, options.columns, widths ?? INITIAL_WIDTHS);
+    const { subjectX } = tableLayout(scroller.clientWidth, options.columns, shownWidths());
     return { row, element: found ? elementAt(found.print, x - subjectX, y) : null };
   }
 
@@ -383,6 +477,13 @@
 
   // `GraphCommitCellController.performMouseMove`.
   async function mousemove(event: MouseEvent) {
+    if (resizing) return;
+    onBorder = borderUnder(event) !== null;
+    if (onBorder) {
+      signatureTip = null;
+      clearHover();
+      return;
+    }
     const signed = signatureUnder(event);
     signatureTip = signed === null ? null : { text: signed, x: event.clientX + TOOLTIP_OFFSET, y: event.clientY };
     const { row, element } = elementUnder(event);
@@ -420,6 +521,7 @@
 
   // `GraphCommitCellController.shouldSelectCell`: a click on the graph does not select.
   function click(event: MouseEvent) {
+    if (afterResize || borderUnder(event)) return;
     const { row, element } = elementUnder(event);
     const found = cache.get(row);
     if (!found || row >= count) return;
@@ -509,6 +611,7 @@
     observer.observe(scroller);
     return () => {
       destroyed = true;
+      stopResize();
       signatures.stop();
       observer.disconnect();
       cancelAnimationFrame(frame);
@@ -524,12 +627,15 @@
   aria-label="Commits"
   aria-rowcount={count}
   tabindex="0"
-  style:cursor={hand ? "pointer" : null}
+  style:cursor={onBorder ? "col-resize" : hand ? "pointer" : null}
   onscroll={schedule}
   onclick={click}
+  onmousedown={mousedown}
+  ondblclick={dblclick}
   oncontextmenu={contextmenu}
   onmousemove={mousemove}
   onmouseleave={() => {
+    onBorder = false;
     signatureTip = null;
     clearHover();
   }}

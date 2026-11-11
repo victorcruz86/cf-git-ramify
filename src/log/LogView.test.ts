@@ -6,7 +6,7 @@ import type { LogRow, Signature, TaskEvent } from "../lib/api";
 import { trackTasks } from "../lib/tasks";
 import { ROW_HEIGHT } from "./draw";
 import LogView from "./LogView.svelte";
-import { defaultOptions, toggleColumn } from "./options";
+import { defaultOptions, toggleColumn, type LogColumn } from "./options";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
@@ -210,6 +210,208 @@ test("signatures_load_only_while_shown_for_the_visible_rows_plus_fifteen_and_a_n
     await fireEvent.scroll(grid);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(asked).toHaveLength(3);
+  } finally {
+    restoreViewport();
+  }
+});
+
+// Resizable columns (`InvisibleResizableHeader`, `VcsLogGraphTable.MyMouseAdapter`). Without a
+// canvas the automatic widths are the initial ones: Author 150, Date 100. At 800 wide the main
+// order puts Subject 0-550, Author 550-700, Date 700-800.
+function renderColumns(options = defaultOptions(), extra: Record<string, unknown> = {}) {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "log_rows") return [row];
+    throw new Error(`unexpected command: ${command}`);
+  });
+  const onwidths = vi.fn();
+  const onselect = vi.fn();
+  const ongraphclick = vi.fn();
+  render(LogView, { viewId: 1, count: 1, generation: 0, options, onselect, onwidths, ongraphclick, ...extra });
+  return { grid: screen.getByRole("grid", { name: "Commits" }), onwidths, onselect, ongraphclick };
+}
+
+const history = () => ({ ...defaultOptions(), columns: ["author", "date", "subject"] as LogColumn[] });
+
+test("hovering_a_border_shows_the_resize_cursor", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid } = renderColumns();
+    await fireEvent.mouseMove(grid, { clientX: 552, clientY: 12 });
+    expect(grid.style.cursor).toBe("col-resize");
+    await fireEvent.mouseMove(grid, { clientX: 400, clientY: 12 });
+    expect(grid.style.cursor).not.toBe("col-resize");
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("dragging_the_author_border_widens_author_and_reports_it_once_on_release", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid, onwidths } = renderColumns();
+    await fireEvent.mouseDown(grid, { button: 0, clientX: 550, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 1, clientX: 520, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 1, clientX: 500, clientY: 12 });
+    expect(onwidths).not.toHaveBeenCalled();
+    expect(grid.style.cursor).toBe("col-resize");
+    await fireEvent.mouseUp(window, { clientX: 500, clientY: 12 });
+
+    expect(onwidths).toHaveBeenCalledTimes(1);
+    expect(onwidths).toHaveBeenCalledWith({ author: 200 });
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("a_press_on_a_border_does_not_select_the_row", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid, onselect } = renderColumns();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("log_rows", expect.anything()));
+    await new Promise((resolve) => setTimeout(resolve, FRAME));
+    onselect.mockClear();
+    await fireEvent.mouseDown(grid, { button: 0, clientX: 550, clientY: 12 });
+    await fireEvent.mouseUp(window, { clientX: 550, clientY: 12 });
+    await fireEvent.click(grid, { clientX: 550, clientY: 12 });
+
+    expect(onselect).not.toHaveBeenCalled();
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("a_double_click_on_a_border_resets_that_column", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    // Author 200 and Date 90: Subject 0-510, Author 510-710, Date 710-800.
+    const { grid, onwidths } = renderColumns({ ...defaultOptions(), columnWidths: { author: 200, date: 90 } });
+    await fireEvent.dblClick(grid, { clientX: 511, clientY: 12 });
+    expect(onwidths).toHaveBeenCalledWith({ date: 90 });
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("a_double_click_away_from_a_border_still_selects_as_before", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid, onwidths, onselect } = renderColumns();
+    await vi.waitFor(async () => {
+      await fireEvent.click(grid, { clientX: 300, clientY: 12 });
+      expect(onselect).toHaveBeenCalledWith([HASH]);
+    });
+    await fireEvent.dblClick(grid, { clientX: 300, clientY: 12 });
+    expect(onwidths).not.toHaveBeenCalled();
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("saved_widths_are_drawn_and_move_the_graph_with_subject", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    // History order with Author 200: Subject starts at 300 instead of 250.
+    const { grid, ongraphclick } = renderColumns({ ...history(), columnWidths: { author: 200 } });
+    await vi.waitFor(async () => {
+      await fireEvent.click(grid, { clientX: 308, clientY: 12 });
+      expect(ongraphclick).toHaveBeenCalled();
+    });
+    ongraphclick.mockClear();
+    await fireEvent.click(grid, { clientX: 258, clientY: 12 });
+    expect(ongraphclick).not.toHaveBeenCalled();
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("a_saved_width_wider_than_the_table_draws_the_automatic_one", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid, ongraphclick } = renderColumns({ ...history(), columnWidths: { author: 900 } });
+    await vi.waitFor(async () => {
+      await fireEvent.click(grid, { clientX: 258, clientY: 12 });
+      expect(ongraphclick).toHaveBeenCalled();
+    });
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("without_onwidths_a_drag_still_resizes_until_the_view_goes", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid } = renderColumns(defaultOptions(), { onwidths: undefined });
+    await fireEvent.mouseDown(grid, { button: 0, clientX: 550, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 1, clientX: 500, clientY: 12 });
+    await fireEvent.mouseUp(window, { clientX: 500, clientY: 12 });
+    // The border is now at 500.
+    await fireEvent.mouseMove(grid, { clientX: 501, clientY: 12 });
+    expect(grid.style.cursor).toBe("col-resize");
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("the_click_that_ends_a_drag_away_from_the_border_does_not_select", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid, onselect, onwidths } = renderColumns();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("log_rows", expect.anything()));
+    await new Promise((resolve) => setTimeout(resolve, FRAME));
+    onselect.mockClear();
+    // Author stops at 15, so the border stops at 785 and the release at 795 is away from it.
+    await fireEvent.mouseDown(grid, { button: 0, clientX: 550, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 1, clientX: 795, clientY: 12 });
+    await fireEvent.mouseUp(window, { clientX: 795, clientY: 12 });
+    await fireEvent.click(grid, { clientX: 795, clientY: 12 });
+
+    expect(onwidths).toHaveBeenCalledWith({ author: 15 });
+    expect(onselect).not.toHaveBeenCalled();
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("a_move_without_the_button_held_ends_the_resize", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid, onwidths } = renderColumns();
+    await fireEvent.mouseDown(grid, { button: 0, clientX: 550, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 1, clientX: 500, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 0, clientX: 450, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 0, clientX: 400, clientY: 12 });
+
+    expect(onwidths).toHaveBeenCalledTimes(1);
+    expect(onwidths).toHaveBeenCalledWith({ author: 200 });
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("losing_the_window_focus_ends_the_resize", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid, onwidths } = renderColumns();
+    await fireEvent.mouseDown(grid, { button: 0, clientX: 550, clientY: 12 });
+    await fireEvent.mouseMove(window, { buttons: 1, clientX: 500, clientY: 12 });
+    await fireEvent.blur(window);
+    await fireEvent.mouseMove(window, { buttons: 1, clientX: 400, clientY: 12 });
+
+    expect(onwidths).toHaveBeenCalledTimes(1);
+    expect(onwidths).toHaveBeenCalledWith({ author: 200 });
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("a_press_on_a_border_focuses_the_table", async () => {
+  const restoreViewport = withViewport(10 * ROW_HEIGHT, 800);
+  try {
+    const { grid } = renderColumns();
+    await fireEvent.mouseDown(grid, { button: 0, clientX: 550, clientY: 12 });
+    await fireEvent.mouseUp(window, { clientX: 550, clientY: 12 });
+
+    expect(document.activeElement).toBe(grid);
   } finally {
     restoreViewport();
   }

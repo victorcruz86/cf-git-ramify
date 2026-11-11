@@ -1565,6 +1565,74 @@ Run on 2026-11-11, under `nice -n 15`, with `CARGO_BUILD_JOBS=6` and `--test-thr
 
 Dragging between changelists is done in tests and not validated by hand: it ends when section 3 is completed on a built app.
 
+## Part: resizable log columns
+
+Plan: `docs/superpowers/plans/2026-11-11-log-column-resize.md`. Branch `log-column-resize`.
+
+### 1. What was built
+
+In the Log's commit table, as 241's `VcsLogGraphTable` with its `InvisibleResizableHeader`:
+
+- The table has no visible header. Hovering within 3 points of a border between columns, on any row, shows the `col-resize` cursor.
+- Dragging that border changes Author, Date or Hash, and Subject takes the rest. A column left of Subject is resized by its right border, one right of it by its left border. The signature column is fixed.
+- A double click on a border sends that column back to its automatic width.
+- Each log tab keeps the widths it was given in its saved options (`columnWidths`, 241's `COLUMN_ID_WIDTH`). They come back when the repository opens again. A saved width wider than the table is ignored, and the column is automatic until the table is wide enough again.
+- The graph and the labels follow Subject's new left edge while dragging.
+
+No Rust was changed. Nothing is written to `.idea/` or to IntelliJ's settings.
+
+### 2. Ramify's calls, with their cost
+
+1. **Only the column next to the border changes.** Between Subject and a column, that column changes and Subject absorbs the difference. Between two resizable columns, the left one takes what the right one gives. Swing spreads a resize over every column to the right. Cost: a slightly different feel when Author and Date are side by side.
+2. **Minimum width 15 points**, Swing's `TableColumn` default. Subject never goes under 15 points through a drag.
+3. **The width is saved when the drag ends,** in one write. 241 saves during the drag. Cost: none visible.
+4. **A press within 3 points of a border starts a resize and does not change the selection.** Cost: a click right on a border no longer selects that row.
+5. **Each tab keeps its own widths, file history tabs included.** 241 shares one set among all file history tabs. Cost: a width set in one file history tab does not carry to the next one.
+6. **Out of scope.** Reordering columns by dragging is not done: the class that would do it in 241 is not in our copy of the source, so it is unverified. A Compare Branches tab keeps its widths only while it is open, because its options are not saved, and so do the update and range tabs.
+7. **Compare Branches' upper and lower logs share one set of widths.** 241 keeps the top and bottom logs apart. Cost: resizing a column in one half also resizes it in the other.
+8. **Two saved widths that together are wider than the table still squeeze Subject to nothing,** as automatic widths already could. Swing would shrink the other columns instead. Cost: in a narrow window the subjects can disappear until a border is double-clicked.
+9. **A double click on the border of a column that is already automatic** writes the options again without measuring the column anew; 241 measures it again from the data. Cost: none visible.
+
+### 3. Checklist to verify by hand
+
+Use a throwaway repository, not your real work.
+
+- [ ] Hover between Subject and Author: the cursor becomes a column resize cursor. Drag left: Author gets wider and the subjects narrower.
+- [ ] Drag the border between Author and Date: one gets wider, the other narrower.
+- [ ] Double-click the Author border: it goes back to its automatic width.
+- [ ] Quit and start again: the widths you set come back.
+- [ ] Make the window narrow, so that a saved width is wider than the whole table: the column goes back to automatic, and Subject is not squeezed to nothing.
+- [ ] Open a file history (Author, Date, Subject): its borders are on the right of Author and of Date, and its widths are its own.
+- [ ] A click and a double click on a row away from a border still select and open as before, and keyboard navigation still works after a resize.
+
+### 4. What could not be checked
+
+- **No run of the built app.** The gesture was tested in jsdom with synthetic mouse events and a stubbed width (jsdom has no canvas and no layout). Not seen: the real cursor, the repaint while dragging, the feel of the 3-point zone on a trackpad.
+- **Not compared with IntelliJ running:** the exact feel of Swing's resize, and whether its log lets columns be reordered by dragging.
+- **A resize in a file history tab runs the diff preview's effect again** (it asks the backend for the change of the selection, not git), as the splitter drag already did. Not measured.
+
+### 5. Verification
+
+Run on 2026-11-11, under `nice -n 15`, with `CARGO_BUILD_JOBS=6` and `--test-threads=6`. The frontend suite and `tsc` ran again on the final code (`fb415d3`), after the final review's fixes; `clippy` and `cargo test` ran on `d99ba54`. The branch changes no Rust.
+
+| Command | Result |
+|---|---|
+| `pnpm exec tsc --noEmit -p .` | no errors (exit 0), on `fb415d3` |
+| `pnpm vitest run --maxWorkers=2` | 137 files, 2,692 tests passed, on `fb415d3` |
+| `cargo clippy --all-targets -- -D warnings` | no warnings (exit 0) |
+| `cargo test -- --test-threads=6` | library: 2,297 passed, 0 failed, 7 ignored (on purpose), 341.71 s; `askpass` 11, `crlf_fix` 1, `editor` 41 and `git_path` 2 passed; `phase_3_trace` 0 passed and 1 ignored (on purpose); `main.rs` and doc tests 0 tests |
+| `python3 -I -m unittest discover -s scripts` | 65 tests, OK |
+
+**Final review.** One independent reviewer read the branch against the plan and 241's source. It found 1 Important issue and 8 Minor ones.
+
+- **Fixed, each with a test that failed first:** the Important one (in a file history, a double click on a border also opened the diff) and four Minor ones (a press on a border did not focus the table; a lost release kept the resize going; a narrow table snapped a column on the first pixel; two columns could grow past the table).
+- **Covered by a test added after the review:** the click that ends a drag away from the border. That test passed already, as a guard.
+- **Recorded, not fixed:** the other three, as decisions 7, 8 and 9. The re-run of the diff preview is listed in section 4.
+
+### Conclusion
+
+Resizable log columns are done in tests and not validated by hand: the part ends when section 3 is completed on a built app.
+
 ## Phase 4 summary
 
 Date: 2026-11-10. Phase 4 was delivered in six parts, from 2026-11-03 to 2026-11-10, on the branch `phase-4`. Each part had its plan, its tasks reviewed one by one, its rows in `docs/parity-matrix.md`, its entries in `NOTICE` and its section above. The reference is IntelliJ IDEA CE 2024.1 (`IC-241.14494.240`); `phase-4-reference-change.md` says what changed from 2023.2.3 and what each part closed of it.

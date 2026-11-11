@@ -200,6 +200,7 @@
                   onselect={(hashes) => select(name, hashes)}
                   {onready}
                   oncontext={(x, y) => actions[name]?.showContextMenu(x, y)}
+                  onwidths={(columnWidths) => onoptions({ columnWidths })}
                 />
                 {#if half.view.count === 0}
                   <div class="empty">

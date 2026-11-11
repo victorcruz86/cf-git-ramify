@@ -242,6 +242,115 @@ export function tableLayout(
   return { subjectX, subjectWidth, cells };
 }
 
+// Resizable columns. `VcsLogGraphTable`: Author, Date and Hash are dynamic (automatic or the
+// width the user set); Commit takes the rest; Root and the signature icon are fixed.
+export type ResizableColumn = "author" | "date" | "hash";
+export type SavedWidths = Partial<Record<ResizableColumn, number>>;
+export const RESIZABLE: ReadonlySet<LogColumn> = new Set<LogColumn>(["author", "date", "hash"]);
+// `MyMouseAdapter.BORDER_THICKNESS`.
+export const BORDER_THICKNESS = 3;
+// `TableColumn`'s default minimum width.
+export const MIN_COLUMN_WIDTH = 15;
+
+const usable = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value > 0;
+
+// `updateDynamicColumnsWidth`: a saved width is used unless it is not positive or wider than the
+// table.
+export function effectiveWidths(
+  auto: ColumnWidths,
+  saved: SavedWidths | undefined,
+  tableWidth: number,
+): ColumnWidths {
+  const pick = (column: ResizableColumn) => {
+    const value = saved?.[column];
+    return usable(value) && value <= tableWidth ? value : auto[column];
+  };
+  return { ...auto, author: pick("author"), date: pick("date"), hash: pick("hash") };
+}
+
+export function readSavedWidths(stored: unknown): SavedWidths {
+  if (typeof stored !== "object" || stored === null) return {};
+  const values = stored as Record<string, unknown>;
+  const widths: SavedWidths = {};
+  for (const column of RESIZABLE as ReadonlySet<ResizableColumn>) {
+    if (usable(values[column])) widths[column] = values[column];
+  }
+  return widths;
+}
+
+export interface Border {
+  x: number;
+  left: LogColumn;
+  right: LogColumn;
+  // The column a double click resets: right of Commit by its left border, left of it by its right.
+  column: ResizableColumn;
+}
+
+function columnSpans(layout: TableLayout, columns: LogColumn[]) {
+  const ordered: LogColumn[] = columns.includes("subject") ? columns : ["subject", ...columns];
+  return ordered.map((column) => {
+    if (column === "subject") return { column, x: layout.subjectX, width: layout.subjectWidth };
+    const cell = layout.cells.find((entry) => entry.column === column);
+    return { column, x: cell?.x ?? 0, width: cell?.width ?? 0 };
+  });
+}
+
+// `isOnLeftBorder` / `isOnRightBorder`: the border within `BORDER_THICKNESS` of `x`.
+export function borderAt(layout: TableLayout, columns: LogColumn[], x: number): Border | null {
+  const spans = columnSpans(layout, columns);
+  const subject = spans.findIndex((span) => span.column === "subject");
+  let best: Border | null = null;
+  for (let index = 1; index < spans.length; index++) {
+    const left = spans[index - 1].column;
+    const right = spans[index].column;
+    const owner =
+      index > subject && RESIZABLE.has(right)
+        ? right
+        : index - 1 < subject && RESIZABLE.has(left)
+          ? left
+          : null;
+    if (!owner) continue;
+    const edge = spans[index].x;
+    if (Math.abs(edge - x) > BORDER_THICKNESS) continue;
+    if (!best || Math.abs(edge - x) < Math.abs(best.x - x)) {
+      best = { x: edge, left, right, column: owner as ResizableColumn };
+    }
+  }
+  return best;
+}
+
+// The widths after moving `border` by `delta`. Between two resizable columns the left one takes
+// what the right one gives; next to Commit, or to a fixed column, only the resizable one changes
+// and Commit takes the difference. Nothing goes under `MIN_COLUMN_WIDTH`, Commit included.
+export function dragWidths(
+  start: ColumnWidths,
+  border: Border,
+  delta: number,
+  tableWidth: number,
+  columns: LogColumn[],
+): SavedWidths {
+  const leftResizable = RESIZABLE.has(border.left);
+  const rightResizable = RESIZABLE.has(border.right);
+  if (leftResizable && rightResizable) {
+    const left = border.left as ResizableColumn;
+    const right = border.right as ResizableColumn;
+    // Neither goes under the minimum nor past the table's width.
+    const low = Math.min(0, MIN_COLUMN_WIDTH - start[left]);
+    const high = Math.max(0, Math.min(start[right] - MIN_COLUMN_WIDTH, tableWidth - start[left]));
+    const moved = Math.min(high, Math.max(low, delta));
+    return { [left]: start[left] + moved, [right]: start[right] - moved };
+  }
+  const column = border.column;
+  const others = columns.filter((entry) => entry !== "subject" && entry !== column) as (keyof ColumnWidths)[];
+  const used = others.reduce((total, entry) => total + start[entry], 0);
+  // In a table already too narrow, the column does not jump on the first pixel: it may keep
+  // its width, only not grow.
+  const widest = Math.max(MIN_COLUMN_WIDTH, start[column], tableWidth - used - MIN_COLUMN_WIDTH);
+  const wanted = border.left === column ? start[column] + delta : start[column] - delta;
+  return { [column]: Math.min(widest, Math.max(MIN_COLUMN_WIDTH, wanted)) };
+}
+
 export const authorText = (row: LogRow) => row.author + (row.samePerson ? "" : "*");
 
 // `Math.rint`: halves round to the even number.

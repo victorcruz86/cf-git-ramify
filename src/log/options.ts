@@ -1,4 +1,5 @@
 import type { SortType } from "../lib/api";
+import { readSavedWidths, type SavedWidths } from "./draw";
 
 // `signature` is `GPG Signature` (`Git.CommitSignature`), hidden by default.
 export type LogColumn = "subject" | "author" | "date" | "hash" | "signature";
@@ -35,6 +36,9 @@ export interface LogOptions {
   // `SHOW_GIT_BRANCHES_LOG_PROPERTY`: by default, only on the main tab.
   showBranches: boolean;
   splits: Splits;
+  // `COLUMN_ID_WIDTH`: the widths the user set by dragging a border; a column without one is
+  // automatic.
+  columnWidths?: SavedWidths;
 }
 
 // `VcsLogApplicationSettings.State`, and the proportions of `MainFrame`.
@@ -81,6 +85,7 @@ export function readOptions(stored: unknown, main = false, defaults = defaultOpt
     ...values,
     highlights: { ...options.highlights, ...values.highlights },
     splits: { ...options.splits, ...values.splits },
+    columnWidths: readSavedWidths(values.columnWidths),
   };
 }
 

@@ -558,3 +558,19 @@ test("the_column_is_hidden_by_default_and_toggles_in_both_columns_menus", async 
   const saved = JSON.stringify(lastArgs("log_options_set").options);
   expect(saved).toContain('"columns":["author","date","subject","signature"]');
 });
+
+// `FileHistoryPanel.invokeOnDoubleClick` returns while a column is being resized: a double click on
+// a border resets the column and opens no diff. jsdom gives no width: Author 0-150, Date 150-250.
+test("a_double_click_on_a_column_border_opens_no_diff", async () => {
+  await panel();
+  await showHistory("src/a.txt");
+  await waitFor(() => expect(screen.getByRole("region", { name: "Diff Preview" })).toBeTruthy());
+  const grid = screen.getByRole("grid", { name: "Commits" });
+
+  await fireEvent.dblClick(grid, { clientX: 150, clientY: 12 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(calls("diff_window_open_request")).toHaveLength(0);
+
+  await fireEvent.dblClick(grid, { clientX: 60, clientY: 12 });
+  await waitFor(() => expect(calls("diff_window_open_request")).toHaveLength(1));
+});

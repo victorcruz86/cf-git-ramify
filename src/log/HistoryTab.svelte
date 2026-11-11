@@ -430,6 +430,7 @@
             onselect={select}
             {onready}
             oncontext={(x, y) => void contextMenu(x, y)}
+            onwidths={(columnWidths) => onoptions({ columnWidths })}
           />
         {/if}
         {#if failure}
