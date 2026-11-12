@@ -36,6 +36,9 @@
     projectResolve,
     recentProjectsRemove,
     type RecentProject,
+    branchIncomingOutgoing,
+    onBranchSyncChanged,
+    type BranchSync,
     onRepoChanged,
     onSelectionChanged,
     onSettingsChanged,
@@ -344,6 +347,8 @@
     syncMenu(opened.state);
     treeFiles = [];
     treeChanges = false;
+    branchSync = null;
+    void readBranchSync();
     void readBranchesToCompare();
     branchDialogs?.repositoryChanged(opened);
     void loadStashes();
@@ -485,6 +490,27 @@
     if (!windowFocused) return;
     sendCurrentFile();
   });
+
+  // `GitBranchSyncStatus.calcForCurrentBranch`: the widget's Incoming and Outgoing icons. Read on
+  // open, on each `repo-changed` and on `branch-sync-changed`; a read started for another branch or
+  // repository is dropped, and one that fails shows nothing.
+  let branchSync = $state<BranchSync | null>(null);
+  let syncRequest = 0;
+  async function readBranchSync() {
+    const token = ++syncRequest;
+    const name = repoNow?.branch ?? null;
+    if (!info || !name) {
+      branchSync = null;
+      return;
+    }
+    let next: BranchSync | null;
+    try {
+      next = (await branchIncomingOutgoing())[name] ?? null;
+    } catch {
+      next = null;
+    }
+    if (token === syncRequest && (repoNow?.branch ?? null) === name) branchSync = next;
+  }
 
   // On open and on each `repo-changed`: what arrives for an earlier request is dropped.
   let branchesRequest = 0;
@@ -1035,6 +1061,7 @@
       onMenuOwnerGained(menuOwnerGained),
       onAppDeactivated(appDeactivated),
       onRepoChanged(refreshState),
+      onBranchSyncChanged(() => void readBranchSync()),
     ];
     start();
     return () => {
@@ -1142,6 +1169,7 @@
       return;
     }
     syncMenu(status);
+    void readBranchSync();
     void readBranchesToCompare();
     // A fetch may have loaded GitHub's protected branch rules.
     void refreshProtectedBranches();
@@ -1214,6 +1242,9 @@
       >
         <Icon name="vcs" />
         {branchLabel}
+        <!-- `GitToolbarWidgetAction`: the right icons, with no text of their own. -->
+        {#if branchSync?.incoming}<span class="sync" data-sync="incoming"><Icon name="incoming" /></span>{/if}
+        {#if branchSync?.outgoing}<span class="sync" data-sync="outgoing"><Icon name="outgoing" /></span>{/if}
       </button>
       {#if repoNow}
         <MergeRebaseWidget
@@ -1539,6 +1570,11 @@
 
   .branch:hover {
     background: var(--hover);
+  }
+
+  .branch .sync {
+    display: inline-flex;
+    flex: none;
   }
 
   .path {

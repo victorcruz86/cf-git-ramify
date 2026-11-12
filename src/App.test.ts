@@ -136,6 +136,7 @@ function mockApp(commands: Record<string, Command> = {}) {
     // Nothing of an earlier session to reopen.
     open_projects_reopen: () => ({ missing: [] }),
     commit_draft_saved: () => undefined,
+    branch_incoming_outgoing: () => ({}),
     ...commands,
   });
 }
@@ -3974,3 +3975,74 @@ test("a saved draft shows in the Commit Message box after reopening", async () =
   expect(lists.lists[0].comment).toBe("");
 });
 
+
+// `GitToolbarWidgetAction.updateCustomComponent`: the branch widget's right icons are Incoming and
+// Outgoing for the current branch, read through `branch_incoming_outgoing`.
+const widget = () => screen.getByRole("button", { name: /^Git Branch:/ });
+const syncIcons = () =>
+  [...widget().querySelectorAll<HTMLElement>("[data-sync]")].map((icon) => icon.dataset.sync);
+
+async function openWithSync(sync: () => unknown, state = INFO.state) {
+  mockApp({
+    repo_open: () => ({ ...INFO, state }),
+    repo_state: () => state,
+    initial_target: () => folder("/repo/a"),
+    branch_incoming_outgoing: sync,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+}
+
+test("the_branch_widget_shows_incoming_when_the_current_branch_has_commits_to_pull", async () => {
+  await openWithSync(() => ({ main: { incoming: true, outgoing: false }, other: { incoming: false, outgoing: true } }));
+  await waitFor(() => expect(syncIcons()).toEqual(["incoming"]));
+});
+
+test("it_shows_outgoing_too_and_both_together", async () => {
+  await openWithSync(() => ({ main: { incoming: true, outgoing: true } }));
+  await waitFor(() => expect(syncIcons()).toEqual(["incoming", "outgoing"]));
+});
+
+test("it_shows_neither_when_synced_or_detached", async () => {
+  await openWithSync(() => ({ main: { incoming: false, outgoing: false } }));
+  await waitFor(() => expect(calls("branch_incoming_outgoing").length).toBeGreaterThan(0));
+  expect(syncIcons()).toEqual([]);
+  cleanup();
+
+  const detached = { operation: null, branch: null, label: "abcdef12", head: "abcdef1234567890" };
+  await openWithSync(() => ({ main: { incoming: true, outgoing: true } }), detached as never);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(syncIcons()).toEqual([]);
+});
+
+test("branch_sync_changed_and_repo_changed_refresh_the_icons", async () => {
+  let sync = { main: { incoming: false, outgoing: false } };
+  await openWithSync(() => sync);
+  await waitFor(() => expect(calls("branch_incoming_outgoing").length).toBeGreaterThan(0));
+  expect(syncIcons()).toEqual([]);
+
+  sync = { main: { incoming: true, outgoing: false } };
+  deliver("branch-sync-changed");
+  await waitFor(() => expect(syncIcons()).toEqual(["incoming"]));
+
+  sync = { main: { incoming: false, outgoing: true } };
+  deliver("repo-changed");
+  await waitFor(() => expect(syncIcons()).toEqual(["outgoing"]));
+});
+
+test("a_failed_read_shows_no_icons", async () => {
+  await openWithSync(() => {
+    throw new Error("git failed");
+  });
+  await waitFor(() => expect(calls("branch_incoming_outgoing").length).toBeGreaterThan(0));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(syncIcons()).toEqual([]);
+  expect(get(notifications)).toEqual([]);
+});
+
+test("the_widget_label_and_tooltip_do_not_change", async () => {
+  await openWithSync(() => ({ main: { incoming: true, outgoing: true } }));
+  await waitFor(() => expect(syncIcons()).toEqual(["incoming", "outgoing"]));
+  expect(widget().getAttribute("aria-label")).toBe("Git Branch: main");
+  expect(widget().textContent?.trim()).toBe("main");
+});
