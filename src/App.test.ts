@@ -4046,3 +4046,60 @@ test("the_widget_label_and_tooltip_do_not_change", async () => {
   expect(widget().getAttribute("aria-label")).toBe("Git Branch: main");
   expect(widget().textContent?.trim()).toBe("main");
 });
+
+// `refsTracker`: `repo-changed` fires for any file under the work tree; the icons are read again
+// only when the refs changed (`branch_refs_fingerprint`), on open and on `branch-sync-changed`.
+test("repo_changed_reads_the_icons_again_only_when_the_refs_changed", async () => {
+  let refs = "r1";
+  mockApp({
+    repo_open: () => INFO,
+    initial_target: () => folder("/repo/a"),
+    branch_incoming_outgoing: () => ({ main: { incoming: true, outgoing: false } }),
+    branch_refs_fingerprint: () => refs,
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+  await waitFor(() => expect(syncIcons()).toEqual(["incoming"]));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const before = calls("branch_incoming_outgoing").length;
+  const fingerprints = calls("branch_refs_fingerprint").length;
+
+  deliver("repo-changed");
+  await waitFor(() => expect(calls("branch_refs_fingerprint").length).toBeGreaterThan(fingerprints));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(calls("branch_incoming_outgoing")).toHaveLength(before);
+
+  refs = "r2";
+  deliver("repo-changed");
+  await waitFor(() => expect(calls("branch_incoming_outgoing").length).toBe(before + 1));
+});
+
+test("after_a_checkout_the_old_branchs_icons_do_not_show_next_to_the_new_name", async () => {
+  let state = INFO.state;
+  let answer: (value: unknown) => void = () => {};
+  let first = true;
+  mockApp({
+    repo_open: () => INFO,
+    repo_state: () => state,
+    initial_target: () => folder("/repo/a"),
+    branch_incoming_outgoing: () => {
+      if (first) {
+        first = false;
+        return { main: { incoming: true, outgoing: true } };
+      }
+      return new Promise((resolve) => (answer = resolve));
+    },
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /^Changes/ });
+  await waitFor(() => expect(syncIcons()).toEqual(["incoming", "outgoing"]));
+
+  state = { ...INFO.state, branch: "dev", label: "dev" };
+  deliver("repo-changed");
+  await waitFor(() => expect(widget().textContent?.trim()).toBe("dev"));
+  expect(syncIcons()).toEqual([]);
+
+  await waitFor(() => expect(calls("branch_incoming_outgoing")).toHaveLength(2));
+  answer({ dev: { incoming: false, outgoing: true } });
+  await waitFor(() => expect(syncIcons()).toEqual(["outgoing"]));
+});

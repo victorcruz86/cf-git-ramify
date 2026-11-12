@@ -22,6 +22,7 @@ export class StripeLane {
     this.dom.setAttribute("role", "presentation");
     Object.assign(this.dom.style, {
       position: "relative",
+      overflow: "hidden",
       flex: "none",
       width: `${LANE_WIDTH}px`,
       background: "var(--editor)",

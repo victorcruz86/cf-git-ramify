@@ -559,7 +559,7 @@ test("side_by_side_has_a_lane_on_each_outer_edge_with_one_mark_per_block_side", 
     const newText = "1\n2\nTHREE\n4\n5\n6\n7\nnew\n8\n9\n10\n";
     const { parent } = open(data(TEN, newText, [hunk(2, 1, 2, 1), hunk(7, 0, 7, 1)]));
     expect(lanes(parent)).toEqual([
-      { edge: "left", marks: [{ kind: "rm-stripe-modified", line: 2 }] },
+      { edge: "left", marks: [{ kind: "rm-stripe-modified", line: 2 }, { kind: "rm-stripe-inserted", line: 7 }] },
       { edge: "right", marks: [{ kind: "rm-stripe-modified", line: 2 }, { kind: "rm-stripe-inserted", line: 7 }] },
     ]);
     // The left lane comes before the left editor, the right one after the right editor.
@@ -571,11 +571,11 @@ test("side_by_side_has_a_lane_on_each_outer_edge_with_one_mark_per_block_side", 
   }
 });
 
-test("an_insertion_has_no_mark_on_the_old_side", () => {
+test("an_insertion_is_marked_one_line_tall_on_the_old_side_at_its_place", () => {
   const restore = laneHeights(300);
   try {
     const { parent } = open(data(TEN, `${TEN}11\n`, [hunk(10, 0, 10, 1)]));
-    expect(lanes(parent)[0].marks).toEqual([]);
+    expect(lanes(parent)[0].marks).toEqual([{ kind: "rm-stripe-inserted", line: 10 }]);
     expect(lanes(parent)[1].marks).toEqual([{ kind: "rm-stripe-inserted", line: 10 }]);
   } finally {
     restore();
@@ -638,4 +638,44 @@ test("an_embedded_diff_has_no_lanes", () => {
     handlers: { ontoggle: vi.fn(), onedit: vi.fn(), onfocus: vi.fn() },
   });
   expect(parent.querySelectorAll(".rm-stripe")).toHaveLength(0);
+});
+
+// `connectScroll` lets only the editor under the pointer drive the others: a click on its lane makes
+// it the driver even when the pointer came from elsewhere.
+test("after_a_click_on_its_lane_the_other_editor_follows", () => {
+  const restore = laneHeights(300);
+  try {
+    const { parent } = open(data(TEN, TEN.replace("8\n", "EIGHT\n"), [hunk(7, 1, 7, 1)]));
+    const [oldEditor, newEditor] = [...parent.querySelectorAll<HTMLElement>(".cm-editor")].map(
+      (dom) => EditorView.findFromDOM(dom) as EditorView,
+    );
+    // The pointer was last over the left editor.
+    oldEditor.dom.dispatchEvent(new PointerEvent("pointerenter"));
+    vi.spyOn(newEditor, "lineBlockAt").mockReturnValue({ top: 120 } as BlockInfo);
+    const right = parent.querySelectorAll<HTMLElement>(".rm-stripe")[1];
+    right.getBoundingClientRect = () => ({ top: 0, height: 300, bottom: 300, left: 0, right: 8, width: 8 }) as DOMRect;
+
+    right.dispatchEvent(new PointerEvent("pointerenter"));
+    right.dispatchEvent(new MouseEvent("mousedown", { button: 0, clientY: 215, bubbles: true }));
+    newEditor.scrollDOM.dispatchEvent(new Event("scroll"));
+
+    expect(newEditor.scrollDOM.scrollTop).toBe(120);
+    expect(oldEditor.scrollDOM.scrollTop).toBe(120);
+  } finally {
+    restore();
+  }
+});
+
+// Hunks of another changelist are drawn like 241's excluded changes, with no background: no mark.
+test("a_hunk_of_another_changelist_has_no_mark", () => {
+  const restore = laneHeights(300);
+  try {
+    const mine = hunk(2, 1, 2, 1);
+    const theirs = hunk(6, 1, 6, 1);
+    const both = { ...data(TEN, TEN.replace("3\n", "THREE\n").replace("7\n", "SEVEN\n"), [mine, theirs]), selectable: [mine] };
+    const { parent } = open(both);
+    expect(lanes(parent)[1].marks).toEqual([{ kind: "rm-stripe-modified", line: 2 }]);
+  } finally {
+    restore();
+  }
 });

@@ -118,7 +118,7 @@
   import LogPanel from "./log/LogPanel.svelte";
   import BranchDialogs from "./branches/BranchDialogs.svelte";
   import BranchesPopup from "./branches/BranchesPopup.svelte";
-  import { loadBranchState, refreshProtectedBranches } from "./branches/state";
+  import { loadBranchState, refreshProtectedBranches, refsTracker } from "./branches/state";
   import { checkDefaultAccount } from "./hosting/accounts";
   import LoginHost from "./hosting/LoginHost.svelte";
   import MergeRebaseWidget from "./operation/MergeRebaseWidget.svelte";
@@ -348,7 +348,7 @@
     treeFiles = [];
     treeChanges = false;
     branchSync = null;
-    void readBranchSync();
+    void syncRefs.note().then(readBranchSync);
     void readBranchesToCompare();
     branchDialogs?.repositoryChanged(opened);
     void loadStashes();
@@ -494,7 +494,15 @@
   // `GitBranchSyncStatus.calcForCurrentBranch`: the widget's Incoming and Outgoing icons. Read on
   // open, on each `repo-changed` and on `branch-sync-changed`; a read started for another branch or
   // repository is dropped, and one that fails shows nothing.
-  let branchSync = $state<BranchSync | null>(null);
+  // The status is kept with the branch it is for: after a checkout the old branch's icons do not
+  // show next to the new name while its own are read.
+  let branchSync = $state<{ branch: string; sync: BranchSync | null } | null>(null);
+  const shownSync = $derived(
+    branchSync && branchSync.branch === (repoNow?.branch ?? null) ? branchSync.sync : null,
+  );
+  // `repo-changed` fires for any file under the work tree: the status is read again only when the
+  // refs changed, as the branches popup does.
+  const syncRefs = refsTracker();
   let syncRequest = 0;
   async function readBranchSync() {
     const token = ++syncRequest;
@@ -509,7 +517,11 @@
     } catch {
       next = null;
     }
-    if (token === syncRequest && (repoNow?.branch ?? null) === name) branchSync = next;
+    if (token === syncRequest) branchSync = { branch: name, sync: next };
+  }
+
+  async function readBranchSyncIfRefsChanged() {
+    if (await syncRefs.changed()) await readBranchSync();
   }
 
   // On open and on each `repo-changed`: what arrives for an earlier request is dropped.
@@ -1169,7 +1181,7 @@
       return;
     }
     syncMenu(status);
-    void readBranchSync();
+    void readBranchSyncIfRefsChanged();
     void readBranchesToCompare();
     // A fetch may have loaded GitHub's protected branch rules.
     void refreshProtectedBranches();
@@ -1243,8 +1255,8 @@
         <Icon name="vcs" />
         {branchLabel}
         <!-- `GitToolbarWidgetAction`: the right icons, with no text of their own. -->
-        {#if branchSync?.incoming}<span class="sync" data-sync="incoming"><Icon name="incoming" /></span>{/if}
-        {#if branchSync?.outgoing}<span class="sync" data-sync="outgoing"><Icon name="outgoing" /></span>{/if}
+        {#if shownSync?.incoming}<span class="sync" data-sync="incoming"><Icon name="incoming" /></span>{/if}
+        {#if shownSync?.outgoing}<span class="sync" data-sync="outgoing"><Icon name="outgoing" /></span>{/if}
       </button>
       {#if repoNow}
         <MergeRebaseWidget

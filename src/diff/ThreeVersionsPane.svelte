@@ -386,14 +386,22 @@
       this.drawStripes();
     }
 
-    // A mark only where the pane shows the change's background (`changedIn`).
+    // A mark only where the pane shows the change (`changedIn`), one line tall where its range is
+    // empty; none on the centre pane (`ThreesideDiffChangeBase`: `withHideStripeMarkers(side == BASE)`).
     private drawStripes() {
       const changes = this.changes();
       for (const { pane, lane } of this.lanes) {
+        const lines = this.panes.view(pane).state.doc.lines;
         lane.draw(
-          changes
-            .filter((change) => changedIn(change, pane))
-            .map((change) => ({ start: change.ranges[pane][0], end: change.ranges[pane][1], kind: change.kind })),
+          pane === "base"
+            ? []
+            : changes
+                .filter((change) => changedIn(change, pane))
+                .map((change) => {
+                  const [from, to] = change.ranges[pane];
+                  const start = from === to ? Math.min(from, lines - 1) : from;
+                  return { start, end: from === to ? start + 1 : to, kind: change.kind };
+                }),
         );
       }
     }

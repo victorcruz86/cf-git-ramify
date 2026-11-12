@@ -381,7 +381,8 @@ test("the_three_versions_wrap_together", async () => {
 });
 
 // The change stripe of each pane: a mark only where that pane has the change's background
-// (`changedIn`), on the left edge of HEAD and on the right edge of the others.
+// (`changedIn`), on the left edge of HEAD and on the right edge of the others. The centre pane has
+// none (`ThreesideDiffChangeBase.createHighlighter`: `withHideStripeMarkers(side == BASE)`).
 test("each_pane_marks_the_changes_it_shows_on_its_scrollbar_edge", async () => {
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
     configurable: true,
@@ -403,7 +404,7 @@ test("each_pane_marks_the_changes_it_shows_on_its_scrollbar_edge", async () => {
     expect(lane("base")?.dataset.edge).toBe("right");
     expect(lane("right")?.dataset.edge).toBe("right");
     expect(marks("left")).toEqual(["1:modified"]);
-    expect(marks("base")).toEqual(["1:modified", "3:modified"]);
+    expect(marks("base")).toEqual([]);
     expect(marks("right")).toEqual(["3:modified"]);
   } finally {
     delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;

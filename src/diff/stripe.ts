@@ -30,9 +30,11 @@ export function stripeMarks(blocks: StripeBlock[], lineCount: number, laneHeight
   if (lineCount <= 0 || laneHeight <= 0) return [];
   const least = Math.min(1, MIN_MARK_HEIGHT / laneHeight);
   return blocks
-    .filter((block) => block.end > block.start)
+    .filter((block) => block.end > block.start && block.start < lineCount)
     .map((block) => {
-      const height = Math.max(least, (block.end - block.start) / lineCount);
+      // Between a keystroke and the new hunks, a block can reach past the last line.
+      const end = Math.min(block.end, lineCount);
+      const height = Math.max(least, (end - block.start) / lineCount);
       const top = Math.min(block.start / lineCount, 1 - height);
       return { top: Math.max(0, top), height, kind: block.kind, line: block.start };
     });
@@ -45,9 +47,10 @@ export function lineAtLane(y: number, laneHeight: number, lineCount: number): nu
   return Math.min(lineCount - 1, Math.max(0, line));
 }
 
-// The blocks one editor marks. Side by side, a side marks only the lines it has: an insertion has
-// no mark on the old side, as it has no background there. The unified view's single document
-// marks every change at its place, one line tall when its lines are only in the other version.
+// The blocks one editor marks. `DiffDrawUtil.LineHighlighterBuilder.done`: an empty range has no
+// background but still gets its stripe highlighter, so a side with no lines for a change marks it
+// at its place, one line tall. The unified view does the same for lines only in the other version
+// (plan decision 7: not as tall as those lines).
 export function stripeBlocks(hunks: Hunk[], side: Side, unified: boolean, lineCount: number): StripeBlock[] {
   const blocks: StripeBlock[] = [];
   for (const hunk of hunks) {
@@ -55,7 +58,7 @@ export function stripeBlocks(hunks: Hunk[], side: Side, unified: boolean, lineCo
     const lines = side === "old" ? hunk.oldLines : hunk.newLines;
     const kind = changeType(hunk);
     if (lines > 0) blocks.push({ start, end: start + lines, kind });
-    else if (unified && lineCount > 0) {
+    else if (lineCount > 0) {
       const at = Math.min(start, lineCount - 1);
       blocks.push({ start: at, end: at + 1, kind });
     }

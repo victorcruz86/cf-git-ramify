@@ -895,9 +895,12 @@ export class DiffEditors {
   });
 
   // `DiffDrawUtil`: a block with no background (`Do not highlight`) has no stripe mark either.
+  // A hunk of another changelist has no background (241's excluded change) and so no mark.
   private drawStripes() {
     for (const { lane, view, side } of this.lanes) {
-      const hunks = this.options.highlight === "none" ? [] : this.data.hunks;
+      const model = view.state.field(modelField);
+      const foreign = (hunk: Hunk) => model.margin && hunk.id !== "" && !isSelectable(model, hunk);
+      const hunks = this.options.highlight === "none" ? [] : this.data.hunks.filter((hunk) => !foreign(hunk));
       lane.draw(stripeBlocks(hunks, side, this.config.unified, view.state.doc.lines));
     }
   }
@@ -1246,12 +1249,16 @@ export function connectScroll(
   const cleanups = views.map((source) => {
     const claim = () => (driver = source);
     const scroll = () => onscroll(source, driver === source);
+    // The editor's host, which also holds its change stripe: a click there drives the others too.
+    const host = source.dom.parentElement ?? source.dom;
     source.scrollDOM.addEventListener("scroll", scroll, { passive: true });
-    source.dom.addEventListener("pointerenter", claim);
+    host.addEventListener("pointerenter", claim);
+    host.addEventListener("mousedown", claim);
     source.dom.addEventListener("focusin", claim);
     return () => {
       source.scrollDOM.removeEventListener("scroll", scroll);
-      source.dom.removeEventListener("pointerenter", claim);
+      host.removeEventListener("pointerenter", claim);
+      host.removeEventListener("mousedown", claim);
       source.dom.removeEventListener("focusin", claim);
     };
   });

@@ -61,15 +61,19 @@ const hunk = (oldStart: number, oldLines: number, newStart: number, newLines: nu
   newLines,
 });
 
-test("each_side_marks_only_the_lines_it_has", () => {
+// `DiffDrawUtil.LineHighlighterBuilder.done`: an empty range has no background but still gets its
+// stripe highlighter, so the side with no lines marks the change at its place, one line tall.
+test("each_side_marks_every_change_one_line_tall_where_it_has_none", () => {
   const hunks = [hunk(2, 3, 2, 3), hunk(10, 0, 10, 2), hunk(20, 4, 22, 0)];
   expect(stripeBlocks(hunks, "old", false, 30)).toEqual([
     { start: 2, end: 5, kind: "modified" },
+    { start: 10, end: 11, kind: "inserted" },
     { start: 20, end: 24, kind: "deleted" },
   ]);
   expect(stripeBlocks(hunks, "new", false, 30)).toEqual([
     { start: 2, end: 5, kind: "modified" },
     { start: 10, end: 12, kind: "inserted" },
+    { start: 22, end: 23, kind: "deleted" },
   ]);
 });
 
@@ -86,4 +90,10 @@ test("a_deletion_at_the_end_of_the_unified_document_stays_on_its_last_line", () 
     { start: 4, end: 5, kind: "deleted" },
   ]);
   expect(stripeBlocks([hunk(0, 2, 0, 0)], "new", true, 0)).toEqual([]);
+});
+
+test("a_block_past_the_last_line_does_not_spill_out_of_the_lane", () => {
+  const [mark] = stripeMarks([{ start: 5, end: 40, kind: "modified" }], 10, 300);
+  expect(mark.top).toBeCloseTo(0.5);
+  expect(mark.top + mark.height).toBeLessThanOrEqual(1);
 });
