@@ -860,6 +860,51 @@ test("diff_preview_below_or_on_the_right", async () => {
   );
 });
 
+async function diffPreviewDivider() {
+  await panel();
+  await selectRow(0);
+  await within(changes()).findByRole("treeitem", { name: "a.txt" });
+  await layoutItem("Show Diff Preview");
+  const preview = await screen.findByRole("region", { name: "Diff Preview" });
+  const divider = preview.previousElementSibling as HTMLElement;
+  vi.spyOn(divider.parentElement!, "getBoundingClientRect").mockReturnValue(
+    DOMRect.fromRect({ x: 0, y: 0, width: 800, height: 1000 }),
+  );
+  return { preview, divider };
+}
+
+function savedDiffSplit() {
+  const saved = calls("log_options_set").at(-1)?.[1] as {
+    options: Record<string, { splits: { diff: number } }>;
+  };
+  return Object.values(saved.options)[0].splits.diff;
+}
+
+test("dragging_the_diff_preview_divider_resizes_the_preview_and_remembers_it", async () => {
+  const { preview, divider } = await diffPreviewDivider();
+
+  expect(divider.getAttribute("role")).toBe("separator");
+  expect(divider.getAttribute("aria-orientation")).toBe("horizontal");
+  await fireEvent.pointerDown(divider, { clientY: 700, pointerId: 1 });
+  await fireEvent.pointerMove(divider, { clientY: 400, pointerId: 1 });
+  await fireEvent.pointerUp(divider, { pointerId: 1 });
+
+  expect(preview.style.flex).toMatch(/^0\.6\b/);
+  expect(savedDiffSplit()).toBeCloseTo(0.4);
+});
+
+test("a_cancelled_drag_of_the_diff_preview_divider_ends_and_is_remembered", async () => {
+  const { preview, divider } = await diffPreviewDivider();
+
+  await fireEvent.pointerDown(divider, { clientY: 700, pointerId: 1 });
+  await fireEvent.pointerMove(divider, { clientY: 500, pointerId: 1 });
+  await fireEvent.pointerCancel(divider, { pointerId: 1 });
+  await fireEvent.pointerMove(divider, { clientY: 200, pointerId: 1 });
+
+  expect(preview.style.flex).toMatch(/^0\.5\b/);
+  expect(savedDiffSplit()).toBeCloseTo(0.5);
+});
+
 test("opening_the_log_moves_focus_to_the_table", async () => {
   await panel();
 

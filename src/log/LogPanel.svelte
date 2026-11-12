@@ -945,13 +945,15 @@
         options: { ...options, splits: { ...options.splits, [key]: value } },
       });
     };
+    // A cancelled pointer or a lost capture ends the drag too, keeping where it got to.
+    const ends = ["pointerup", "pointercancel", "lostpointercapture"] as const;
     const finish = () => {
       divider.removeEventListener("pointermove", move);
-      divider.removeEventListener("pointerup", finish);
+      for (const end of ends) divider.removeEventListener(end, finish);
       saveOptions();
     };
     divider.addEventListener("pointermove", move);
-    divider.addEventListener("pointerup", finish);
+    for (const end of ends) divider.addEventListener(end, finish);
   }
 
   onMount(() => {
@@ -1176,6 +1178,7 @@
               class:columns={options.diffPreviewAt === "right"}
               class:rows-split={options.diffPreviewAt === "bottom"}
               role="separator"
+              aria-orientation={options.diffPreviewAt === "bottom" ? "horizontal" : "vertical"}
               onpointerdown={(event) => drag(event, "diff", options.diffPreviewAt === "bottom")}
             ></div>
             <section class="preview" style:flex={1 - options.splits.diff} aria-label="Diff Preview">
@@ -1365,21 +1368,38 @@
     min-height: 0;
   }
 
+  /* A 1 px line, as IntelliJ's `OnePixelSplitter` paints, inside a 5 px zone that takes the pointer. */
   .divider {
+    position: relative;
+    z-index: 2;
     flex: none;
-    background: var(--divider);
+    touch-action: none;
   }
 
   .divider.columns {
-    width: 1px;
+    width: 5px;
+    margin: 0 -2px;
     cursor: col-resize;
-    touch-action: none;
+    background: linear-gradient(
+      90deg,
+      transparent 2px,
+      var(--divider) 2px,
+      var(--divider) 3px,
+      transparent 3px
+    );
   }
 
   .divider.rows-split {
-    height: 1px;
+    height: 5px;
+    margin: -2px 0;
     cursor: row-resize;
-    touch-action: none;
+    background: linear-gradient(
+      180deg,
+      transparent 2px,
+      var(--divider) 2px,
+      var(--divider) 3px,
+      transparent 3px
+    );
   }
 
   .preview {
