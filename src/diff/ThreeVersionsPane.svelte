@@ -39,6 +39,7 @@
     type MergeSide,
   } from "../merge/model";
   import { mapLine, type IgnorePolicy } from "./blocks";
+  import { StripeLane } from "./stripeLane";
   import type { Band } from "./editor";
   import { languageFor, lineSeparator, separatorExtension } from "./language";
   import { diffTheme } from "./theme";
@@ -336,6 +337,8 @@
     private readonly panes: ThreePanes;
     private readonly saved: Record<EditablePane, Text>;
     private readonly config: VersionConfig;
+    // The change stripe of each pane: left of HEAD, right of the others (`ThreesideTextDiffViewer`).
+    private lanes: { pane: MergePane; lane: StripeLane }[] = [];
 
     constructor(parent: HTMLElement, config: VersionConfig) {
       this.config = config;
@@ -375,7 +378,24 @@
         base: this.panes.view("base").state.doc,
         right: this.panes.view("right").state.doc,
       };
+      this.lanes = (["left", "base", "right"] as const).map((pane) => ({
+        pane,
+        lane: new StripeLane(this.panes.view(pane), pane === "left" ? "left" : "right"),
+      }));
       this.panes.drawDividers();
+      this.drawStripes();
+    }
+
+    // A mark only where the pane shows the change's background (`changedIn`).
+    private drawStripes() {
+      const changes = this.changes();
+      for (const { pane, lane } of this.lanes) {
+        lane.draw(
+          changes
+            .filter((change) => changedIn(change, pane))
+            .map((change) => ({ start: change.ranges[pane][0], end: change.ranges[pane][1], kind: change.kind })),
+        );
+      }
     }
 
     get dom(): HTMLElement {
@@ -401,7 +421,12 @@
       }
       const reloaded = update.transactions.some((transaction) => transaction.annotation(loaded));
       if (update.docChanged && !reloaded) this.config.onedit();
-      if (before !== after || update.docChanged) this.panes?.drawDividers();
+      if (before !== after || update.docChanged) {
+        this.panes?.drawDividers();
+        this.drawStripes();
+      } else if (update.geometryChanged) {
+        this.lanes.find(({ pane }) => this.panes?.view(pane) === update.view)?.lane.redraw();
+      }
     }
 
     private hunks(side: MergeSide): Hunk[] {
@@ -554,6 +579,7 @@
     }
 
     destroy() {
+      this.lanes.forEach(({ lane }) => lane.destroy());
       this.panes.destroy();
     }
   }

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { lineAtLane, MIN_MARK_HEIGHT, stripeMarks } from "./stripe";
+import { lineAtLane, MIN_MARK_HEIGHT, stripeBlocks, stripeMarks } from "./stripe";
 
 test("a_block_takes_its_share_of_the_lane", () => {
   // Lines 25-50 of 100 in a 400-point lane: from 0.25 to 0.5.
@@ -50,4 +50,40 @@ test("a_click_maps_back_to_a_line", () => {
   expect(lineAtLane(400, 400, 100)).toBe(99);
   expect(lineAtLane(-5, 400, 100)).toBe(0);
   expect(lineAtLane(50, 0, 100)).toBe(0);
+});
+
+// Ramify's hunks are 0-based. `changeType`: no old lines is inserted, no new lines is deleted.
+const hunk = (oldStart: number, oldLines: number, newStart: number, newLines: number) => ({
+  id: "",
+  oldStart,
+  oldLines,
+  newStart,
+  newLines,
+});
+
+test("each_side_marks_only_the_lines_it_has", () => {
+  const hunks = [hunk(2, 3, 2, 3), hunk(10, 0, 10, 2), hunk(20, 4, 22, 0)];
+  expect(stripeBlocks(hunks, "old", false, 30)).toEqual([
+    { start: 2, end: 5, kind: "modified" },
+    { start: 20, end: 24, kind: "deleted" },
+  ]);
+  expect(stripeBlocks(hunks, "new", false, 30)).toEqual([
+    { start: 2, end: 5, kind: "modified" },
+    { start: 10, end: 12, kind: "inserted" },
+  ]);
+});
+
+test("the_unified_view_marks_every_change_even_one_with_no_lines_in_its_document", () => {
+  const hunks = [hunk(10, 0, 10, 2), hunk(20, 4, 22, 0)];
+  expect(stripeBlocks(hunks, "new", true, 30)).toEqual([
+    { start: 10, end: 12, kind: "inserted" },
+    { start: 22, end: 23, kind: "deleted" },
+  ]);
+});
+
+test("a_deletion_at_the_end_of_the_unified_document_stays_on_its_last_line", () => {
+  expect(stripeBlocks([hunk(5, 2, 5, 0)], "new", true, 5)).toEqual([
+    { start: 4, end: 5, kind: "deleted" },
+  ]);
+  expect(stripeBlocks([hunk(0, 2, 0, 0)], "new", true, 0)).toEqual([]);
 });

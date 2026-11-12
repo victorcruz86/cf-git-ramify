@@ -527,3 +527,115 @@ test("a_spacer_sent_again_shows_its_exact_height", () => {
 
   expect(spacerHeights(parent, "last")).toEqual(["20.5px", "35px"]);
 });
+
+// The change stripe (`DiffDrawUtil` stripe highlighters). jsdom does no layout: each lane is given
+// a height of 300 here.
+function laneHeights(height: number) {
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList?.contains("rm-stripe") ? height : 0;
+    },
+  });
+  return () => {
+    delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+  };
+}
+
+const lanes = (parent: HTMLElement) =>
+  [...parent.querySelectorAll<HTMLElement>(".rm-stripe")].map((lane) => ({
+    edge: lane.dataset.edge,
+    marks: [...lane.querySelectorAll<HTMLElement>(".rm-stripe-mark")].map((mark) => ({
+      kind: [...mark.classList].find((name) => name.startsWith("rm-stripe-") && name !== "rm-stripe-mark"),
+      line: Number(mark.dataset.line),
+    })),
+  }));
+
+const TEN = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
+
+test("side_by_side_has_a_lane_on_each_outer_edge_with_one_mark_per_block_side", () => {
+  const restore = laneHeights(300);
+  try {
+    const newText = "1\n2\nTHREE\n4\n5\n6\n7\nnew\n8\n9\n10\n";
+    const { parent } = open(data(TEN, newText, [hunk(2, 1, 2, 1), hunk(7, 0, 7, 1)]));
+    expect(lanes(parent)).toEqual([
+      { edge: "left", marks: [{ kind: "rm-stripe-modified", line: 2 }] },
+      { edge: "right", marks: [{ kind: "rm-stripe-modified", line: 2 }, { kind: "rm-stripe-inserted", line: 7 }] },
+    ]);
+    // The left lane comes before the left editor, the right one after the right editor.
+    const [left, right] = parent.querySelectorAll<HTMLElement>(".rm-editor");
+    expect(left.firstElementChild?.classList.contains("rm-stripe")).toBe(true);
+    expect(right.lastElementChild?.classList.contains("rm-stripe")).toBe(true);
+  } finally {
+    restore();
+  }
+});
+
+test("an_insertion_has_no_mark_on_the_old_side", () => {
+  const restore = laneHeights(300);
+  try {
+    const { parent } = open(data(TEN, `${TEN}11\n`, [hunk(10, 0, 10, 1)]));
+    expect(lanes(parent)[0].marks).toEqual([]);
+    expect(lanes(parent)[1].marks).toEqual([{ kind: "rm-stripe-inserted", line: 10 }]);
+  } finally {
+    restore();
+  }
+});
+
+test("the_unified_view_has_one_lane_on_the_right", () => {
+  const restore = laneHeights(300);
+  try {
+    const newText = "1\n2\n4\n5\n6\n7\n8\n9\n10\n";
+    const { parent } = open(data(TEN, newText, [hunk(2, 1, 2, 0)]), { unified: true });
+    expect(lanes(parent)).toEqual([{ edge: "right", marks: [{ kind: "rm-stripe-deleted", line: 2 }] }]);
+  } finally {
+    restore();
+  }
+});
+
+test("clicking_the_lane_scrolls_that_editor_to_the_line_at_that_height", () => {
+  const restore = laneHeights(300);
+  try {
+    const { parent } = open(data(TEN, TEN.replace("8\n", "EIGHT\n"), [hunk(7, 1, 7, 1)]));
+    const right = parent.querySelectorAll<HTMLElement>(".rm-stripe")[1];
+    right.getBoundingClientRect = () => ({ top: 0, height: 300, bottom: 300, left: 0, right: 8, width: 8 }) as DOMRect;
+    const view = EditorView.findFromDOM(parent.querySelectorAll<HTMLElement>(".cm-editor")[1]) as EditorView;
+    const target = vi.spyOn(view, "lineBlockAt");
+
+    right.dispatchEvent(new MouseEvent("mousedown", { button: 0, clientY: 215, bubbles: true }));
+
+    // 215 of 300 is line 7 of 11 (0-based), the eighth line.
+    expect(target).toHaveBeenCalledWith(view.state.doc.line(8).from);
+  } finally {
+    restore();
+  }
+});
+
+test("changing_the_data_or_the_highlight_redraws_the_marks", () => {
+  const restore = laneHeights(300);
+  try {
+    const { parent } = open(data(TEN, TEN.replace("3\n", "THREE\n"), [hunk(2, 1, 2, 1)]));
+    editors!.setData(data(TEN, TEN.replace("5\n", "FIVE\n"), [hunk(4, 1, 4, 1)]));
+    expect(lanes(parent)[1].marks).toEqual([{ kind: "rm-stripe-modified", line: 4 }]);
+
+    editors!.setOptions({ ...OPTIONS, highlight: "none" });
+    expect(lanes(parent).map((lane) => lane.marks)).toEqual([[], []]);
+  } finally {
+    restore();
+  }
+});
+
+test("an_embedded_diff_has_no_lanes", () => {
+  const parent = document.body.appendChild(document.createElement("div"));
+  editors = new DiffEditors(parent, {
+    path: "a.txt",
+    data: data(TEN, TEN.replace("3\n", "THREE\n"), [hunk(2, 1, 2, 1)]),
+    draft: null,
+    editable: false,
+    unified: false,
+    embedded: true,
+    options: OPTIONS,
+    handlers: { ontoggle: vi.fn(), onedit: vi.fn(), onfocus: vi.fn() },
+  });
+  expect(parent.querySelectorAll(".rm-stripe")).toHaveLength(0);
+});

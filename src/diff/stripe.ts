@@ -1,6 +1,9 @@
 // The change stripe of a diff editor: `DiffDrawUtil.LineHighlighterBuilder` gives every changed
 // block with a background a highlighter on `STRIPE_LAYER`, coloured by
 // `DiffStripeMarkerTextAttributes`. Ramify draws it in its own lane (plan decisions 1-3).
+import type { Hunk } from "../lib/api";
+import { changeType } from "./blocks";
+import type { Side } from "./gutter";
 
 export type StripeKind = "inserted" | "deleted" | "modified" | "conflict";
 
@@ -40,4 +43,22 @@ export function lineAtLane(y: number, laneHeight: number, lineCount: number): nu
   if (laneHeight <= 0 || lineCount <= 0) return 0;
   const line = Math.floor((y / laneHeight) * lineCount);
   return Math.min(lineCount - 1, Math.max(0, line));
+}
+
+// The blocks one editor marks. Side by side, a side marks only the lines it has: an insertion has
+// no mark on the old side, as it has no background there. The unified view's single document
+// marks every change at its place, one line tall when its lines are only in the other version.
+export function stripeBlocks(hunks: Hunk[], side: Side, unified: boolean, lineCount: number): StripeBlock[] {
+  const blocks: StripeBlock[] = [];
+  for (const hunk of hunks) {
+    const start = side === "old" ? hunk.oldStart : hunk.newStart;
+    const lines = side === "old" ? hunk.oldLines : hunk.newLines;
+    const kind = changeType(hunk);
+    if (lines > 0) blocks.push({ start, end: start + lines, kind });
+    else if (unified && lineCount > 0) {
+      const at = Math.min(start, lineCount - 1);
+      blocks.push({ start: at, end: at + 1, kind });
+    }
+  }
+  return blocks;
 }

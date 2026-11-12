@@ -379,3 +379,33 @@ test("the_three_versions_wrap_together", async () => {
 
   expect(wraps).toEqual([true]);
 });
+
+// The change stripe of each pane: a mark only where that pane has the change's background
+// (`changedIn`), on the left edge of HEAD and on the right edge of the others.
+test("each_pane_marks_the_changes_it_shows_on_its_scrollbar_edge", async () => {
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList?.contains("rm-stripe") ? 300 : 0;
+    },
+  });
+  try {
+    mockCommands();
+    show();
+    await opened();
+
+    const lane = (pane: string) => document.querySelector<HTMLElement>(`[data-pane="${pane}"] .rm-stripe`);
+    const marks = (pane: string) =>
+      [...(lane(pane)?.querySelectorAll<HTMLElement>(".rm-stripe-mark") ?? [])].map(
+        (mark) => `${mark.dataset.line}:${mark.className.replace("rm-stripe-mark rm-stripe-", "")}`,
+      );
+    expect(lane("left")?.dataset.edge).toBe("left");
+    expect(lane("base")?.dataset.edge).toBe("right");
+    expect(lane("right")?.dataset.edge).toBe("right");
+    expect(marks("left")).toEqual(["1:modified"]);
+    expect(marks("base")).toEqual(["1:modified", "3:modified"]);
+    expect(marks("right")).toEqual(["3:modified"]);
+  } finally {
+    delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+  }
+});

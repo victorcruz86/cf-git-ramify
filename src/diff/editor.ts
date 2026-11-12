@@ -40,6 +40,8 @@ import checkOn from "./icons/gutterCheckBoxSelected.svg?raw";
 import { languageFor, lineSeparator, separatorExtension } from "./language";
 import { alignSpacers, boundariesOf, withoutSpacers } from "./spacers";
 import { diffHighlight, diffTheme, LINE_HEIGHT, numberColumn } from "./theme";
+import { stripeBlocks } from "./stripe";
+import { StripeLane } from "./stripeLane";
 
 export type HighlightMode = "words" | "lines" | "none";
 
@@ -767,6 +769,8 @@ export class DiffEditors {
   private readonly cleanups: (() => void)[] = [];
   private frame = 0;
   private numberDigits = 0;
+  // The change stripe of each editor and the side its document is; none when embedded.
+  private lanes: { lane: StripeLane; view: EditorView; side: Side }[] = [];
 
   constructor(
     parent: HTMLElement,
@@ -874,14 +878,29 @@ export class DiffEditors {
         }),
       );
     }
+    if (!config.embedded) {
+      if (this.oldView) this.lanes.push({ lane: new StripeLane(this.oldView, "left"), view: this.oldView, side: "old" });
+      this.lanes.push({ lane: new StripeLane(this.newView, "right"), view: this.newView, side: this.mainSide });
+    }
     this.drawDivider();
+    this.drawStripes();
     this.equalNumbers();
     this.scheduleSpacers();
   }
 
   private readonly geometry = EditorView.updateListener.of((update) => {
-    if (update.geometryChanged) this.drawDivider();
+    if (!update.geometryChanged) return;
+    this.drawDivider();
+    for (const { lane, view } of this.lanes ?? []) if (view === update.view) lane.redraw();
   });
+
+  // `DiffDrawUtil`: a block with no background (`Do not highlight`) has no stripe mark either.
+  private drawStripes() {
+    for (const { lane, view, side } of this.lanes) {
+      const hunks = this.options.highlight === "none" ? [] : this.data.hunks;
+      lane.draw(stripeBlocks(hunks, side, this.config.unified, view.state.doc.lines));
+    }
+  }
 
   // Heights change when lines wrap anew or come into view and are measured. The spacers' own
   // transactions change heights too, but measuring text only, they would change nothing.
@@ -1068,6 +1087,7 @@ export class DiffEditors {
     this.push(() => ({ hunks, stale: false, margin: clean, folds: [] }));
     this.equalNumbers();
     this.drawDivider();
+    this.drawStripes();
   }
 
   setOptions(options: EditorOptions) {
@@ -1079,6 +1099,7 @@ export class DiffEditors {
     this.equalNumbers();
     this.refreshFolds();
     this.updateDivider();
+    this.drawStripes();
   }
 
   // The separator between columns exists only when unaligned.
@@ -1124,6 +1145,7 @@ export class DiffEditors {
     this.equalNumbers();
     this.scheduleSpacers();
     this.drawDivider();
+    this.drawStripes();
   }
 
   // The lines chosen in the editor, or the cursor's line.
@@ -1193,6 +1215,7 @@ export class DiffEditors {
   destroy() {
     if (this.frame) cancelAnimationFrame(this.frame);
     this.cleanups.forEach((cleanup) => cleanup());
+    this.lanes.forEach(({ lane }) => lane.destroy());
     this.oldView?.destroy();
     this.newView.destroy();
     this.dom.remove();
