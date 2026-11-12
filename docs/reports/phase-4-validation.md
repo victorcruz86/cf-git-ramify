@@ -1633,6 +1633,89 @@ Run on 2026-11-11, under `nice -n 15`, with `CARGO_BUILD_JOBS=6` and `--test-thr
 
 Resizable log columns are done in tests and not validated by hand: the part ends when section 3 is completed on a built app.
 
+## Part: diff change stripe and branch sync icons
+
+Plan: `docs/superpowers/plans/2026-11-12-diff-stripe-and-branch-sync.md`. Branch `diff-stripe-and-branch-sync`.
+
+### 1. What was built
+
+**Change stripe**, as 241's `DiffDrawUtil` stripe highlighters:
+
+- Each diff editor has a thin column at its scrollbar edge, with one mark per changed block, in the block's colour: inserted, deleted or modified.
+- The left editor's column is on its left edge, and the others' on their right edge, as 241 puts the left editor's scrollbar on the left.
+- A side with no lines for a change still marks it at its place, one line tall, as 241 adds the stripe highlighter of an empty range. The unified view does the same for lines that are only in the other version.
+- Hunks of another changelist get no mark: they have no background, like 241's excluded changes.
+- With `Do not highlight` there are no marks, as 241 draws none without a background.
+- A click on the column scrolls that editor to the line at that height. In side-by-side, the other editor follows through the existing scroll sync.
+- Where: the two-side and unified views (the diff window and every diff preview) and the three-version views (HEAD, Staged, Local; and the three-way view of a merge's history preview). There a side pane marks only the changes it shows, and the centre pane has no marks, as 241's `withHideStripeMarkers(side == BASE)`.
+- A click on any editor's column makes that editor lead the synchronised scrolling.
+
+**Branch widget**, as 241's `GitToolbarWidgetAction`:
+
+- After the current branch's name in the title bar: the incoming icon when it has commits to pull, and the outgoing icon when it has commits to push.
+- None on a detached HEAD. A failed read shows nothing.
+- They are read from the existing `branch_incoming_outgoing` on open and on `branch-sync-changed`. On `repo-changed`, which arrives for any file under the work tree, they are read again only when the refs changed (`branch_refs_fingerprint`, which includes HEAD), as the branches popup does. The `Check incoming commits on remotes` setting is honoured there.
+- The status is kept with its branch, so after a checkout the old branch's icons never show next to the new name.
+
+No Rust was changed.
+
+### 2. Ramify's calls, with their cost
+
+1. **The stripe is its own 8-point column beside the editor,** not part of its scrollbar. Ramify uses the system scrollbar, which macOS hides when idle, and a lane on top of it would block dragging it. Cost: each editor is 8 points narrower.
+2. **A mark is at least 3 points tall.** The minimum is Ramify's.
+3. **Marks follow document lines, not visual heights.** Cost: with unchanged lines folded or long lines wrapped, a mark sits where the lines are in the file, not where they show.
+4. **A click puts the line at the top of the editor;** 241 centres it.
+5. **Not yet:** the merge window, the texts diff (`Compare with Clipboard`) and the two-way view of a merge's history preview. Embedded diffs, which have no scrollbar of their own, have no stripe.
+6. **The widget's icons refresh** on open, on `branch-sync-changed`, and on `repo-changed` only when the refs changed.
+7. **In the unified view, a change whose lines are only in the other version is one line tall,** because Ramify's unified document does not contain those lines. 241's does. Cost: a long deletion looks like a one-line mark in the unified view.
+
+### 3. Checklist to verify by hand
+
+Use a throwaway repository, not your real work.
+
+- [ ] Open the diff of a long file with a change near the end, side by side: a green, grey or blue mark shows at the right edge of the right editor, and the matching one at the left edge of the left editor.
+- [ ] Click a mark: that editor scrolls to the change, and the other follows.
+- [ ] Switch to the unified view: one column at the right, a mark for every change, a deletion included.
+- [ ] Choose `Do not highlight`: the marks go away. Choose `Highlight words` again: they come back.
+- [ ] Side by side, a file with an inserted line: the left editor has a short mark at the insertion point, as in IntelliJ.
+- [ ] Open a file with staged and unstaged changes in the three-version view: HEAD's column is on its left, the Staged pane has no marks, and HEAD and Local mark only their own changes.
+- [ ] Fetch a branch whose upstream has new commits: the incoming arrow shows next to the branch name in the title bar. Make a local commit: the outgoing arrow shows. Push: it goes away.
+- [ ] Check out a commit (detached HEAD): no arrows.
+
+### 4. What could not be checked
+
+- **No run of the built app.** jsdom has no layout: the lane height was stubbed and the click geometry faked. Not seen: the real look of the column beside the editor, its colours on screen, and the flex layout with soft wrap and with aligned spacers in a real window.
+- **Not compared with IntelliJ running:** the exact width and minimum height of its stripe marks, and its icons' exact colours.
+
+### 5. Verification
+
+Run on 2026-11-12, under `nice -n 15`, with `CARGO_BUILD_JOBS=6` and `--test-threads=6`. The frontend suite and `tsc` ran again on the final code (`15f09a9`), after the final review's fixes; `clippy` and `cargo test` ran on `8205c0c`. The branch changes no Rust.
+
+| Command | Result |
+|---|---|
+| `pnpm exec tsc --noEmit -p .` | no errors (exit 0), on `15f09a9` |
+| `pnpm vitest run --maxWorkers=2` | 138 files, 2,720 tests passed, on `15f09a9` |
+| `cargo clippy --all-targets -- -D warnings` | no warnings (exit 0) |
+| `cargo test -- --test-threads=6` | library: 2,297 passed, 0 failed, 7 ignored (on purpose), 329.05 s; `askpass` 11, `crlf_fix` 1, `editor` 41 and `git_path` 2 passed; `phase_3_trace` 0 passed and 1 ignored (on purpose); `main.rs` and doc tests 0 tests |
+| `python3 -I -m unittest discover -s scripts` | 65 tests, OK |
+
+**Final review.** One independent reviewer read the branch against the plan and 241's source. It found 4 Important and 5 Minor issues.
+
+- **Fixed, each with a test that failed first:**
+  - a click on a column did not lead the synchronised scrolling;
+  - the centre pane had marks, where 241 hides them;
+  - a side with no lines for a change had no mark, where 241 adds one (the user's own IntelliJ screenshot shows it);
+  - every `repo-changed` ran the incoming and outgoing check;
+  - after a checkout, the old branch's icons showed next to the new name;
+  - hunks of another changelist had marks;
+  - a mark could spill out of its column while typing.
+- **Recorded, not fixed:** the one-line marks of the unified view (decision 7) and the history preview's three-way view having the stripe (scope, now in decision 5 and section 1).
+- **Deferred:** the column's height is read on every geometry update.
+
+### Conclusion
+
+The part is done in tests and not validated by hand: it ends when section 3 is completed on a built app.
+
 ## Phase 4 summary
 
 Date: 2026-11-10. Phase 4 was delivered in six parts, from 2026-11-03 to 2026-11-10, on the branch `phase-4`. Each part had its plan, its tasks reviewed one by one, its rows in `docs/parity-matrix.md`, its entries in `NOTICE` and its section above. The reference is IntelliJ IDEA CE 2024.1 (`IC-241.14494.240`); `phase-4-reference-change.md` says what changed from 2023.2.3 and what each part closed of it.

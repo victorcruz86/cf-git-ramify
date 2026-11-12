@@ -28,7 +28,7 @@ No Rust changes.
 
 ## What 241 does
 
-1. **The stripe.** In a text diff, each block of changed lines has a mark on its editor's error stripe, at the height that its lines take in the whole document, in the block's colour: inserted, deleted, modified, or conflict in a three-side diff. A block with no lines on one side, such as an insertion seen from the old side, gets no mark there; it has no background. A click on the stripe scrolls the editor to that height.
+1. **The stripe.** In a text diff, each block of changed lines has a mark on its editor's error stripe, at the height that its lines take in the whole document, in the block's colour: inserted, deleted, modified, or conflict in a three-side diff. A side with no lines for a change, such as the old side of an insertion, still gets a mark at its place: the empty range has no background, but its stripe highlighter is added anyway (corrected after the final review). The centre pane of a three-side diff has no marks (`ThreesideDiffChangeBase`: `withHideStripeMarkers(side == BASE)`). A click on the stripe scrolls the editor to that height.
 2. **Where.** In side-by-side, the left editor's stripe is on its left edge and the right editor's on its right edge. In the unified view, the single editor has it on its right edge.
 3. **The widget.** After the current branch's name in the title bar's Git widget: the incoming icon if the branch has commits on its upstream that it lacks, the outgoing icon if it has commits its upstream lacks. Neither shows on a detached HEAD or with nothing to report.
 
