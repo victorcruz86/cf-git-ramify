@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { emitToOwner, listenOwn } from "./windows";
 
@@ -2749,3 +2749,18 @@ export const onEditorDismissed = (handler: (id: number) => void) =>
   listenOwn<number>("editor-dismissed", (event) => handler(event.payload));
 export const onConsoleLine = (handler: (line: ConsoleLine) => void) =>
   listenOwn<ConsoleLine>("console-line", (event) => handler(event.payload));
+
+// The Terminal tab (`terminal.rs`). The shell's output comes through `output` as raw bytes.
+export const terminalOpen = (cols: number, rows: number, output: Channel<ArrayBuffer | number[]>) =>
+  invoke<number>("terminal_open", { cols, rows, output });
+export const terminalWrite = (id: number, data: string) =>
+  invoke<void>("terminal_write", { id, data });
+export const terminalResize = (id: number, cols: number, rows: number) =>
+  invoke<void>("terminal_resize", { id, cols, rows });
+// A program other than the shell runs in the foreground: closing would end it.
+export const terminalBusy = (id: number) => invoke<boolean>("terminal_busy", { id });
+export const terminalClose = (id: number) => invoke<void>("terminal_close", { id });
+// Ends every session of this project window: a page that starts again has lost their views.
+export const terminalReset = () => invoke<void>("terminal_reset");
+export const onTerminalExited = (handler: (id: number) => void) =>
+  listenOwn<number>("terminal-exited", (event) => handler(event.payload));

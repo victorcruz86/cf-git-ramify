@@ -5,7 +5,7 @@ export type { ToolWindowId };
 
 // What a tab of the `Git` and `Commit` tool windows shows (`ChangesViewContentManager`). Shelf and Stash
 // exist only while they have entries.
-export type ContentId = "local-changes" | "shelf" | "stash" | "log" | "console";
+export type ContentId = "local-changes" | "shelf" | "stash" | "log" | "console" | "terminal";
 
 // Whoever asks to show something also says "commit" for wherever Local Changes is at the moment.
 export type TabRequest = ContentId | "commit";
@@ -17,6 +17,9 @@ export const CONTENT_WEIGHT: Record<ContentId, number> = {
   stash: 41,
   log: 50,
   console: 60,
+  // Not a content of IntelliJ's Git window: its Terminal is a tool window of its own. Ramify keeps
+  // it as the last tab of the Git window.
+  terminal: 70,
 };
 
 // `VcsBundle` `Local Changes` and the tab names of `ChangesViewContentManager.kt:315-321`.
@@ -26,6 +29,7 @@ export const CONTENT_TITLE: Record<ContentId, string> = {
   stash: "Stash",
   log: "Log",
   console: "Console",
+  terminal: "Terminal",
 };
 
 // `CommitTabTitleUpdater.updateTab` in the New UI: in the `Commit` window, Local Changes is `Commit`

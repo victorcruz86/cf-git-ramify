@@ -19,10 +19,10 @@ import {
   type SelectedContents,
 } from "./tabs";
 
-const ALL: ContentId[] = ["console", "log", "stash", "local-changes", "shelf"];
+const ALL: ContentId[] = ["console", "terminal", "log", "stash", "local-changes", "shelf"];
 
 test("tabs are ordered by IntelliJ's weights", () => {
-  expect(orderContents(ALL)).toEqual(["local-changes", "shelf", "stash", "log", "console"]);
+  expect(orderContents(ALL)).toEqual(["local-changes", "shelf", "stash", "log", "console", "terminal"]);
 });
 
 test("a Stash tab goes after Shelf and before Log", () => {
@@ -50,7 +50,7 @@ test("in non-modal mode Local Changes, Shelf and Stash go to the Commit window",
   expect(toolWindows("non-modal", ALL)).toEqual({
     ...OTHERS,
     commit: ["local-changes", "shelf", "stash"],
-    git: ["log", "console"],
+    git: ["log", "console", "terminal"],
   });
 });
 

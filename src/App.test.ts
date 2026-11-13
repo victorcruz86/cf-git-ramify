@@ -501,7 +501,7 @@ test("cmd 9 shows the Git window with Local Changes, Log and Console in that ord
   await fireEvent.keyDown(window, { key: "9", metaKey: true });
 
   const tabs = within(screen.getByRole("tablist", { name: "Git" })).getAllByRole("tab");
-  expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Local Changes", "Log", "Console"]);
+  expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Local Changes", "Log", "Console", "Terminal"]);
   expect(tabState("Local Changes")).toBe("true");
   // Pressed again with the window active, it does nothing.
   await openLogTab();
@@ -521,7 +521,7 @@ test("switching the setting moves Local Changes between the Commit and Git windo
   expect(screen.queryByRole("tab", { name: "Local Changes" })).toBeNull();
   await fireEvent.click(screen.getByRole("tab", { name: "Git" }));
   const tabs = within(screen.getByRole("tablist", { name: "Git" })).getAllByRole("tab");
-  expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Log", "Console"]);
+  expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Log", "Console", "Terminal"]);
 
   deliver("settings-changed", SETTINGS);
 
@@ -3048,6 +3048,7 @@ test("the_stash_tab_appears_with_the_first_stash_and_leaves_with_the_last", asyn
     "Stash",
     "Log",
     "Console",
+    "Terminal",
   ]);
   expect(tab.getAttribute("aria-selected")).toBe("false");
   await fireEvent.click(tab);
@@ -3097,6 +3098,7 @@ test("the_window_label_follows_the_window", async () => {
   expect(within(git).getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual([
     "Log",
     "Console",
+    "Terminal",
   ]);
   expect(screen.queryByRole("tablist", { name: "Commit" })).toBeNull();
 });
@@ -3459,6 +3461,7 @@ test("show_shelf_toggles", async () => {
     "Shelf",
     "Log",
     "Console",
+    "Terminal",
   ]);
   expect(tab.getAttribute("aria-selected")).toBe("false");
 

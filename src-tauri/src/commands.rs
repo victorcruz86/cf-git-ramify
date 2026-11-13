@@ -943,6 +943,8 @@ pub struct AppState {
     pub quitting: AtomicBool,
     // The frame saves of the project windows that wait for their window to stay still.
     pub frame_saves: Mutex<window_frames::Pending>,
+    // The Terminal tab's shells, by session, with the project window each belongs to.
+    pub terminals: crate::terminal::Terminals,
 }
 
 // Reopening happens once per process, at the first `main` page's start.
@@ -981,6 +983,7 @@ impl Default for AppState {
             closed_owners: Mutex::default(),
             quitting: AtomicBool::new(false),
             frame_saves: Mutex::default(),
+            terminals: crate::terminal::Terminals::default(),
         }
     }
 }
@@ -2170,6 +2173,7 @@ fn forget_window(state: &AppState, owner: &str) {
         block_history::release(&state.tasks, &session);
     }
     state.console.forget(owner);
+    state.terminals.close_owner(owner);
     SHELF_FOLDERS.close(owner);
     state.initial_targets.lock().unwrap().remove(owner);
     let first = {

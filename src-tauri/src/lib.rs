@@ -49,6 +49,7 @@ pub mod status;
 pub mod storage;
 pub mod submodules;
 pub mod task;
+pub mod terminal;
 #[cfg(test)]
 mod test_support;
 pub mod todo;
@@ -409,6 +410,12 @@ pub fn run() {
             hosting::commands::github_pr_checkout,
             hosting::commands::github_pr_show_in_log,
             hosting::commands::github_pr_checked_out,
+            terminal::terminal_open,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_busy,
+            terminal::terminal_close,
+            terminal::terminal_reset,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::Focused(true) = event {
@@ -454,6 +461,7 @@ pub fn run() {
                 commands::open_paths(app, paths);
             }
             RunEvent::Exit => {
+                app.state::<commands::AppState>().terminals.close_all();
                 commands::stop_askpass(app);
                 commands::stop_editor(app);
             }

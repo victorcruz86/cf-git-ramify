@@ -114,6 +114,7 @@
   import LocalChangesView from "./commit/LocalChangesView.svelte";
   import { showOnDoubleClickItems } from "./commit/showOnDoubleClick";
   import ConsoleView from "./console/ConsoleView.svelte";
+  import TerminalView from "./terminal/TerminalView.svelte";
   import { ROW_HEIGHT } from "./log/draw";
   import LogPanel from "./log/LogPanel.svelte";
   import BranchDialogs from "./branches/BranchDialogs.svelte";
@@ -250,6 +251,7 @@
     ...(stashes.length > 0 || stashError !== null ? (["stash"] as const) : []),
     "log",
     "console",
+    "terminal",
   ]);
   const windows = $derived(toolWindows(mode, available, $registeredToolWindows));
   const stripe = $derived(stripeWindows(windows));
@@ -1463,6 +1465,12 @@
 
           <div class="pane" class:hidden={tab !== "console"}>
             <ConsoleView active={tab === "console"} />
+          </div>
+
+          <div class="pane" class:hidden={tab !== "terminal"}>
+            {#key info?.path}
+              <TerminalView active={tab === "terminal"} />
+            {/key}
           </div>
         </div>
       </div>
