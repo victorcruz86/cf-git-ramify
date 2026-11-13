@@ -1,6 +1,8 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { protectedBranches } from "../branches/state";
+  import { copyBranchName } from "../branches/copyName";
+  import { ramifyOptions } from "../lib/ramifyOptions";
   import {
     clipboardWrite,
     logAdjacentRows,
@@ -198,6 +200,7 @@
           hosting,
           createPatch:
             oncreatepatch && loaded.length > 0 ? () => oncreatepatch(loaded) : undefined,
+          copyBranchName: $ramifyOptions.copyBranchName ? copyBranchName : undefined,
         },
       );
       if (items.length > 0) menu = { x, y, items, label: COMMIT_MENU };

@@ -5,6 +5,7 @@ import { shortHash } from "./draw";
 import { revisionNumbersText } from "../lib/revisions";
 import { errorText } from "../lib/errors";
 import { notify } from "../lib/notifications";
+import { COPY_BRANCH_NAME } from "../branches/copyName";
 import { showRepositoryAtRevision } from "../repositories/tab";
 import {
   compareBranches,
@@ -94,6 +95,9 @@ export interface ContextHandlers {
   // `Git.Hosting.Open.In.Browser.Group` (`hostingItems`) for the first selected commit; none when no
   // GitHub repository answers.
   hosting?: MenuItem[];
+  // Ramify's own `Copy Branch Name` (`src/branches/copyName.ts`), given while its setting is on: the
+  // last row of each branch's submenu.
+  copyBranchName?: (name: string) => void;
 }
 
 const SEPARATOR = null;
@@ -165,6 +169,7 @@ function operations(
   vcs: ContextHandlers["vcs"],
   currentBranch: string | null,
   protectedBranches: string[] = [],
+  copyBranchName?: (name: string) => void,
 ): MenuItem[] {
   const item = (
     label: string,
@@ -179,6 +184,10 @@ function operations(
   });
   const newBranch = item(`New Branch from '${truncated(ref.name)}'…`, "newBranch");
   if (ref.kind === "tag") return [item("Delete", "delete")];
+  // Copying needs no repository operation: it stays on without `vcs`.
+  const copy: MenuItem[] = copyBranchName
+    ? [SEPARATOR, { label: COPY_BRANCH_NAME, run: () => copyBranchName(ref.name) }]
+    : [];
   const target = `'${truncated(currentBranch ?? "HEAD")}'`;
   const selected = `'${truncated(ref.name)}'`;
   const merging: MenuItem[] = [
@@ -203,6 +212,7 @@ function operations(
       item(`Pull into ${target} Using Rebase`, "pullRebase"),
       SEPARATOR,
       item("Delete", "delete", isProtected(ref, protectedBranches)),
+      ...copy,
     ];
   }
   return [
@@ -214,6 +224,7 @@ function operations(
     SEPARATOR,
     item("Rename…", "rename"),
     item("Delete", "delete"),
+    ...copy,
   ];
 }
 
@@ -224,14 +235,14 @@ function refGroup(
   single: string,
   limit: number,
   { currentBranch }: RepoState,
-  { vcs, protectedBranches }: ContextHandlers,
+  { vcs, protectedBranches, copyBranchName }: ContextHandlers,
 ): MenuItem[] {
   if (refs.length === 0) return [];
   const disabled = !vcs;
   const row = (ref: LogRef, label: string): MenuAction => ({
     label,
     disabled,
-    submenu: operations(ref, vcs, currentBranch, protectedBranches),
+    submenu: operations(ref, vcs, currentBranch, protectedBranches, copyBranchName),
   });
   if (refs.length <= limit) return refs.map((ref) => row(ref, `${single} '${ref.name}'`));
   return [{ label: title, disabled, submenu: refs.map((ref) => row(ref, ref.name)) }];

@@ -38,6 +38,9 @@ const SETTINGS: Settings = {
   githubConnectionTimeoutMs: 5000,
   openProjectIn: "ask",
   reopenProjects: true,
+  commitMessageTicket: true,
+  notifyExternalChanges: true,
+  copyBranchName: true,
 };
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
@@ -771,7 +774,8 @@ test("the_github_section_comes_after_the_git_sections_and_has_the_accounts_list"
   const headings = screen
     .getAllByRole("heading", { level: 3 })
     .map((heading) => heading.textContent);
-  expect(headings[headings.length - 1]).toBe("GitHub");
+  // The last of IntelliJ's sections; only Ramify's own section follows it.
+  expect(headings.slice(-2)).toEqual(["GitHub", "Ramify"]);
   expect(headings.indexOf("GitHub")).toBeGreaterThan(headings.indexOf("Push"));
   expect(await screen.findByText(/No accounts added/)).toBeTruthy();
 });
@@ -806,4 +810,31 @@ test("the System group sets where projects open and whether they reopen", async 
   const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
   expect(saved.openProjectIn).toBe("new");
   expect(saved.reopenProjects).toBe(false);
+});
+
+// Ramify's own options, not in IntelliJ: they start on and are saved with the rest.
+test("the Ramify group turns each of its own options off", async () => {
+  mockCommands();
+  open();
+  expect(screen.getByRole("heading", { level: 3, name: "Ramify" })).toBeTruthy();
+  expect(screen.getByText("Not in IntelliJ")).toBeTruthy();
+  const labels = [
+    "Start the commit message with the ticket from the branch name",
+    "Notify about Git changes made outside Ramify",
+    "Show Copy Branch Name in branch menus",
+  ];
+  for (const label of labels) {
+    const box = screen.getByLabelText(label) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    await fireEvent.click(box);
+  }
+  await fireEvent.click(ok());
+
+  await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
+  const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
+  expect([saved.commitMessageTicket, saved.notifyExternalChanges, saved.copyBranchName]).toEqual([
+    false,
+    false,
+    false,
+  ]);
 });

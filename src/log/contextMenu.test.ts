@@ -554,3 +554,27 @@ test("each_menu_has_open_on_github_at_241s_place_log", () => {
   expect(labels(items).slice(-3)).toEqual(["Go to Child Commit", "Go to Parent Commit", "Open on GitHub"]);
   expect(labels(contextMenu(selection([]), ON_MAIN, handlers()))).not.toContain("Open on GitHub");
 });
+
+// Ramify's own (`docs/parity-matrix.md`): with `copyBranchName` given, the submenu of each branch
+// ends with the row the branches popup has; a tag has none, and without it no branch has one.
+test("a_branch_submenu_ends_with_copy_branch_name_when_it_is_on", () => {
+  const copyBranchName = vi.fn();
+  const items = contextMenu(
+    selection([local("feature/HT-1-a"), remote("origin/x"), tag("v1")]),
+    ON_MAIN,
+    handlers({ copyBranchName }),
+  );
+  const localMenu = find(items, "Branch 'feature/HT-1-a'").submenu ?? [];
+  const remoteMenu = find(items, "Branch 'origin/x'").submenu ?? [];
+
+  expect(labels(localMenu).slice(-2)).toEqual(["—", "Copy Branch Name"]);
+  expect(labels(remoteMenu).slice(-2)).toEqual(["—", "Copy Branch Name"]);
+  expect(labels(find(items, "Tag 'v1'").submenu ?? [])).not.toContain("Copy Branch Name");
+  find(localMenu, "Copy Branch Name").run?.();
+  expect(copyBranchName).toHaveBeenLastCalledWith("feature/HT-1-a");
+  find(remoteMenu, "Copy Branch Name").run?.();
+  expect(copyBranchName).toHaveBeenLastCalledWith("origin/x");
+
+  const off = contextMenu(selection([local("feature/HT-1-a")]), ON_MAIN, handlers());
+  expect(labels(find(off, "Branch 'feature/HT-1-a'").submenu ?? [])).not.toContain("Copy Branch Name");
+});

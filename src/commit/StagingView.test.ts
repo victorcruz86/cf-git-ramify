@@ -49,6 +49,9 @@ const SETTINGS: Settings = {
   githubConnectionTimeoutMs: 5000,
   openProjectIn: "ask",
   reopenProjects: true,
+  commitMessageTicket: true,
+  notifyExternalChanges: true,
+  copyBranchName: true,
 };
 
 const LISTS = {

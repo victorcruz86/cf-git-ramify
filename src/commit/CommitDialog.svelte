@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isBare } from "./ticket";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import {
     changelistsSetComment,
@@ -99,6 +100,9 @@
     hasHead: boolean;
     // `Clear initial commit message`.
     clearInitial: boolean;
+    // The ticket of the current branch while `Start the commit message with the ticket…` is on
+    // (`src/commit/ticket.ts`); `null` otherwise.
+    ticket?: string | null;
     // Shelve and Create Patch: what to do with the changes. It closes the dialog when it goes ahead.
     onexecute?: ExecutorRun;
     onshowdiff?: (file: FileChange) => void;
@@ -126,6 +130,7 @@
     branch,
     hasHead,
     clearInitial,
+    ticket = null,
     onexecute,
     onshowdiff,
     onpreparepush,
@@ -246,6 +251,10 @@
     return value > 0.05 && value < 0.95 ? value : fallback;
   }
 
+  // Ramify's own ticket prefix, and the message as a draft: nothing but the ticket is no draft.
+  const prefix = () => (ticket ? `${ticket} ` : "");
+  const draftText = () => (isBare(message, ticket) ? "" : message);
+
   // The comment of a list, with what this dialog already wrote to it.
   function withDraft(list: ChangeList): ChangeList {
     const draft = drafts.get(list.id);
@@ -313,7 +322,7 @@
         clearInitial,
       };
       // What the user typed in the meantime stays.
-      if (message === "") message = initialMessage(input);
+      if (message === "") message = initialMessage(input) || prefix();
       known = clearInitial ? prefilled : knownMessage(input);
       openedWith = message;
     });
@@ -397,10 +406,10 @@
     listId = id;
     lineSelections = new Map();
     if (clearInitial || from.name === to.name) return;
-    const { save, message: next } = onListChanged(message, withDraft(from), withDraft(to), known);
+    const { save, message: next } = onListChanged(draftText(), withDraft(from), withDraft(to), known);
     drafts.set(save.id, save.comment);
     saveComment(save);
-    message = next;
+    message = next || prefix();
   }
 
   function sameText(left: string, right: string): boolean {
@@ -514,7 +523,7 @@
   export async function saveDraft(): Promise<void> {
     if (!current) return;
     const versioned = versionedKeys.every((key) => chosenKeys.has(key));
-    const save = onClosed({ committed: false, draft: message, list: current, fullyIncluded: versioned });
+    const save = onClosed({ committed: false, draft: draftText(), list: current, fullyIncluded: versioned });
     if (!save) return;
     drafts.set(save.id, save.comment);
     await changelistsSetComment(save.id, save.comment, repo.path);
@@ -524,7 +533,7 @@
     saveOptions();
     if (current) {
       const versioned = versionedKeys.every((key) => chosenKeys.has(key));
-      saveComment(onClosed({ committed: false, draft: message, list: current, fullyIncluded: versioned }));
+      saveComment(onClosed({ committed: false, draft: draftText(), list: current, fullyIncluded: versioned }));
     }
     onclose();
   }
@@ -534,7 +543,7 @@
   // and then the commit runs, with its progress in the task status and its outcome as a notification.
   async function execute(how: "commit" | "push" | "rebase") {
     if (!enabled || !current || !lists) return;
-    if (!message.trim()) {
+    if (isBare(message, ticket)) {
       emptyMessage = true;
       return;
     }
@@ -634,7 +643,7 @@
       selections: checked.selections,
     };
     messagesPush(draft).catch(() => {});
-    saveComment(beforeExecutor({ draft, list, fullyIncluded }), path);
+    saveComment(beforeExecutor({ draft: isBare(draft, ticket) ? "" : draft, list, fullyIncluded }), path);
     let closed = false;
     const context = {
       close: () => {

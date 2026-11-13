@@ -29,6 +29,7 @@
   import { compareBranches, showBranchesDiff } from "../compare/actions";
   import { errorText } from "../lib/errors";
   import { copyBranchName } from "./copyName";
+  import { ramifyOptions } from "../lib/ramifyOptions";
   import { notify } from "../lib/notifications";
   import {
     branchOptions,
@@ -267,7 +268,7 @@
         onvcs,
         protectedBranches: $protectedBranches,
         head,
-        oncopy: copyBranchName,
+        oncopy: $ramifyOptions.copyBranchName ? copyBranchName : undefined,
       }),
     };
   }

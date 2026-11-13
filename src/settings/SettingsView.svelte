@@ -470,6 +470,27 @@
     <span>seconds</span>
   </div>
 
+  <!-- Ramify's own options (`docs/parity-matrix.md`): IntelliJ has none of them. -->
+  <h3>Ramify</h3>
+  <p class="comment">Not in IntelliJ</p>
+  <div class="options">
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.commitMessageTicket} />
+      <span class="check" data-state={draft.commitMessageTicket ? "on" : "off"}></span>
+      Start the commit message with the ticket from the branch name
+    </label>
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.notifyExternalChanges} />
+      <span class="check" data-state={draft.notifyExternalChanges ? "on" : "off"}></span>
+      Notify about Git changes made outside Ramify
+    </label>
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.copyBranchName} />
+      <span class="check" data-state={draft.copyBranchName ? "on" : "off"}></span>
+      Show Copy Branch Name in branch menus
+    </label>
+  </div>
+
   {#if problem}
     <p class="field-error" role="alert">{problem}</p>
   {/if}

@@ -1167,3 +1167,29 @@ test("the_dialog_browser_does_not_drag", async () => {
   expect(document.querySelector(".drag-label")).toBeNull();
   await fireEvent.pointerUp(window, { clientX: 40, clientY: y + 40 });
 });
+
+// Ramify's own `Start the commit message with the ticket from the branch name`: an empty message
+// starts with the ticket; the ticket alone is no message and is not kept as the list's comment.
+test("the_ticket_starts_an_empty_message_and_alone_is_no_message", async () => {
+  mockCommands();
+  await open({ ticket: "HT-730" });
+  await waitFor(() => expect((messageField() as HTMLTextAreaElement).value).toBe("HT-730 "));
+
+  await fireEvent.click(commitButton());
+  const error = screen.getByRole("dialog", { name: "Comment Is Empty" });
+  await fireEvent.click(within(error).getByRole("button", { name: "OK" }));
+  expect(calls("commit_changes")).toHaveLength(0);
+
+  await fireEvent.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+  // Cancel keeps the draft as the list's comment, as it does for an empty one: not the ticket.
+  expect(calls("changelists_set_comment").map(([, args]) => args)).toEqual([
+    { id: "default", comment: "", repo: "/repo" },
+  ]);
+});
+
+test("a_message_from_elsewhere_is_not_given_the_ticket", async () => {
+  mockCommands({ messages_last: () => "The last message" });
+  await open({ ticket: "HT-730" });
+
+  await waitFor(() => expect((messageField() as HTMLTextAreaElement).value).toBe("The last message"));
+});

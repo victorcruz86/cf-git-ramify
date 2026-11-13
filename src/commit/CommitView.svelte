@@ -63,6 +63,7 @@
     unreadableText,
   } from "./request";
   import { storedSignOff, storeSignOff } from "./options";
+  import { isBare } from "./ticket";
   import { expandPaths } from "./dialog";
   import { groupStaging } from "./staging";
   import { partKey, partLists, pathOfKey, type TreeNode } from "./tree";
@@ -91,6 +92,9 @@
     onresolveconflicts?: () => void;
     // Whether any file is in conflict: enables `Resolve Conflicts…` of the Git menu.
     onconflictschange?: (conflicts: boolean) => void;
+    // The ticket of the current branch while `Start the commit message with the ticket…` is on
+    // (`src/commit/ticket.ts`); `null` otherwise.
+    ticket?: string | null;
   }
 
   let {
@@ -106,6 +110,7 @@
     onrebase,
     onresolveconflicts,
     onconflictschange,
+    ticket = null,
   }: Props = $props();
 
   interface PopupMenu {
@@ -214,9 +219,22 @@
     const active = lists.active;
     const comment = lists.lists.find((list) => list.id === active)?.comment ?? "";
     const draft = proposal?.prior.message ?? message;
-    if (draft === comment || (!draft.trim() && !comment.trim())) return null;
-    return { id: active, comment: draft };
+    if (draft === comment || (bare(draft) && !comment.trim())) return null;
+    return { id: active, comment: bare(draft) ? "" : draft };
   }
+
+  // Ramify's own: nothing but the ticket counts as no message. An empty message gets the ticket of
+  // the branch, and a message that is still the old branch's ticket follows a checkout; one being
+  // amended or proposed (Fixup…, Squash Into…) is left alone.
+  const bare = (text: string) => isBare(text, ticket);
+  let prefilledWith = "";
+  $effect(() => {
+    const prefix = ticket ? `${ticket} ` : "";
+    untrack(() => {
+      if (!amend && !proposal && (message === "" || message === prefilledWith)) message = prefix;
+      prefilledWith = prefix;
+    });
+  });
 
   // `ChangeListCommitMessagePolicy`: the message starts from the active changelist's comment, and
   // takes the new one's whenever the active list changes while the message is empty.
@@ -224,7 +242,7 @@
   function adoptComment(read: Changelists) {
     if (stagingArea || read.active === commentListSeen) return;
     commentListSeen = read.active;
-    if (message.trim() || proposal) return;
+    if (!bare(message) || proposal) return;
     const comment = read.lists.find((list) => list.id === read.active)?.comment ?? "";
     if (comment.trim()) message = comment;
   }
@@ -268,7 +286,7 @@
     }
     if (text === proposedMerge) return;
     proposedMerge = text;
-    if (!amend && !message.trim()) message = text;
+    if (!amend && bare(message)) message = text;
   }
 
   function lostPlaces(lost: SelectionLost): string[] {
@@ -375,7 +393,7 @@
     if (stagingArea && groups.conflicts.length > 0) return "Resolve conflicts in order to commit";
     const nothing = stagingArea ? groups.staged.length === 0 : inclusion.included.size === 0;
     const noChanges = !amend && nothing;
-    const noMessage = !message.trim();
+    const noMessage = bare(message);
     const choose = stagingArea ? "Stage files to commit" : "Select files to commit";
     if (noChanges && noMessage) return `${choose} and specify commit message`;
     if (noChanges) return choose;
@@ -399,7 +417,8 @@
 
   function finishCommit(count: number, text: string, files?: Set<string>) {
     notify("info", committedText(count, text));
-    message = "";
+    message = ticket ? `${ticket} ` : "";
+    prefilledWith = message;
     amend = false;
     amendRestore = null;
     author = "";

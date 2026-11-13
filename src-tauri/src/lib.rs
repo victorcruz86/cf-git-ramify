@@ -14,6 +14,7 @@ pub mod conflicts;
 pub mod console;
 pub mod diff;
 pub mod editor;
+pub mod external;
 pub mod fetch;
 pub mod get_version;
 pub mod git;

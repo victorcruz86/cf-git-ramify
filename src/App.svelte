@@ -38,6 +38,7 @@
     type RecentProject,
     branchIncomingOutgoing,
     onBranchSyncChanged,
+    onExternalChanges,
     type BranchSync,
     onRepoChanged,
     onSelectionChanged,
@@ -77,6 +78,9 @@
   import { errorText } from "./lib/errors";
   import Icon from "./lib/Icon.svelte";
   import { matchShortcut, type ActionId } from "./lib/keymap";
+  import { optionsOf, ramifyOptions } from "./lib/ramifyOptions";
+  import { ticketOf } from "./commit/ticket";
+  import { externalNotifier } from "./lib/external";
   import { notify } from "./lib/notifications";
   import Notifications from "./lib/Notifications.svelte";
   import {
@@ -268,6 +272,8 @@
   });
   const branch = $derived(repoNow?.branch ?? null);
   const branchLabel = $derived(repoNow?.label ?? "");
+  // Ramify's own `Start the commit message with the ticket from the branch name`.
+  const commitTicket = $derived($ramifyOptions.commitMessageTicket ? ticketOf(repoNow?.branch) : null);
   // A rebase leaves HEAD detached: `branch` comes from `head-name` and is the one being rebased, which already exists.
   const suggestedBranch = $derived(repoNow?.operation === "rebasing" ? "" : (branch ?? ""));
   // There are conflicted files in the changes list: turns on `Resolve Conflicts…`.
@@ -569,6 +575,20 @@
 
   // A click on an annotated line in the viewer (`GitAnnotationAspect.showAffectedPaths`): its commit
   // selected in the Log's main tab, the first `log` tab (`VcsLogNavigationUtil.jumpToRevisionAsync`).
+  // Ramify's own notice of Git changes made outside it (`src/lib/external.ts`).
+  const reportExternal = externalNotifier({
+    showInLog: (hash) => {
+      if (modalOpen() || !info) return;
+      showWindow().catch(() => {});
+      void openLogTab("log", "", () => ({ name: "", filters: emptyFilters() }), hash ? { matches: () => true, select: hash } : {});
+    },
+    showStash: () => {
+      if (modalOpen()) return;
+      showWindow().catch(() => {});
+      showGitStash();
+    },
+  });
+
   function annotationInLog(hash: string) {
     if (modalOpen() || !info) return;
     showWindow().catch(() => {});
@@ -695,6 +715,7 @@
       commitDraft = commitView?.saveDraft() ?? null;
     }
     settings = next;
+    ramifyOptions.set(optionsOf(next));
     if (mode === before) return;
     selected = { ...selected, commit: windows.commit?.[0] ?? "local-changes", git: windows.git?.[0] ?? null };
     front(windows.commit ? "commit" : "git");
@@ -1076,6 +1097,7 @@
       onAppDeactivated(appDeactivated),
       onRepoChanged(refreshState),
       onBranchSyncChanged(() => void readBranchSync()),
+      onExternalChanges(reportExternal),
     ];
     start();
     return () => {
@@ -1384,6 +1406,7 @@
               {:else}
                 <CommitView
                   bind:this={commitView}
+                  ticket={commitTicket}
                   repo={info}
                   active={tab === "local-changes"}
                   draft={commitDraft}
@@ -1521,6 +1544,7 @@
       branch={branchLabel}
       hasHead={(repoNow?.head ?? "") !== ""}
       clearInitial={settings?.clearInitialCommitMessage ?? false}
+      ticket={commitTicket}
       onshowdiff={showDiff}
       onpreparepush={() => branchDialogs?.prepareCommitPush() ?? (() => Promise.resolve())}
       oncommitted={dialogCommitted}

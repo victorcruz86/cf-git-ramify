@@ -540,7 +540,33 @@ fn emit_repo_changed(app: &AppHandle, owner: &str, change: RepoChange) {
 }
 
 fn notifier(app: AppHandle, owner: String) -> impl Fn(RepoChange) + Send + 'static {
-    move |change| emit_repo_changed(&app, &owner, change)
+    move |change| {
+        check_external(&app, &owner);
+        emit_repo_changed(&app, &owner, change)
+    }
+}
+
+const EXTERNAL_CHANGES_EVENT: &str = "external-changes";
+
+// Ramify's own `Notify about Git changes made outside Ramify` (`external.rs`). Under the
+// repository's lock: while an operation of Ramify holds it, what changes is its own, and it records
+// the state itself when it lets go. The state is kept up to date with the option off too, so that
+// turning it on does not report old changes.
+fn check_external(app: &AppHandle, owner: &str) {
+    let state = app.state::<AppState>();
+    let Ok(repo) = session_of(&state, owner).and_then(|session| session_repo(&session)) else {
+        return;
+    };
+    let Some(found) = state
+        .operations
+        .try_hold(&repo, Duration::ZERO, || crate::external::check(&repo))
+    else {
+        return;
+    };
+    let on = current_settings(app).map_or(true, |settings| settings.notify_external_changes);
+    if on && !found.is_empty() {
+        emit_to_owner(app, owner, EXTERNAL_CHANGES_EVENT, found);
+    }
 }
 
 // If watching cannot be resumed there is no other error path to the interface: the
@@ -575,14 +601,25 @@ impl RepoLocks {
         locks.entry(repo.to_path_buf()).or_default().clone()
     }
 
+    // Before letting go, the operation records the repository's branch, HEAD and stashes: what
+    // Ramify did is not reported as made outside it (`external.rs`).
     pub fn run<T>(&self, repo: &Path, work: impl FnOnce() -> T) -> T {
         let lock = self.lock_for(repo);
         let _held = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        work()
+        let result = work();
+        crate::external::record(repo);
+        result
     }
 
     // `Mutex` cannot wait with a limit: it retries until `wait`.
     pub fn try_run<T>(&self, repo: &Path, wait: Duration, work: impl FnOnce() -> T) -> Option<T> {
+        let result = self.try_hold(repo, wait, work)?;
+        crate::external::record(repo);
+        Some(result)
+    }
+
+    // `try_run` without recording: for the watcher's own comparison (`check_external`).
+    fn try_hold<T>(&self, repo: &Path, wait: Duration, work: impl FnOnce() -> T) -> Option<T> {
         let lock = self.lock_for(repo);
         let deadline = Instant::now() + wait;
         let _held = loop {
@@ -2928,6 +2965,7 @@ pub async fn repo_open(
         }
         prune_snapshots(data_base.clone(), root.clone());
         clean_shelf(app.clone(), data_base, owner.clone(), root.clone());
+        crate::external::track(&root);
         let watcher = watch::start(WatchedPaths::of(&root)?, notifier(app, owner))?;
         Ok((info, watcher))
     })

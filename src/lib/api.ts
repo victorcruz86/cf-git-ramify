@@ -1,6 +1,7 @@
 import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { emitToOwner, listenOwn } from "./windows";
+import type { ExternalChange } from "./external";
 
 export interface DiffTiming {
   sidesMs: number;
@@ -471,6 +472,11 @@ export interface Settings {
   openProjectIn: OpenProjectIn;
   // `Reopen projects on startup` (`reopenLastProject`).
   reopenProjects: boolean;
+  // Ramify's own (the `Ramify` section of Settings): the ticket of the branch name at the start of
+  // an empty commit message, the notice of Git changes made outside Ramify, and `Copy Branch Name`.
+  commitMessageTicket: boolean;
+  notifyExternalChanges: boolean;
+  copyBranchName: boolean;
 }
 
 export type CommitMode = "modal" | "non-modal";
@@ -1091,6 +1097,9 @@ export const branchOptionsSet = (options: unknown) =>
   invoke<void>("branch_options_set", { options });
 export const onBranchSyncChanged = (handler: () => void) =>
   listenOwn("branch-sync-changed", () => handler());
+// Ramify's own `Notify about Git changes made outside Ramify` (`src-tauri/src/external.rs`).
+export const onExternalChanges = (handler: (changes: ExternalChange[]) => void) =>
+  listenOwn<ExternalChange[]>("external-changes", (event) => handler(event.payload ?? []));
 export const logViewClose = (tab: number) => invoke<void>("log_view_close", { tab });
 // By hash, its row in the view. Null if it is not seen.
 export const logFindRows = (viewId: number, hashes: string[]) =>

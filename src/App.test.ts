@@ -103,6 +103,9 @@ const SETTINGS = {
   githubConnectionTimeoutMs: 5000,
   openProjectIn: "ask",
   reopenProjects: true,
+  commitMessageTicket: true,
+  notifyExternalChanges: true,
+  copyBranchName: true,
 };
 
 const NON_MODAL = { ...SETTINGS, nonModalCommit: true };
@@ -4133,4 +4136,28 @@ test("after_a_checkout_the_old_branchs_icons_do_not_show_next_to_the_new_name", 
   await waitFor(() => expect(calls("branch_incoming_outgoing")).toHaveLength(2));
   answer({ dev: { incoming: false, outgoing: true } });
   await waitFor(() => expect(syncIcons()).toEqual(["outgoing"]));
+});
+
+// Ramify's own notice of Git changes made outside it: the event from the watcher becomes a notice
+// that stays, and `Show in Log` selects the commit HEAD moved to.
+test("changes_made_outside_ramify_show_a_notice_that_opens_the_log_at_the_new_head", async () => {
+  const hash = "3333333333333333333333333333333333333333";
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    log_open: () => ({ viewId: 1, count: 3 }),
+    log_rows: () => [],
+    log_find_rows: () => [null],
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  deliver("external-changes", [{ kind: "headMoved", from: "11111111", to: hash }]);
+
+  expect(await screen.findByText("Changes made outside Ramify")).toBeTruthy();
+  expect(screen.getByText("HEAD moved from 11111111 to 33333333 (reset, rebase or amend)")).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Show in Log" }));
+  await waitFor(() => expect(tabState("Log")).toBe("true"));
+  await waitFor(() => expect(calls("log_find_rows").at(-1)?.[1]).toEqual({ viewId: 1, hashes: [hash] }));
 });

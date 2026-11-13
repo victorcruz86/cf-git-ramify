@@ -104,6 +104,13 @@ pub struct Settings {
     pub open_project_in: OpenProjectIn,
     // `Reopen projects on startup` (`GeneralSettings.reopenLastProject`, true by default).
     pub reopen_projects: bool,
+    // Ramify's own, not in IntelliJ (the `Ramify` section of the page, `docs/parity-matrix.md`):
+    // start an empty commit message with the ticket of the branch name (`HT-730 `),
+    pub commit_message_ticket: bool,
+    // notify when another program switches the branch, moves HEAD off its commit or touches the stash,
+    pub notify_external_changes: bool,
+    // and offer `Copy Branch Name` in the branch menus and ⌘C in the branches popup.
+    pub copy_branch_name: bool,
 }
 
 // `GithubSettings.CONNECTION_TIMEOUT`, and the most the page's `0..60` seconds allow.
@@ -145,6 +152,9 @@ impl Default for Settings {
             github_connection_timeout_ms: GITHUB_CONNECTION_TIMEOUT_MS,
             open_project_in: OpenProjectIn::Ask,
             reopen_projects: true,
+            commit_message_ticket: true,
+            notify_external_changes: true,
+            copy_branch_name: true,
         }
     }
 }
@@ -714,6 +724,19 @@ mod tests {
         assert!(!settings.clear_initial_commit_message);
     }
 
+    // Ramify's own options start on, also for a `settings.json` written before they existed.
+    #[test]
+    fn ramify_options_default_to_on() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(FILE_NAME), r#"{"stagingArea": true}"#).unwrap();
+
+        for settings in [Settings::default(), load(dir.path())] {
+            assert!(settings.commit_message_ticket);
+            assert!(settings.notify_external_changes);
+            assert!(settings.copy_branch_name);
+        }
+    }
+
     #[test]
     fn show_drop_commit_dialog_defaults_to_true() {
         // `GitVcsApplicationSettings.SHOW_DROP_COMMIT_DIALOG = true`.
@@ -800,6 +823,9 @@ mod tests {
             github_connection_timeout_ms: 12_000,
             open_project_in: OpenProjectIn::Current,
             reopen_projects: false,
+            commit_message_ticket: false,
+            notify_external_changes: false,
+            copy_branch_name: false,
         };
 
         save(dir.path(), &settings).unwrap();

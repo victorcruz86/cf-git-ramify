@@ -2163,3 +2163,19 @@ test("another active list brings its comment only into an empty message", async 
   expect((messageField() as HTMLTextAreaElement).value).toBe("typed");
 });
 
+
+// Ramify's own `Start the commit message with the ticket from the branch name`.
+test("the_ticket_starts_the_message_follows_a_checkout_and_alone_is_no_message", async () => {
+  mockCommands();
+  const view = await open({ ticket: "HT-730" });
+
+  await waitFor(() => expect((messageField() as HTMLTextAreaElement).value).toBe("HT-730 "));
+  await fireEvent.click(commitButton());
+  expect(await screen.findByText("Specify commit message")).toBeTruthy();
+
+  await view.rerender({ ticket: "HT-9" });
+  await waitFor(() => expect((messageField() as HTMLTextAreaElement).value).toBe("HT-9 "));
+  await fireEvent.input(messageField(), { target: { value: "HT-9 Fix the form" } });
+  await view.rerender({ ticket: null });
+  expect((messageField() as HTMLTextAreaElement).value).toBe("HT-9 Fix the form");
+});

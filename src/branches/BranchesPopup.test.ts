@@ -8,6 +8,7 @@ import BranchesPopup from "./BranchesPopup.svelte";
 import { whileFetching } from "../update/flow";
 import { ongoingActions } from "../operation/operation";
 import { branchOptions, defaultBranchOptions, favorites } from "./state";
+import { RAMIFY_DEFAULTS, ramifyOptions } from "../lib/ramifyOptions";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
@@ -51,6 +52,7 @@ beforeEach(() => {
   });
   favorites.set({ local: ["main", "master"], remote: ["origin/main", "origin/master"] });
   branchOptions.set(defaultBranchOptions());
+  ramifyOptions.set(RAMIFY_DEFAULTS);
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "branch_list") return list;
@@ -303,6 +305,19 @@ test("command_c_copies_the_selected_branch_unless_search_text_is_selected", asyn
   const menu = await screen.findByRole("menu", { name: "main" });
   await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy Branch Name" }));
   await waitFor(() => expect(calls("clipboard_write").at(-1)).toEqual(["clipboard_write", { text: "main" }]));
+});
+
+// `Show Copy Branch Name in branch menus` off: no row and ⌘C copies nothing.
+test("with_copy_branch_name_off_there_is_no_row_and_command_c_does_nothing", async () => {
+  ramifyOptions.set({ ...RAMIFY_DEFAULTS, copyBranchName: false });
+  await popup();
+
+  await fireEvent.keyDown(field(), { key: "c", code: "KeyC", metaKey: true });
+  await fireEvent.click(row("main"));
+  const menu = await screen.findByRole("menu", { name: "main" });
+
+  expect(within(menu).queryByRole("menuitem", { name: "Copy Branch Name" })).toBeNull();
+  expect(calls("clipboard_write")).toHaveLength(0);
 });
 
 test("right_arrow_and_click_also_open_the_submenu", async () => {
