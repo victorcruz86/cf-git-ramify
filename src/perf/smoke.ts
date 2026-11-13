@@ -1,3 +1,4 @@
+import { Channel } from "@tauri-apps/api/core";
 import * as api from "../lib/api";
 import type {
   ChangeGroup,
@@ -87,6 +88,7 @@ export async function runSmoke(): Promise<void> {
   await branchSteps();
   await remoteSteps();
 
+  await terminalSteps();
   await step("console_lines", api.consoleLines);
   await step("task_cancel", () => api.taskCancel(999_999));
   await step("askpass_answer", () => api.askpassAnswer(999_999, null));
@@ -345,5 +347,55 @@ export async function runSmoke(): Promise<void> {
     await task("clone_repository", () => api.cloneRepository(url, `${repo}-clone`));
     await task("init_repository", () => api.initRepository(`${repo}-new`, false));
     await step("open_exclude_file", api.openExcludeFile);
+  }
+
+  // A real shell in the smoke repository: its output must come back through the channel as bytes.
+  async function terminalSteps() {
+    let seen = "";
+    const decoder = new TextDecoder();
+    const output = new Channel<ArrayBuffer | number[]>();
+    output.onmessage = (bytes) => {
+      seen += decoder.decode(bytes instanceof ArrayBuffer ? bytes : Uint8Array.from(bytes), { stream: true });
+    };
+    const shows = (text: string) =>
+      new Promise<string>((resolve, reject) => {
+        const started = Date.now();
+        const poll = () => {
+          if (seen.includes(text)) resolve(text);
+          else if (Date.now() - started > 10_000) reject(new Error(`the terminal never showed ${text}`));
+          else setTimeout(poll, 50);
+        };
+        poll();
+      });
+    const id = await step("terminal_open", () => api.terminalOpen(100, 30, output));
+    if (id === undefined) return;
+    await step("terminal_write", async () => {
+      await api.terminalWrite(id, "echo smoke-$((6*7)) in $(basename \"$PWD\")\n");
+      return shows("smoke-42 in ");
+    });
+    await step("terminal_resize", async () => {
+      await api.terminalResize(id, 120, 40);
+      await api.terminalWrite(id, "stty size\n");
+      return shows("40 120");
+    });
+    await step("terminal_busy", async () => {
+      await api.terminalWrite(id, "sleep 30\n");
+      for (let tries = 0; tries < 100; tries++) {
+        if (await api.terminalBusy(id)) return true;
+        await new Promise((wait) => setTimeout(wait, 50));
+      }
+      throw new Error("sleep never took the foreground");
+    });
+    await step("terminal_close", async () => {
+      const exited = new Promise<number>((resolve) => {
+        void api.onTerminalExited(resolve);
+      });
+      await api.terminalClose(id);
+      return Promise.race([
+        exited,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("the session did not end")), 10_000)),
+      ]);
+    });
+    await step("terminal_reset", api.terminalReset);
   }
 }
