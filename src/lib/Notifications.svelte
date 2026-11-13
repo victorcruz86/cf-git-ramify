@@ -17,7 +17,7 @@
             {#each notification.actions as action}
               <button
                 type="button"
-                class="action"
+                class="link"
                 onclick={() => {
                   dismiss(notification.id);
                   action.run();
@@ -102,16 +102,18 @@
     margin-top: 6px;
   }
 
-  .action {
+  /* Not `.action`: in controls.css that is the toolbar's 26×26 icon button. */
+  .link {
     padding: 0;
     font: inherit;
     color: var(--link);
+    text-align: left;
     cursor: pointer;
     background: none;
     border: 0;
   }
 
-  .action:hover {
+  .link:hover {
     text-decoration: underline;
   }
 

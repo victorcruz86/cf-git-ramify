@@ -55,6 +55,18 @@ test("action_button_closes_it", async () => {
   expect(titles()).toEqual([]);
 });
 
+// `.action` in controls.css is the toolbar's 26×26 icon button: a text link with it broke into
+// one letter per line over the title ("Vie / w / Co / mmi / ts").
+test("an_action_is_a_text_link_not_an_icon_button", async () => {
+  render(Notifications);
+  notify({ kind: "info", title: "12 files updated in 3 commits", actions: [{ label: "View Commits", run: () => {} }] });
+
+  const link = await screen.findByRole("button", { name: "View Commits" });
+
+  expect(link.classList.contains("action")).toBe(false);
+  expect(link.classList.contains("link")).toBe(true);
+});
+
 test("the_cross_closes_the_notification_and_the_body_is_visible", async () => {
   render(Notifications);
   notify({ kind: "error", title: "Fetch failed", body: "origin: could not be resolved" });
