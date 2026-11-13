@@ -6004,6 +6004,39 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // Another program's `git stash` and `git stash pop` (Claude Code checking an error without its
+    // changes): the refresh in between sees no changes, and after the pop the file is back in its
+    // list, not in the active one.
+    #[test]
+    fn a_stash_and_pop_by_another_program_keeps_the_file_in_its_list() {
+        let repo = TempRepo::new();
+        repo.commit("env.js", b"one\n", "first");
+        repo.commit("other.txt", b"one\n", "second");
+        fs::write(repo.path().join("env.js"), "local\n").unwrap();
+        fs::write(repo.path().join("other.txt"), "work\n").unwrap();
+        let data = TempDir::new().unwrap();
+        let changed = |repo: &TempRepo| -> Vec<String> {
+            crate::status::read(repo.path(), false).unwrap().into_iter().map(|file| file.path).collect()
+        };
+        read_changelists(data.path(), &changed(&repo)).unwrap();
+        let kept = edit_changelists(data.path(), |lists| {
+            let id = lists.create("VCA NO COMMIT")?;
+            lists.move_paths(&paths(&["env.js"]), &id)?;
+            Ok(())
+        })
+        .unwrap();
+        let kept = kept.lists.iter().find(|list| list.name == "VCA NO COMMIT").unwrap().id.clone();
+
+        repo.git(&["stash", "-q"]);
+        assert!(changed(&repo).is_empty());
+        read_changelists(data.path(), &changed(&repo)).unwrap();
+        repo.git(&["stash", "pop", "-q"]);
+        let lists = read_changelists(data.path(), &changed(&repo)).unwrap();
+
+        assert_eq!(lists.list_for("env.js"), kept);
+        assert_eq!(lists.list_for("other.txt"), lists.active);
+    }
+
     // Apply Patch only needs the lists' names: reading them must not forget where each file is.
     #[test]
     fn listing_the_changelists_keeps_every_file_in_its_list() {

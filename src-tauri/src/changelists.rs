@@ -15,6 +15,10 @@ pub const DEFAULT_LIST_NAME: &str = "Changes";
 const DEFAULT_LIST_ID: &str = "default";
 const FILE_NAME: &str = "changelists.json";
 const CORRUPT_FILE_NAME: &str = "changelists.json.corrupt";
+// How long a file that lost its changes keeps its list: back with changes before that, it returns
+// to it. Ramify's own (`docs/parity-matrix.md`): a `git stash` and `git stash pop` run by another
+// program sent the files to the active list.
+pub const FORGET_AFTER_SECS: u64 = 10 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -35,6 +39,17 @@ pub struct Changelists {
     // Per file, the list of each known hunk (the ones already read with
     // `reconcile_hunks`). A hunk without an entry has not been seen yet and follows the file's list.
     pub hunk_assignments: BTreeMap<String, BTreeMap<String, String>>,
+    // Files that lost their changes in the last `FORGET_AFTER_SECS`: their list, and when.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub forgotten: BTreeMap<String, Forgotten>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Forgotten {
+    pub list: String,
+    // Seconds since the Unix epoch.
+    pub at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +84,7 @@ impl Default for Changelists {
             active: DEFAULT_LIST_ID.to_string(),
             assignments: BTreeMap::new(),
             hunk_assignments: BTreeMap::new(),
+            forgotten: BTreeMap::new(),
         }
     }
 }
@@ -238,26 +254,55 @@ impl Changelists {
     }
 
     // Forgets the files that no longer have changes and assigns to the active list the new ones (and
-    // the ones that pointed to a list that no longer exists). Returns whether anything changed, so that its
-    // caller saves only when needed.
+    // the ones that pointed to a list that no longer exists). A file forgotten less than
+    // `FORGET_AFTER_SECS` ago goes back to its list instead. Returns whether anything changed, so
+    // that its caller saves only when needed.
     pub fn reconcile(&mut self, paths: &[String]) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        self.reconcile_at(paths, now)
+    }
+
+    pub fn reconcile_at(&mut self, paths: &[String], now: u64) -> bool {
         let current: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
-        let before = self.assignments.len();
-        self.assignments
-            .retain(|path, _| current.contains(path.as_str()));
-        let mut changed = self.assignments.len() != before;
+        let gone: Vec<String> = self
+            .assignments
+            .keys()
+            .filter(|path| !current.contains(path.as_str()))
+            .cloned()
+            .collect();
+        let mut changed = !gone.is_empty();
+        for path in gone {
+            if let Some(list) = self.assignments.remove(&path) {
+                self.forgotten.insert(path, Forgotten { list, at: now });
+            }
+        }
         let hunk_files = self.hunk_assignments.len();
         self.hunk_assignments
             .retain(|path, _| current.contains(path.as_str()));
         changed |= self.hunk_assignments.len() != hunk_files;
+
+        // A clock set back keeps a memory a little longer rather than dropping it.
+        let lists = &self.lists;
+        let remembered = self.forgotten.len();
+        self.forgotten.retain(|_, forgotten| {
+            now.saturating_sub(forgotten.at) <= FORGET_AFTER_SECS
+                && lists.iter().any(|list| list.id == forgotten.list)
+        });
+        changed |= self.forgotten.len() != remembered;
 
         for path in paths {
             let valid = self
                 .assignments
                 .get(path)
                 .is_some_and(|id| self.lists.iter().any(|list| list.id == *id));
+            let back = self.forgotten.remove(path).map(|forgotten| forgotten.list);
             if !valid {
-                self.assignments.insert(path.clone(), self.active.clone());
+                let list = back.unwrap_or_else(|| self.active.clone());
+                self.assignments.insert(path.clone(), list);
+                changed = true;
+            } else if back.is_some() {
                 changed = true;
             }
         }
@@ -428,6 +473,82 @@ mod tests {
         assert!(changed);
         assert!(!lists.assignments.contains_key("a.txt"));
         assert!(lists.assignments.contains_key("b.txt"));
+    }
+
+    // A `git stash` and `git stash pop` run by another program: while the stash holds them the
+    // files have no changes, and when they come back they go back to their list, not to the
+    // active one (Ramify's own, `docs/parity-matrix.md`).
+    #[test]
+    fn a_file_back_within_ten_minutes_returns_to_its_list() {
+        let mut lists = Changelists::default();
+        let kept = lists.create("Kept").unwrap();
+        lists.reconcile_at(&paths(&["a.txt", "b.txt"]), 1_000);
+        lists.move_paths(&paths(&["a.txt"]), &kept).unwrap();
+
+        assert!(lists.reconcile_at(&paths(&["b.txt"]), 1_010));
+        assert!(!lists.assignments.contains_key("a.txt"));
+        lists.reconcile_at(&paths(&["a.txt", "b.txt"]), 1_010 + FORGET_AFTER_SECS);
+
+        assert_eq!(lists.list_for("a.txt"), kept);
+        assert!(lists.forgotten.is_empty());
+    }
+
+    #[test]
+    fn a_file_back_after_ten_minutes_goes_to_the_active_list() {
+        let mut lists = Changelists::default();
+        let kept = lists.create("Kept").unwrap();
+        lists.reconcile_at(&paths(&["a.txt"]), 1_000);
+        lists.move_paths(&paths(&["a.txt"]), &kept).unwrap();
+        lists.reconcile_at(&[], 1_010);
+
+        lists.reconcile_at(&paths(&["a.txt"]), 1_011 + FORGET_AFTER_SECS);
+
+        assert_eq!(lists.list_for("a.txt"), lists.active);
+        assert!(lists.forgotten.is_empty());
+    }
+
+    #[test]
+    fn an_old_memory_is_dropped_and_saved_even_with_no_file_back() {
+        let mut lists = Changelists::default();
+        lists.reconcile_at(&paths(&["a.txt"]), 1_000);
+        lists.reconcile_at(&[], 1_010);
+        assert!(!lists.reconcile_at(&[], 1_010 + FORGET_AFTER_SECS));
+
+        assert!(lists.reconcile_at(&[], 1_011 + FORGET_AFTER_SECS));
+        assert!(lists.forgotten.is_empty());
+    }
+
+    #[test]
+    fn a_file_whose_list_was_removed_meanwhile_goes_to_the_active_list() {
+        let mut lists = Changelists::default();
+        let kept = lists.create("Kept").unwrap();
+        lists.reconcile_at(&paths(&["a.txt"]), 1_000);
+        lists.move_paths(&paths(&["a.txt"]), &kept).unwrap();
+        lists.reconcile_at(&[], 1_010);
+        lists.remove(&kept).unwrap();
+
+        lists.reconcile_at(&paths(&["a.txt"]), 1_020);
+
+        assert_eq!(lists.list_for("a.txt"), lists.active);
+        assert!(lists.forgotten.is_empty());
+    }
+
+    #[test]
+    fn the_memory_survives_saving_and_an_old_file_reads_without_it() {
+        let dir = TempDir::new().unwrap();
+        let mut lists = Changelists::default();
+        let kept = lists.create("Kept").unwrap();
+        lists.reconcile_at(&paths(&["a.txt"]), 1_000);
+        lists.move_paths(&paths(&["a.txt"]), &kept).unwrap();
+        lists.reconcile_at(&[], 1_010);
+        lists.save(dir.path()).unwrap();
+
+        let mut read = Changelists::try_load(dir.path()).unwrap();
+        read.reconcile_at(&paths(&["a.txt"]), 1_020);
+        assert_eq!(read.list_for("a.txt"), kept);
+
+        fs::write(dir.path().join(FILE_NAME), r#"{"lists":[{"id":"default","name":"Changes","comment":""}],"active":"default","assignments":{}}"#).unwrap();
+        assert!(Changelists::try_load(dir.path()).unwrap().forgotten.is_empty());
     }
 
     #[test]
