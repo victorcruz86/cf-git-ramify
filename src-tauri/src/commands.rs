@@ -4053,6 +4053,13 @@ pub fn read_changelists(dir: &Path, paths: &[String]) -> Result<Changelists, Api
     Ok(lists)
 }
 
+// The lists as they are saved, with nothing reconciled: for whoever only needs their names, ids
+// and comments. `read_changelists` with no paths would take every file for unchanged and forget its list.
+pub fn list_changelists(dir: &Path) -> Result<Changelists, ApiError> {
+    let _held = changelists_lock();
+    load_changelists(dir)
+}
+
 pub fn edit_changelists(
     dir: &Path,
     edit: impl FnOnce(&mut Changelists) -> Result<(), ChangelistError>,
@@ -4074,6 +4081,15 @@ pub fn changelists_get(
     state: State<'_, AppState>,
 ) -> Result<Changelists, ApiError> {
     read_changelists(&repo_data_dir(&app, &state, &window)?, &paths)
+}
+
+#[tauri::command]
+pub fn changelists_lists(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Changelists, ApiError> {
+    list_changelists(&repo_data_dir(&app, &state, &window)?)
 }
 
 // Imports IntelliJ's changelists without writing to `.idea`. If the XML cannot be read or
@@ -5986,6 +6002,28 @@ mod tests {
 
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
         assert!(result.is_ok());
+    }
+
+    // Apply Patch only needs the lists' names: reading them must not forget where each file is.
+    #[test]
+    fn listing_the_changelists_keeps_every_file_in_its_list() {
+        let dir = TempDir::new().unwrap();
+        read_changelists(dir.path(), &paths(&["a.txt", "b.txt"])).unwrap();
+        let other = edit_changelists(dir.path(), |lists| {
+            let id = lists.create("VCA NO COMMIT")?;
+            lists.move_paths(&paths(&["a.txt"]), &id)
+        })
+        .unwrap()
+        .list_for("a.txt")
+        .to_string();
+
+        let listed = list_changelists(dir.path()).unwrap();
+
+        assert!(listed.lists.iter().any(|list| list.name == "VCA NO COMMIT"));
+        assert_eq!(listed.list_for("a.txt"), other);
+        let saved = Changelists::load(dir.path());
+        assert_eq!(saved.list_for("a.txt"), other);
+        assert_eq!(saved.list_for("b.txt"), saved.active);
     }
 
     #[test]

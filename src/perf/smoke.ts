@@ -98,6 +98,7 @@ export async function runSmoke(): Promise<void> {
   async function commitSteps() {
     const status = await step("repo_status", () => api.repoStatus(false));
     await step("changelists_get", () => api.changelistsGet(status?.map((file) => file.path) ?? []));
+    await step("changelists_lists", api.changelistsLists);
     const first = await step("changelists_create", () => api.changelistsCreate("smoke"));
     const list = first?.lists.find((one) => one.name === "smoke")?.id ?? "";
     await step("changelists_rename", () => api.changelistsRename(list, "smoke 2"));

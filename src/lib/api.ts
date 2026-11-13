@@ -699,6 +699,9 @@ export const repoStatus = (includeIgnored: boolean) =>
   invoke<FileChange[]>("repo_status", { includeIgnored });
 export const changelistsGet = (paths: string[]) =>
   invoke<Changelists>("changelists_get", { paths });
+// The lists as saved, without reconciling them with the changed paths: for their names and ids only.
+// `changelistsGet([])` would forget every file's list.
+export const changelistsLists = () => invoke<Changelists>("changelists_lists");
 export const changelistsCreate = (name: string) =>
   invoke<Changelists>("changelists_create", { name });
 export const changelistsRename = (id: string, name: string) =>

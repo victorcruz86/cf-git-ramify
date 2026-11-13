@@ -347,6 +347,7 @@ pub fn run() {
             vcs_commands::shelf_patch_create,
             commands::repo_status,
             commands::changelists_get,
+            commands::changelists_lists,
             commands::changelists_create,
             commands::changelists_rename,
             commands::changelists_set_comment,

@@ -120,6 +120,7 @@ function mockApp(commands: Record<string, Command> = {}) {
     show_window: () => undefined,
     repo_status: () => [],
     changelists_get: () => LISTS,
+    changelists_lists: () => LISTS,
     settings_get: () => SETTINGS,
     git_version: () => "2.38.0",
     commit_warnings: () => [],
@@ -3568,6 +3569,33 @@ test("the_git_menu_apply_patch_opens_select_patch_file_then_the_dialog", async (
     choice: { selected: ["a.txt"], overwrite: [], expected: { "a.txt": "h" } },
   });
   expect(await screen.findByText("Patch successfully applied")).toBeTruthy();
+});
+
+// Reading the lists with no paths told the backend no file had changes, and it forgot every file's
+// list: after an Apply Patch, even a cancelled one, all the changes fell into the active list.
+test("apply_patch_reads_the_lists_without_forgetting_which_list_each_file_is_in", async () => {
+  vi.mocked(chooseNative).mockResolvedValue("/patches/fix.patch");
+  mockApp({
+    initial_target: () => folder("/repo/a"),
+    repo_open: () => INFO,
+    repo_status: () => [CHANGE],
+    patch_app_settings_get: () => ({ folder: "/patches", detectPatchOnTheFly: false }),
+    patch_storage_set: () => undefined,
+    patch_plan: finishing(66, APPLY_PLAN),
+    patch_apply: finishing(67, { snapshot: "s", status: "success", failed: [], conflicts: [], messages: [] }),
+  });
+  render(App);
+  await screen.findByRole("treeitem", { name: /a\.txt/ });
+
+  deliver("git-action", "ChangesView.ApplyPatch");
+  const dialog = await screen.findByRole("dialog", { name: "Apply Patch" });
+  await fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  await waitFor(() => expect(calls("patch_apply")).toHaveLength(1));
+  expect(await screen.findByText("Patch successfully applied")).toBeTruthy();
+
+  const forgetting = calls("changelists_get").filter(([, args]) => (args as { paths: string[] }).paths.length === 0);
+  expect(forgetting).toEqual([]);
+  expect(calls("changelists_lists").length).toBeGreaterThan(0);
 });
 
 // P22: from OK to its end an apply is modal, as IntelliJ's merge window for its conflicts is: the

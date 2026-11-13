@@ -3,7 +3,7 @@
   import {
     appVersion,
     branchList,
-    changelistsGet,
+    changelistsLists,
     changelistsSetComment,
     commitDraftSaved,
     diffWindowOpen,
@@ -860,7 +860,7 @@
     const current = info;
     if (!current) return null;
     const staging = settings ? effectiveStaging(settings) : false;
-    const lists = staging ? null : await changelistsGet([]).catch(() => null);
+    const lists = staging ? null : await changelistsLists().catch(() => null);
     return {
       repo: current.path,
       head: repoNow?.head ?? current.head,

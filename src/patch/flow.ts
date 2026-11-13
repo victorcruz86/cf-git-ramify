@@ -1,7 +1,7 @@
 import { writable } from "svelte/store";
 import {
   changelistsCreate,
-  changelistsGet,
+  changelistsLists,
   changelistsMove,
   changelistsSetActive,
   changelistsSetComment,
@@ -700,7 +700,7 @@ async function mergeContents(contents: MergeContents): Promise<ContentsMergeDone
 // `getSelectedList`: an existing list gets the comment of the panel, a new one is created with it.
 async function useList(choice: ListChoice, repo: string): Promise<string> {
   const named = (all: Changelists) => all.lists.find((list) => list.name === choice.name);
-  let list = named(await changelistsGet([])) ?? named(await changelistsCreate(choice.name));
+  let list = named(await changelistsLists()) ?? named(await changelistsCreate(choice.name));
   if (!list) throw new Error(`There is no changelist "${choice.name}"`);
   if (list.comment !== choice.comment) {
     list = named(await changelistsSetComment(list.id, choice.comment, repo)) ?? list;
