@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { suggestWhileTyping } from "../lib/suggest";
   import { untrack } from "svelte";
   import type { PullInfo, PullOption } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
@@ -101,7 +102,7 @@
     <input
       class="input branch"
       aria-label="Branch"
-      list="pull-branches"
+      use:suggestWhileTyping={"pull-branches"}
       placeholder="Specify branch"
       data-autofocus
       value={branch}

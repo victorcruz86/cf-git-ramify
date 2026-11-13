@@ -196,3 +196,16 @@ test("cancelling_answers_nothing", async () => {
 
   expect(onanswer).toHaveBeenCalledWith(null);
 });
+
+// WebKit opens a `<datalist>` as soon as its input has the focus, and the dialog focuses the branch
+// field: the suggestions covered Cancel and Pull. Like `ComboBoxWithAutoCompletion`, they come with typing.
+test("the_branch_suggestions_open_only_while_typing", async () => {
+  open();
+  expect(branch().getAttribute("list")).toBeNull();
+
+  await fireEvent.input(branch(), { target: { value: "ma" } });
+  expect(branch().getAttribute("list")).toBe("pull-branches");
+
+  await fireEvent.blur(branch());
+  expect(branch().getAttribute("list")).toBeNull();
+});

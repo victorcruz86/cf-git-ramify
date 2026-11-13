@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { suggestWhileTyping } from "../lib/suggest";
   import { onMount, untrack } from "svelte";
   import type { MergeOption } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
@@ -70,7 +71,7 @@
     <input
       class="input branch"
       aria-label="Branch"
-      list="merge-branches"
+      use:suggestWhileTyping={"merge-branches"}
       placeholder="Specify branch"
       data-autofocus
       value={branch}

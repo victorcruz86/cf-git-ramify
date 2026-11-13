@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { suggestWhileTyping } from "../lib/suggest";
   import { onMount, tick, untrack } from "svelte";
   import type { CommitSummary, PushInfo, PushTags } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
@@ -294,7 +295,7 @@
       <input
         class="input target"
         aria-label="Target branch"
-        list="push-targets"
+        use:suggestWhileTyping={"push-targets"}
         autofocus
         value={draft}
         oninput={(event) => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { suggestWhileTyping } from "../lib/suggest";
   import { untrack } from "svelte";
   import type { RebaseFlag } from "../lib/api";
   import Dialog from "../lib/Dialog.svelte";
@@ -152,7 +153,7 @@
       <input
         class="input field"
         aria-label="New base"
-        list="rebase-refs"
+        use:suggestWhileTyping={"rebase-refs"}
         placeholder="new base (branch or hash)"
         value={onto}
         oninput={typed((value) => (onto = value))}
@@ -161,7 +162,7 @@
     <input
       class="input field"
       aria-label="Upstream"
-      list="rebase-refs"
+      use:suggestWhileTyping={"rebase-refs"}
       placeholder={has("onto") ? "old base (branch or hash)" : "branch or hash"}
       data-autofocus
       disabled={has("root")}
@@ -172,7 +173,7 @@
       <input
         class="input field"
         aria-label="Source branch"
-        list="rebase-branches"
+        use:suggestWhileTyping={"rebase-branches"}
         placeholder="source branch"
         value={source}
         oninput={typed((value) => (source = value))}
