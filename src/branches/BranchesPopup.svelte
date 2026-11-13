@@ -14,6 +14,7 @@
   import { matchShortcut } from "../lib/keymap";
   import Menu, { type MenuItem } from "../lib/Menu.svelte";
   import { notify } from "../lib/notifications";
+  import { copyBranchName } from "./copyName";
   import type { VcsAction } from "../log/contextMenu";
   import {
     autoExpanded,
@@ -379,8 +380,23 @@
     }
   }
 
+  // ⌘C copies the selected branch's name (`src/branches/copyName.ts`); with text selected in the
+  // search field the field copies it, as it would anywhere else.
+  function copySelected(event: KeyboardEvent): boolean {
+    const plain = event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+    if (!plain || event.code !== "KeyC") return false;
+    if (field && field.selectionStart !== field.selectionEnd) return false;
+    if (!selectedRow || !("node" in selectedRow) || selectedRow.node.kind !== "branch") return false;
+    void copyBranchName(selectedRow.node.name);
+    return true;
+  }
+
   function keydown(event: KeyboardEvent) {
     event.stopPropagation();
+    if (copySelected(event)) {
+      event.preventDefault();
+      return;
+    }
     // `installShortcutActions`: the shortcuts of the rows above work here.
     const shortcut = matchShortcut(event);
     if (shortcut === "CheckinProject") runAction(actions[0][1]);
@@ -656,6 +672,7 @@
           onvcs,
           protectedBranches: $protectedBranches,
           head,
+          oncopy: copyBranchName,
         })}
         onclose={close}
         onback={closeSubmenu}

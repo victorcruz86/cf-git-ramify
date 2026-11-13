@@ -28,6 +28,7 @@
   } from "./model";
   import { compareBranches, showBranchesDiff } from "../compare/actions";
   import { errorText } from "../lib/errors";
+  import { copyBranchName } from "./copyName";
   import { notify } from "../lib/notifications";
   import {
     branchOptions,
@@ -266,6 +267,7 @@
         onvcs,
         protectedBranches: $protectedBranches,
         head,
+        oncopy: copyBranchName,
       }),
     };
   }

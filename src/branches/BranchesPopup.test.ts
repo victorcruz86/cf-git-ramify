@@ -281,6 +281,30 @@ test("enter_opens_the_submenu_and_does_not_checkout", async () => {
   expect(onclose).not.toHaveBeenCalled();
 });
 
+// Not in IntelliJ 2024.1 (`docs/parity-matrix.md`). ⌘C copies the selected branch; with text
+// selected in the search field it is the field's own copy.
+test("command_c_copies_the_selected_branch_unless_search_text_is_selected", async () => {
+  await popup();
+  expect(selectedRow()).toBe("side");
+
+  await fireEvent.keyDown(field(), { key: "c", code: "KeyC", metaKey: true });
+  await waitFor(() => expect(calls("clipboard_write")).toEqual([["clipboard_write", { text: "side" }]]));
+
+  await type("ma");
+  (field() as HTMLInputElement).setSelectionRange(0, 2);
+  await fireEvent.keyDown(field(), { key: "c", code: "KeyC", metaKey: true });
+  expect(calls("clipboard_write")).toHaveLength(1);
+  // The same row without the text selection is copied.
+  (field() as HTMLInputElement).setSelectionRange(2, 2);
+  await fireEvent.keyDown(field(), { key: "c", code: "KeyC", metaKey: true });
+  await waitFor(() => expect(calls("clipboard_write")).toHaveLength(2));
+
+  await fireEvent.click(row("main"));
+  const menu = await screen.findByRole("menu", { name: "main" });
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy Branch Name" }));
+  await waitFor(() => expect(calls("clipboard_write").at(-1)).toEqual(["clipboard_write", { text: "main" }]));
+});
+
 test("right_arrow_and_click_also_open_the_submenu", async () => {
   await popup();
 

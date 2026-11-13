@@ -1,5 +1,6 @@
 import type { BranchList, FavoriteSet, LogRef } from "../lib/api";
 import type { MenuAction, MenuItem } from "../lib/menu";
+import { COPY_BRANCH_NAME } from "./copyName";
 import { speedMatch, type SpeedMatch } from "../lib/speedSearch";
 import { shortHash } from "../log/draw";
 import {
@@ -306,6 +307,8 @@ export interface BranchState {
   protectedBranches?: string[];
   // With a detached HEAD, `current` is `null` and the current one is named with the short hash.
   head?: string | null;
+  // `Copy Branch Name`, which IntelliJ does not have (`src/branches/copyName.ts`).
+  oncopy?: (name: string) => void;
 }
 
 const quoted = (name: string) => `'${truncated(name)}'`;
@@ -314,7 +317,7 @@ const DETACHED = "Rebase is not possible in the detached HEAD state";
 
 // `GitBranchPopupActions`, group `Git.Branch` (`X:236-254`).
 export function branchActions(branch: BranchNode, state: BranchState): MenuItem[] {
-  const { current, remotes, onvcs, protectedBranches = [], head = null } = state;
+  const { current, remotes, onvcs, oncopy, protectedBranches = [], head = null } = state;
   const { name, section, tracked } = branch;
   const remote = section === "remote";
   const ref: LogRef = { name, kind: remote ? "remote" : "local" };
@@ -355,6 +358,8 @@ export function branchActions(branch: BranchNode, state: BranchState): MenuItem[
     // Without commits HEAD has no hash (`repo_state` gives it empty).
     fresh: head === "",
   });
+  // Ramify's own last row: copying needs no repository operation, so `onvcs` does not turn it off.
+  const copy: MenuItem[] = oncopy ? [SEPARATOR, { label: COPY_BRANCH_NAME, run: () => oncopy(name) }] : [];
   if (remote) {
     return [
       item("Checkout", "checkout"),
@@ -367,6 +372,7 @@ export function branchActions(branch: BranchNode, state: BranchState): MenuItem[
       item(`Pull into ${target} Using Rebase`, "pullRebase"),
       SEPARATOR,
       item("Delete", "delete", isProtected(ref, protectedBranches)),
+      ...copy,
     ];
   }
   const update = item("Update", "update", tracked === null);
@@ -382,6 +388,7 @@ export function branchActions(branch: BranchNode, state: BranchState): MenuItem[
     SEPARATOR,
     item("Rename…", "rename"),
     ...(isCurrent ? [] : [item("Delete", "delete")]),
+    ...copy,
   ];
 }
 

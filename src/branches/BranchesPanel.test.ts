@@ -377,6 +377,18 @@ test("context_menu_with_the_branch_actions", async () => {
 
 // `MultipleLocalBranchActions` (`BranchesDashboardActions.kt:68-71`): with several branches chosen, a
 // right click inside the selection keeps it and shows their menu. Compare Branches and Show Files
+// Not in IntelliJ 2024.1 (`docs/parity-matrix.md`): the same row as in the popup.
+test("the_context_menu_copies_the_full_branch_name", async () => {
+  await panel();
+  const remote = screen.getAllByRole("treeitem", { name: "main" })[1];
+
+  await fireEvent.contextMenu(remote);
+  const menu = await screen.findByRole("menu", { name: "origin/main" });
+  await fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy Branch Name" }));
+
+  await waitFor(() => expect(calls("clipboard_write")).toEqual([["clipboard_write", { text: "origin/main" }]]));
+});
+
 // Diff exist only with exactly two (`BranchesPairActionBase`), the first against the second in
 // the order of the tree.
 test("compare_branches_needs_two_selected", async () => {

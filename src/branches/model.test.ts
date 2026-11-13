@@ -312,6 +312,23 @@ const NODE = (name: string, section: "local" | "remote"): BranchNode => ({
 
 const STATE = { current: "main", remotes: true };
 
+// Not in IntelliJ 2024.1 (`docs/parity-matrix.md`): the last row copies the full name, a remote
+// one with its remote. It needs no repository operation, so it stays on without `onvcs`.
+test("copy_branch_name_is_the_last_row_and_copies_the_full_name", () => {
+  const oncopy = vi.fn();
+  const local = branchActions(NODE("bugfix/HT-1-long-name", "local"), { ...STATE, oncopy });
+  const remote = branchActions(NODE("origin/feature/x", "remote"), { ...STATE, oncopy });
+
+  expect(shown(local).slice(-2)).toEqual(["—", "Copy Branch Name"]);
+  expect(shown(remote).slice(-2)).toEqual(["—", "Copy Branch Name"]);
+  expect(row(local, "Copy Branch Name").disabled).toBeFalsy();
+
+  row(local, "Copy Branch Name").run?.();
+  expect(oncopy).toHaveBeenLastCalledWith("bugfix/HT-1-long-name");
+  row(remote, "Copy Branch Name").run?.();
+  expect(oncopy).toHaveBeenLastCalledWith("origin/feature/x");
+});
+
 // `Git.Branch` (`X:236-254`): `Compare with '<current>'` and `Show Diff with Working Tree` after
 // `Checkout and Rebase onto…`; `GitCompareWithBranchAction.disabledForCurrent` hides Compare on the
 // current branch, as `disabledForCurrent` hides the others.
