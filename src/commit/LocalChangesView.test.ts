@@ -270,19 +270,19 @@ test("Commit… with nothing selected asks for the whole list and Commit File…
 });
 
 // A task whose end arrives through `task-changed`.
-let deliverTask: (id: number, failure?: string) => void = () => {};
+let deliverTask: (id: number, failure?: string, value?: unknown) => void = () => {};
 let nextTask = 700;
 
-function task(failure?: string) {
+function task(failure?: string, value: unknown = null) {
   const id = nextTask++;
-  setTimeout(() => deliverTask(id, failure));
+  setTimeout(() => deliverTask(id, failure, value));
   return id;
 }
 
 async function listenToTasks() {
   vi.mocked(listen).mockImplementation(async (event, handler) => {
     if (event === "task-changed") {
-      deliverTask = (id, failure) =>
+      deliverTask = (id, failure, value = null) =>
         handler({
           event: "task-changed",
           id: 0,
@@ -293,7 +293,7 @@ async function listenToTasks() {
             fraction: null,
             state: failure ? "failed" : "done",
             kind: failure ? "failed" : null,
-            value: null,
+            value,
           },
         } as never);
     }
@@ -332,6 +332,7 @@ test("Add to VCS is offered only for unversioned files, after Show Diff and befo
     "Commit File…",
     "Rollback…",
     "Show Diff",
+    "Delete",
     "Add to VCS",
     "New Changelist...",
     "Create Patch from Local Changes...",
@@ -344,8 +345,11 @@ test("Add to VCS is offered only for unversioned files, after Show Diff and befo
   const item = within(menu).getByRole("menuitem", { name: "Add to VCS" });
   expect(item.textContent).toContain("⌥⌘A");
   // The group of `$Delete`, `ChangesView.AddUnversioned` and `ChangesView.RemoveDeleted`, between two
-  // separators: Ramify has neither Delete nor Remove from VCS, so the group is only this item.
-  expect(item.previousElementSibling?.getAttribute("role")).toBe("separator");
+  // separators: Ramify has no Remove from VCS, so the group is Delete and this item.
+  const remove = within(menu).getByRole("menuitem", { name: "Delete" });
+  expect(remove.textContent).toContain("⌦");
+  expect(remove.previousElementSibling?.getAttribute("role")).toBe("separator");
+  expect(item.previousElementSibling).toBe(remove);
   expect(item.nextElementSibling?.getAttribute("role")).toBe("separator");
 });
 
@@ -967,4 +971,66 @@ test("a_double_click_and_modified_clicks_still_work_with_drag_on", async () => {
   await fireEvent.pointerUp(window, { clientX: 40, clientY: yOf(row(/^Changes/)) });
   await fireEvent.dblClick(row(/^Changes/));
   expect(screen.queryByRole("treeitem", { name: "a.txt" })).toBeNull();
+});
+
+// `$Delete` (`VirtualFileDeleteProvider`) for unversioned files: IntelliJ's question, then the
+// files go to the Trash (in the backend). Not for a versioned file, which Rollback undoes.
+function deletingCommands(problems: string[] = []) {
+  let status = WITH_NEW;
+  mockCommands({
+    repo_status: () => status,
+    unversioned_delete: () => {
+      if (problems.length === 0) status = WITH_NEW.slice(0, 3);
+      return task(undefined, problems);
+    },
+  });
+}
+
+test("delete_asks_like_intellij_and_sends_the_unversioned_files_away", async () => {
+  await listenToTasks();
+  deletingCommands();
+  await open();
+  await fireEvent.click(row(/^Unversioned Files/));
+
+  await fireEvent.keyDown(window, { key: "Backspace" });
+  const question = await screen.findByRole("dialog", { name: "Delete" });
+  expect(within(question).getByText("Delete 'new.txt'?")).toBeTruthy();
+  expect(within(question).getAllByRole("button").map((button) => button.textContent?.trim())).toContain("Cancel");
+  await fireEvent.click(within(question).getByRole("button", { name: "Delete" }));
+
+  await waitFor(() => expect(screen.queryByRole("treeitem", { name: /^Unversioned Files/ })).toBeNull());
+  expect(calls("unversioned_delete").map(([, args]) => args)).toEqual([{ repo: "/repo", paths: ["new.txt"] }]);
+});
+
+test("cancel_deletes_nothing_and_a_versioned_file_is_not_offered", async () => {
+  await listenToTasks();
+  deletingCommands();
+  await open();
+  await fireEvent.click(row(/^Unversioned Files/));
+  await fireEvent.keyDown(window, { key: "Delete" });
+  const question = await screen.findByRole("dialog", { name: "Delete" });
+  await fireEvent.click(within(question).getByRole("button", { name: "Cancel" }));
+
+  await fireEvent.click(row("a.txt"));
+  await fireEvent.keyDown(window, { key: "Backspace", metaKey: true });
+  expect(screen.queryByRole("dialog", { name: "Delete" })).toBeNull();
+
+  await fireEvent.click(row(/^Unversioned Files/), { metaKey: true });
+  const menu = await contextMenu(/^Unversioned Files/);
+  const item = within(menu).getByRole("menuitem", { name: "Delete" });
+  expect((item as HTMLButtonElement).disabled).toBe(true);
+  expect(calls("unversioned_delete")).toHaveLength(0);
+});
+
+test("files_the_trash_refused_are_named_in_an_error", async () => {
+  await listenToTasks();
+  deletingCommands(["new.txt"]);
+  await open();
+  await fireEvent.click(row(/^Unversioned Files/));
+  await fireEvent.keyDown(window, { key: "Backspace" });
+  await fireEvent.click(within(await screen.findByRole("dialog", { name: "Delete" })).getByRole("button", { name: "Delete" }));
+
+  const error = await screen.findByRole("dialog", { name: "Error" });
+  expect(error.textContent).toContain("Could not erase files or folders:");
+  expect(error.textContent).toContain("new.txt");
 });

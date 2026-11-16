@@ -6,9 +6,12 @@
     lines: string[];
     onconfirm: () => void;
     onclose: () => void;
+    // `Yes` and `No` unless the question has its own buttons (`Delete` and `Cancel`, say).
+    confirmLabel?: string;
+    cancelLabel?: string;
   }
 
-  let { title, lines, onconfirm, onclose }: Props = $props();
+  let { title, lines, onconfirm, onclose, confirmLabel = "Yes", cancelLabel = "No" }: Props = $props();
 </script>
 
 <Dialog {title} {onclose} onsubmit={onconfirm} width={420}>
@@ -16,8 +19,8 @@
     <p>{line}</p>
   {/each}
   {#snippet footer()}
-    <button type="button" class="button" onclick={onclose}>No</button>
-    <button class="button default" data-autofocus>Yes</button>
+    <button type="button" class="button" onclick={onclose}>{cancelLabel}</button>
+    <button class="button default" data-autofocus>{confirmLabel}</button>
   {/snippet}
 </Dialog>
 

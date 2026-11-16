@@ -16,6 +16,7 @@
   import { onDestroy, onMount, tick, untrack, type Snippet } from "svelte";
   import {
     changesAdd,
+    unversionedDelete,
     changelistsCreate,
     changelistsGet,
     changelistsImport,
@@ -57,6 +58,8 @@
   import ChangesTree from "./ChangesTree.svelte";
   import { checkinFilesText } from "./checkin";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { DELETE_TITLE, ERROR_TITLE, deleteProblems, deleteQuestion } from "./deleteFiles";
+  import Dialog from "../lib/Dialog.svelte";
   import ListChooserDialog from "./ListChooserDialog.svelte";
   import { requestExecutor } from "./dialogStore";
   import { latestOnly } from "./refresh";
@@ -175,7 +178,9 @@
     | { kind: "remove-empty"; list: ChangeList }
     | { kind: "remove-active"; list: ChangeList }
     | { kind: "rollback"; files: FileChange[]; checked: string[] }
-    | { kind: "snapshots" };
+    | { kind: "snapshots" }
+    | { kind: "delete"; paths: string[] }
+    | { kind: "delete-failed"; names: string[] };
 
   interface Notice {
     id: number;
@@ -675,6 +680,29 @@
     });
   }
 
+  // `$Delete` (`VirtualFileDeleteProvider`) with unversioned files only: a versioned file is undone
+  // with Rollback. They go to the Trash (`src-tauri/src/unversioned.rs`), after IntelliJ's question.
+  // Not in the Commit dialog's browser.
+  const ONLY_UNVERSIONED = "Only unversioned files are deleted here; use Rollback for the others";
+  function openDelete(): boolean {
+    if (browser || selectedUnversioned.length === 0 || selectedVersioned.length > 0) return false;
+    dialog = { kind: "delete", paths: selectedUnversioned.map((file) => file.path) };
+    return true;
+  }
+
+  async function deleteConfirmed(paths: string[]) {
+    dialog = null;
+    try {
+      const problems = await taskResult<string[]>(await unversionedDelete(repo.path, paths));
+      if (problems.length > 0) dialog = { kind: "delete-failed", names: problems };
+    } catch (failure) {
+      if ((failure as ApiError).kind !== "cancelled") {
+        showNotification({ kind: "error", title: errorText(failure) });
+      }
+    }
+    await reload();
+  }
+
   // `ChangesView.AddUnversioned` (`ScheduleForAdditionAction`): the unversioned files of the selection go
   // to the index and then to the active list or, in the dialog's browser, to the dialog's list, which
   // includes them in the commit (`moveAddedChangesTo`). Ignored files are not listed, so the
@@ -907,10 +935,21 @@
       });
     }
     if (count > 0) items.push({ label: "Show Diff", shortcut: "⌘D", run: showDiff });
-    // `ChangesView.AddUnversioned` is visible here only when enabled; `$Delete` and `Remove from VCS`,
-    // the rest of its group, Ramify does not have.
+    // The group `$Delete`, `ChangesView.AddUnversioned`, `ChangesView.RemoveDeleted`. Delete is for
+    // unversioned files only (`openDelete`) and Add to VCS is visible only when enabled; `Remove from
+    // VCS` Ramify does not have. `⌦` is the first key of `$Delete`, as IntelliJ shows it.
     if (selectedUnversioned.length > 0) {
-      items.push(null, { label: "Add to VCS", shortcut: "⌥⌘A", run: () => addToVcs() });
+      items.push(null);
+      if (!browser) {
+        items.push({
+          label: "Delete",
+          shortcut: "⌦",
+          disabled: selectedVersioned.length > 0,
+          title: selectedVersioned.length > 0 ? ONLY_UNVERSIONED : undefined,
+          run: openDelete,
+        });
+      }
+      items.push({ label: "Add to VCS", shortcut: "⌥⌘A", run: () => addToVcs() });
     }
     items.push(null, { label: "New Changelist...", run: openNew });
     if (canRemove(singleList)) items.push({ label: "Delete Changelist", run: removeList });
@@ -1035,12 +1074,17 @@
   // These act on the tree selection: they must not trigger while typing.
   function keydown(event: KeyboardEvent) {
     if (!active || suspended || dialog || menu) return;
-    const action = matchShortcut(event);
-    if (!action) return;
     const typing =
       event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement;
     if (typing) return;
-    if (perform(action)) event.preventDefault();
+    // `$Delete`: Delete, ⌫ and ⌘⌫, as in the Stash and Shelf tabs.
+    const deleteKey = event.key === "Delete" || event.key === "Backspace";
+    if (deleteKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+      if (openDelete()) event.preventDefault();
+      return;
+    }
+    const action = matchShortcut(event);
+    if (action && perform(action)) event.preventDefault();
   }
 
   $effect(() => {
@@ -1347,6 +1391,23 @@
     onconfirm={(name, makeActive) => moveTo(paths, name, makeActive)}
     onclose={() => (dialog = null)}
   />
+{:else if dialog?.kind === "delete"}
+  {@const paths = dialog.paths}
+  <ConfirmDialog
+    title={DELETE_TITLE}
+    lines={[deleteQuestion(paths)]}
+    confirmLabel="Delete"
+    cancelLabel="Cancel"
+    onconfirm={() => void deleteConfirmed(paths)}
+    onclose={() => (dialog = null)}
+  />
+{:else if dialog?.kind === "delete-failed"}
+  <Dialog title={ERROR_TITLE} width={420} onclose={() => (dialog = null)} onsubmit={() => (dialog = null)}>
+    <p class="delete-problems">{deleteProblems(dialog.names)}</p>
+    {#snippet footer()}
+      <button class="button default" data-autofocus>OK</button>
+    {/snippet}
+  </Dialog>
 {:else if dialog?.kind === "confirm-remove"}
   {@const list = dialog.list}
   <ConfirmDialog
@@ -1391,6 +1452,11 @@
 {/if}
 
 <style>
+  .delete-problems {
+    margin: 0;
+    white-space: pre-wrap;
+  }
+
   .panel {
     display: flex;
     flex: 1;

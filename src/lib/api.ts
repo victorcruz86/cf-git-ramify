@@ -757,6 +757,9 @@ export const stagingUnstageHunks = (path: string, selection: LineSelection[]) =>
 // copy, if there was something that was only in the index.
 export const changesAdd = (repo: string, paths: string[]) =>
   invoke<number>("changes_add", { repo, paths });
+// `$Delete` of unversioned files in Local Changes: to the Trash. The task gives the names it could not move.
+export const unversionedDelete = (repo: string, paths: string[]) =>
+  invoke<number>("unversioned_delete", { repo, paths });
 export const stagingSides = (path: string, comparison: Comparison) =>
   invoke<WorktreeSides>("staging_sides", { path, comparison });
 export const stagingPreview = (path: string, content: string) =>

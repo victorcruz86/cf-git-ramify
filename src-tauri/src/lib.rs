@@ -55,6 +55,7 @@ pub mod terminal;
 mod test_support;
 pub mod todo;
 pub mod tree;
+pub mod unversioned;
 pub mod update;
 pub mod vcs_commands;
 pub mod viewer;
@@ -224,6 +225,7 @@ pub fn run() {
             vcs_commands::apply_commit_after_conflicts,
             vcs_commands::apply_paths,
             vcs_commands::changes_add,
+            vcs_commands::unversioned_delete,
             vcs_commands::merge_message,
             vcs_commands::merge_blocks,
             vcs_commands::staging_three_sides,

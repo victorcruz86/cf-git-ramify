@@ -55,6 +55,8 @@ const CHECK_LIMIT: Duration = Duration::from_secs(60);
 // `merge.dialog.customizer.collecting.details.progress` (B:1293).
 const COLLECTING_DETAILS: &str = "Collecting Commits Details…";
 const ADDING_FILES: &str = "Adding Files to VCS…";
+// `progress.title.deleting.files` of `VirtualFileDeleteProvider`.
+const DELETING_FILES: &str = "Deleting Files\u{2026}";
 const ADDING_REMOTE: &str = "Adding Remote…";
 const CHANGING_REMOTE: &str = "Changing Remote…";
 const COMMITTING: &str = "Committing…";
@@ -906,6 +908,39 @@ pub async fn changes_add(
         TaskKind::Write,
         ADDING_FILES.to_string(),
         move |repo| -> Result<Option<SnapshotId>, GitError> { staging::add_to_vcs(repo, &paths) },
+    )
+}
+
+// `$Delete` of Local Changes for unversioned files (`unversioned.rs`): to the Trash. `repo` is the
+// repository the interface saw, as in `changes_add`. The task's result is the names of the files that
+// could not be moved.
+#[tauri::command]
+pub async fn unversioned_delete(
+    repo: String,
+    paths: Vec<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    if current_repo(&state, &window)? != Path::new(&repo) {
+        return Err(failed(
+            "Another repository was opened before the files were deleted".to_string(),
+        ));
+    }
+    start(
+        &app,
+        &state,
+        &window,
+        TaskKind::Write,
+        DELETING_FILES.to_string(),
+        move |repo| -> Result<Vec<String>, GitError> {
+            commit::ensure_idle(repo.path, repo.data).map_err(|error| match error {
+                commit::CommitError::Git(error) => error,
+                other => GitError::Io(other.to_string()),
+            })?;
+            crate::unversioned::delete(repo.path, &paths, &mut crate::unversioned::to_trash)
+        },
     )
 }
 
@@ -3121,7 +3156,7 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('(').unwrap()])
             .collect();
-        assert_eq!(commands.len(), 137, "{commands:?}");
+        assert_eq!(commands.len(), 138, "{commands:?}");
         let unsaved = |name: &&&str| {
             !READS.contains(name)
                 && !ELSEWHERE.contains(name)
