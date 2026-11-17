@@ -23,6 +23,7 @@ pub mod history;
 pub mod hosting;
 pub mod hunks;
 pub mod idea_import;
+pub mod ignore_files;
 pub mod log;
 pub mod merge;
 pub mod merge3;
@@ -226,6 +227,8 @@ pub fn run() {
             vcs_commands::apply_paths,
             vcs_commands::changes_add,
             vcs_commands::unversioned_delete,
+            vcs_commands::ignore_targets,
+            vcs_commands::ignore_add,
             vcs_commands::merge_message,
             vcs_commands::merge_blocks,
             vcs_commands::staging_three_sides,

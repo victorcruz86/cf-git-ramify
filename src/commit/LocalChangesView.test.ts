@@ -69,6 +69,7 @@ function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
     repo_status: () => [change("a.txt"), change("b.txt"), change("c.txt")],
     changelists_get: () => LISTS,
     worktree_sides: () => SIDES,
+    ignore_targets: () => ({ gitignores: [".gitignore"], create: false }),
     ...commands,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -334,6 +335,7 @@ test("Add to VCS is offered only for unversioned files, after Show Diff and befo
     "Show Diff",
     "Delete",
     "Add to VCS",
+    "Add to .gitignore",
     "New Changelist...",
     "Create Patch from Local Changes...",
     "Copy as Patch to Clipboard",
@@ -345,12 +347,15 @@ test("Add to VCS is offered only for unversioned files, after Show Diff and befo
   const item = within(menu).getByRole("menuitem", { name: "Add to VCS" });
   expect(item.textContent).toContain("⌥⌘A");
   // The group of `$Delete`, `ChangesView.AddUnversioned` and `ChangesView.RemoveDeleted`, between two
-  // separators: Ramify has no Remove from VCS, so the group is Delete and this item.
+  // separators: Ramify has no Remove from VCS, so the group is Delete and this item, and git4idea adds
+  // `Git.Ignore.File` after Add to VCS.
   const remove = within(menu).getByRole("menuitem", { name: "Delete" });
+  const ignore = within(menu).getByRole("menuitem", { name: "Add to .gitignore" });
   expect(remove.textContent).toContain("⌦");
   expect(remove.previousElementSibling?.getAttribute("role")).toBe("separator");
   expect(item.previousElementSibling).toBe(remove);
-  expect(item.nextElementSibling?.getAttribute("role")).toBe("separator");
+  expect(item.nextElementSibling).toBe(ignore);
+  expect(ignore.nextElementSibling?.getAttribute("role")).toBe("separator");
 });
 
 test("Add to VCS adds the selected unversioned files and they show in the active list", async () => {
@@ -1020,6 +1025,99 @@ test("cancel_deletes_nothing_and_a_versioned_file_is_not_offered", async () => {
   const item = within(menu).getByRole("menuitem", { name: "Delete" });
   expect((item as HTMLButtonElement).disabled).toBe(true);
   expect(calls("unversioned_delete")).toHaveLength(0);
+});
+
+// `Git.Ignore.File` (`GitIgnoreFileActionGroup`): after Add to VCS, the `.gitignore` files that cover
+// the selection and `.git/info/exclude`; the file is written in the backend.
+function ignoringCommands(
+  targets = { gitignores: [".gitignore", "web/.gitignore"], create: false },
+  status: FileChange[] = WITH_NEW,
+) {
+  let shown = status;
+  mockCommands({
+    repo_status: () => shown,
+    ignore_targets: () => targets,
+    ignore_add: () => {
+      shown = status.filter((file) => file.state !== "untracked");
+      return task();
+    },
+  });
+}
+
+const submenu = async (menu: HTMLElement, name: string) => {
+  await fireEvent.pointerEnter(within(menu).getByRole("menuitem", { name }));
+  return screen.getByRole("menu", { name });
+};
+
+test("add_to_gitignore_lists_the_covering_gitignores_then_the_exclude_file_and_writes_the_chosen_one", async () => {
+  await listenToTasks();
+  ignoringCommands();
+  await open();
+  const versioned = await contextMenu("a.txt");
+  expect(labels(versioned)).not.toContain("Add to .gitignore");
+  expect(calls("ignore_targets")).toHaveLength(0);
+  await fireEvent.keyDown(versioned, { key: "Escape" });
+
+  await fireEvent.click(row(/^Unversioned Files/));
+  const group = await submenu(await contextMenu(/^Unversioned Files/), "Add to .gitignore");
+  expect(labels(group)).toEqual([".gitignore", "web/.gitignore", ".git/info/exclude"]);
+  await fireEvent.click(within(group).getByRole("menuitem", { name: ".git/info/exclude" }));
+
+  await waitFor(() => expect(screen.queryByRole("treeitem", { name: /^Unversioned Files/ })).toBeNull());
+  const entries = [{ path: "new.txt", directory: false }];
+  expect(calls("ignore_targets").map(([, args]) => args)).toEqual([{ entries }]);
+  expect(calls("ignore_add").map(([, args]) => args)).toEqual([
+    { repo: "/repo", target: { kind: "exclude" }, entries },
+  ]);
+});
+
+test("a_selected_folder_is_ignored_as_a_folder", async () => {
+  await listenToTasks();
+  const status = [change("a.txt"), change("video/a.jpg", "untracked"), change("video/b.jpg", "untracked")];
+  ignoringCommands(undefined, status);
+  await open();
+  await fireEvent.click(row(/^Unversioned Files/));
+  await fireEvent.keyDown(screen.getByRole("tree"), { key: "ArrowRight" });
+  await fireEvent.click(await screen.findByRole("treeitem", { name: /^video/ }));
+
+  const group = await submenu(await contextMenu(/^video/), "Add to .gitignore");
+  await fireEvent.click(within(group).getByRole("menuitem", { name: "web/.gitignore" }));
+
+  await waitFor(() => expect(calls("ignore_add")).toHaveLength(1));
+  const entries = [{ path: "video", directory: true }];
+  expect(calls("ignore_targets").map(([, args]) => args)).toEqual([{ entries }]);
+  expect(calls("ignore_add")[0][1]).toEqual({
+    repo: "/repo",
+    target: { kind: "gitignore", path: "web/.gitignore" },
+    entries,
+  });
+});
+
+test("without_a_gitignore_add_to_gitignore_asks_to_create_one_at_the_root", async () => {
+  await listenToTasks();
+  ignoringCommands({ gitignores: [], create: true });
+  await open();
+  await fireEvent.click(row(/^Unversioned Files/));
+  const choose = async () => {
+    const group = await submenu(await contextMenu(/^Unversioned Files/), "Add to .gitignore");
+    expect(labels(group)).toEqual(["Add to .gitignore", ".git/info/exclude"]);
+    await fireEvent.click(within(group).getByRole("menuitem", { name: "Add to .gitignore" }));
+    return screen.findByRole("dialog", { name: "Create .gitignore" });
+  };
+
+  const question = await choose();
+  expect(question.textContent).toContain("Create .gitignore file in /repo?");
+  await fireEvent.click(within(question).getByRole("button", { name: "Cancel" }));
+  expect(calls("ignore_add")).toHaveLength(0);
+
+  await fireEvent.click(within(await choose()).getByRole("button", { name: "Create" }));
+
+  await waitFor(() => expect(calls("ignore_add")).toHaveLength(1));
+  expect(calls("ignore_add")[0][1]).toEqual({
+    repo: "/repo",
+    target: { kind: "create" },
+    entries: [{ path: "new.txt", directory: false }],
+  });
 });
 
 test("files_the_trash_refused_are_named_in_an_error", async () => {

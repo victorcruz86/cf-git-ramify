@@ -57,6 +57,8 @@ const COLLECTING_DETAILS: &str = "Collecting Commits Details…";
 const ADDING_FILES: &str = "Adding Files to VCS…";
 // `progress.title.deleting.files` of `VirtualFileDeleteProvider`.
 const DELETING_FILES: &str = "Deleting Files\u{2026}";
+// `ignoring.files.progress.title` of `AddToGitExcludeAction`.
+const IGNORING_FILES: &str = "Ignoring Files\u{2026}";
 const ADDING_REMOTE: &str = "Adding Remote…";
 const CHANGING_REMOTE: &str = "Changing Remote…";
 const COMMITTING: &str = "Committing…";
@@ -940,6 +942,46 @@ pub async fn unversioned_delete(
                 other => GitError::Io(other.to_string()),
             })?;
             crate::unversioned::delete(repo.path, &paths, &mut crate::unversioned::to_trash)
+        },
+    )
+}
+
+// What `Add to .gitignore` of Local Changes offers for these files (`ignore_files.rs`).
+#[tauri::command]
+pub async fn ignore_targets(
+    entries: Vec<crate::ignore_files::Entry>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<crate::ignore_files::Targets, ApiError> {
+    let repo = current_repo(&state, &window)?;
+    blocking_api(move || Ok(crate::ignore_files::targets(&repo, &entries)?)).await
+}
+
+// `Add to .gitignore`: the files go into the chosen ignore file. `repo` is the repository the interface
+// saw, as in `changes_add`.
+#[tauri::command]
+pub async fn ignore_add(
+    repo: String,
+    target: crate::ignore_files::Target,
+    entries: Vec<crate::ignore_files::Entry>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ApiError> {
+    flush_diff_window(&app, &state, &window, SAVE_ACTION).await?;
+    if current_repo(&state, &window)? != Path::new(&repo) {
+        return Err(failed(
+            "Another repository was opened before the files were ignored".to_string(),
+        ));
+    }
+    start(
+        &app,
+        &state,
+        &window,
+        TaskKind::Write,
+        IGNORING_FILES.to_string(),
+        move |repo| -> Result<(), GitError> {
+            crate::ignore_files::add(repo.path, &target, &entries)
         },
     )
 }
@@ -3065,7 +3107,7 @@ mod tests {
     }
 
     // Reads change nothing: there is nothing to save beforehand.
-    const READS: [&str; 55] = [
+    const READS: [&str; 56] = [
         "merge_message",
         "shelf_lists",
         "shelf_sides",
@@ -3096,6 +3138,7 @@ mod tests {
         "unmerged_branches",
         "merge_summary",
         "revisions_valid",
+        "ignore_targets",
         "rebase_published",
         "rewrite_menu",
         "rewrite_check",
@@ -3156,7 +3199,7 @@ mod tests {
             .skip(1)
             .map(|rest| &rest[..rest.find('(').unwrap()])
             .collect();
-        assert_eq!(commands.len(), 138, "{commands:?}");
+        assert_eq!(commands.len(), 140, "{commands:?}");
         let unsaved = |name: &&&str| {
             !READS.contains(name)
                 && !ELSEWHERE.contains(name)

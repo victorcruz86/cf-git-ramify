@@ -24,6 +24,8 @@ export interface TreeNode {
   active: boolean;
   // No checkbox, even if it has files.
   checkable?: boolean;
+  // A directory node's folder, from the root.
+  folder?: string;
 }
 
 export interface TreeRow {
@@ -136,14 +138,10 @@ function folderNodes(
       current = next;
     }
     const path = prefix + label;
-    directories.push(
-      group(
-        `dir:${scope}:${path}`,
-        "directory",
-        label,
-        folderNodes(scope, parts, `${path}/`, current),
-      ),
-    );
+    directories.push({
+      ...group(`dir:${scope}:${path}`, "directory", label, folderNodes(scope, parts, `${path}/`, current)),
+      folder: path,
+    });
   }
   directories.sort((left, right) => compareNames(left.name, right.name));
   const files = folder.files

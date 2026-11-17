@@ -760,6 +760,23 @@ export const changesAdd = (repo: string, paths: string[]) =>
 // `$Delete` of unversioned files in Local Changes: to the Trash. The task gives the names it could not move.
 export const unversionedDelete = (repo: string, paths: string[]) =>
   invoke<number>("unversioned_delete", { repo, paths });
+// `Add to .gitignore` of Local Changes (`src-tauri/src/ignore_files.rs`). A folder of the tree is
+// written as a folder.
+export interface IgnoreEntry {
+  path: string;
+  directory: boolean;
+}
+// The `.gitignore` files that cover every entry, root first, and whether one can be created at the
+// root because none does; `.git/info/exclude` is always offered.
+export interface IgnoreTargets {
+  gitignores: string[];
+  create: boolean;
+}
+export type IgnoreTarget = { kind: "gitignore"; path: string } | { kind: "create" } | { kind: "exclude" };
+export const ignoreTargets = (entries: IgnoreEntry[]) =>
+  invoke<IgnoreTargets>("ignore_targets", { entries });
+export const ignoreAdd = (repo: string, target: IgnoreTarget, entries: IgnoreEntry[]) =>
+  invoke<number>("ignore_add", { repo, target, entries });
 export const stagingSides = (path: string, comparison: Comparison) =>
   invoke<WorktreeSides>("staging_sides", { path, comparison });
 export const stagingPreview = (path: string, content: string) =>

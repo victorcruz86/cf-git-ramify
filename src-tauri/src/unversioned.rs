@@ -17,7 +17,7 @@ fn invalid(error: io::Error) -> GitError {
 }
 
 // The files of `paths` that git lists as unversioned, with the user's ignore rules applied.
-fn unversioned(repo: &Path, paths: &[String]) -> Result<BTreeSet<String>, GitError> {
+pub(crate) fn unversioned(repo: &Path, paths: &[String]) -> Result<BTreeSet<String>, GitError> {
     let mut found = BTreeSet::new();
     for chunk in paths.chunks(git::PATHS_PER_COMMAND) {
         let mut args = vec![

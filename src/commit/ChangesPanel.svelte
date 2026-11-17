@@ -17,6 +17,11 @@
   import {
     changesAdd,
     unversionedDelete,
+    ignoreAdd,
+    ignoreTargets,
+    type IgnoreEntry,
+    type IgnoreTarget,
+    type IgnoreTargets,
     changelistsCreate,
     changelistsGet,
     changelistsImport,
@@ -42,7 +47,9 @@
     type RepoInfo,
     type StageComparison,
   } from "../lib/api";
+  import { homeDir } from "@tauri-apps/api/path";
   import { errorText } from "../lib/errors";
+  import { homeRelative } from "../project/open";
   import Icon from "../lib/Icon.svelte";
   import type { ActionId } from "../lib/keymap";
   import { matchShortcut } from "../lib/keymap";
@@ -58,6 +65,12 @@
   import ChangesTree from "./ChangesTree.svelte";
   import { checkinFilesText } from "./checkin";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import {
+    CREATE_GITIGNORE_TITLE,
+    createGitignoreQuestion,
+    ignoreEntries,
+    ignoreMenu,
+  } from "./ignoreFiles";
   import { DELETE_TITLE, ERROR_TITLE, deleteProblems, deleteQuestion } from "./deleteFiles";
   import Dialog from "../lib/Dialog.svelte";
   import ListChooserDialog from "./ListChooserDialog.svelte";
@@ -180,7 +193,8 @@
     | { kind: "rollback"; files: FileChange[]; checked: string[] }
     | { kind: "snapshots" }
     | { kind: "delete"; paths: string[] }
-    | { kind: "delete-failed"; names: string[] };
+    | { kind: "delete-failed"; names: string[] }
+    | { kind: "create-gitignore"; entries: IgnoreEntry[]; location: string };
 
   interface Notice {
     id: number;
@@ -690,6 +704,30 @@
     return true;
   }
 
+  // `Add to .gitignore` (`ignore_files.rs`). Creating the root's `.gitignore` asks first, as
+  // `CreateNewIgnoreFileAction` does.
+  async function ignoreChosen(target: IgnoreTarget, entries: IgnoreEntry[]) {
+    if (target.kind === "create") {
+      const home = await homeDir().catch(() => null);
+      const location = homeRelative(repo.path, home?.replace(/\/$/, "") ?? null);
+      dialog = { kind: "create-gitignore", entries, location };
+      return;
+    }
+    await ignore(target, entries);
+  }
+
+  async function ignore(target: IgnoreTarget, entries: IgnoreEntry[]) {
+    dialog = null;
+    try {
+      await taskResult<null>(await ignoreAdd(repo.path, target, entries));
+    } catch (failure) {
+      if ((failure as ApiError).kind !== "cancelled") {
+        showNotification({ kind: "error", title: errorText(failure) });
+      }
+    }
+    await reload();
+  }
+
   async function deleteConfirmed(paths: string[]) {
     dialog = null;
     try {
@@ -903,8 +941,9 @@
     menu = { x, y, label: "Changes", items };
   }
 
-  // `ChangesViewPopupMenu`, without what Ramify does not have yet.
-  function openContextMenu(x: number, y: number) {
+  // `ChangesViewPopupMenu`, without what Ramify does not have yet. With unversioned files it first asks
+  // which ignore files cover them, for `Add to .gitignore`.
+  async function openContextMenu(x: number, y: number) {
     if (browser) {
       openBrowserMenu(x, y);
       return;
@@ -913,6 +952,9 @@
       openStagingMenu(x, y);
       return;
     }
+    const entries = selectedUnversioned.length > 0 ? ignoreEntries(selectedNodes) : [];
+    const targets =
+      entries.length > 0 ? await ignoreTargets(entries).catch((): IgnoreTargets | null => null) : null;
     const count = selectedFiles.length;
     const items: MenuItem[] = conflictActions();
     // The status lists every file (`--untracked-files=all`) and folders are helper nodes, as in
@@ -950,6 +992,9 @@
         });
       }
       items.push({ label: "Add to VCS", shortcut: "⌥⌘A", run: () => addToVcs() });
+      if (!browser && entries.length > 0) {
+        items.push(ignoreMenu(targets, (target) => ignoreChosen(target, entries)));
+      }
     }
     items.push(null, { label: "New Changelist...", run: openNew });
     if (canRemove(singleList)) items.push({ label: "Delete Changelist", run: removeList });
@@ -1399,6 +1444,16 @@
     confirmLabel="Delete"
     cancelLabel="Cancel"
     onconfirm={() => void deleteConfirmed(paths)}
+    onclose={() => (dialog = null)}
+  />
+{:else if dialog?.kind === "create-gitignore"}
+  {@const entries = dialog.entries}
+  <ConfirmDialog
+    title={CREATE_GITIGNORE_TITLE}
+    lines={[createGitignoreQuestion(dialog.location)]}
+    confirmLabel="Create"
+    cancelLabel="Cancel"
+    onconfirm={() => void ignore({ kind: "create" }, entries)}
     onclose={() => (dialog = null)}
   />
 {:else if dialog?.kind === "delete-failed"}
