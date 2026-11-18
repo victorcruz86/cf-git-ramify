@@ -13,6 +13,7 @@ import type {
 } from "../lib/api";
 import { dismiss, notifications, type Shown } from "../lib/notifications";
 import { takeShelfTabRequest } from "../shelf/flow";
+import { RAMIFY_DEFAULTS, ramifyOptions } from "../lib/ramifyOptions";
 import {
   UPDATE_ACTIONS,
   fetching,
@@ -62,7 +63,7 @@ function api(overrides: Partial<UpdateApi> = {}): UpdateApi {
     saveSettings: vi.fn(async () => {}),
     update: vi.fn(async () => result()),
     pullInto: vi.fn(async () => result()),
-    updateBranch: vi.fn(async () => {}),
+    updateBranch: vi.fn(async (): Promise<[string, string] | null> => null),
     fetch: vi.fn(async () => ({ pruned: [], failed: [] })),
     abort: vi.fn(async () => "merge" as const),
     state: vi.fn(async () => ({ operation: "merging" as const, branch: "main", label: "Merging main", head: "abc" })),
@@ -103,6 +104,7 @@ const labels = (title: string) => titled(title).actions?.map(({ label }) => labe
 
 beforeEach(() => {
   shown().forEach(({ id }) => dismiss(id));
+  ramifyOptions.set(RAMIFY_DEFAULTS);
   showStashes.mockReset();
   takeShelfTabRequest();
 });
@@ -271,6 +273,47 @@ describe("the actions share a flow", () => {
     expect(order).toEqual(["other", "third", "update project"]);
     expect(titled("Updated branches:").body).toBe("other\nthird");
     expect(get(notifications).filter(({ title }) => title.startsWith("Updated branch"))).toHaveLength(1);
+  });
+
+  // Ramify's own `View Commits` (Settings > Ramify): the `Update Info` tab with what the branch received.
+  test("an_updated_branch_that_received_commits_offers_view_commits", async () => {
+    const viewCommits = vi.fn();
+    const backend = api({ updateBranch: vi.fn(async () => ["a", "b"] as [string, string]) });
+
+    await flow(backend, [], viewCommits).updateBranch("other");
+
+    expect(titled("Updated branch:").body).toBe("other");
+    expect(labels("Updated branch:")).toEqual(["View Commits"]);
+    click("Updated branch:", "View Commits");
+    expect(viewCommits).toHaveBeenCalledWith(["a", "b"]);
+  });
+
+  test("a_branch_that_was_up_to_date_has_no_view_commits", async () => {
+    await flow(api(), [], vi.fn()).updateBranch("other");
+
+    expect(titled("Updated branch:").actions).toBeUndefined();
+  });
+
+  test("with_several_branches_each_one_that_received_commits_is_named", async () => {
+    const viewCommits = vi.fn();
+    const ranges: Record<string, [string, string] | null> = { other: ["a", "b"], third: null, fourth: ["c", "d"] };
+    const backend = api({ updateBranch: vi.fn(async (name: string) => ranges[name]) });
+
+    await flow(backend, [], viewCommits).updateBranches(["other", "third", "fourth"]);
+
+    expect(labels("Updated branches:")).toEqual(["View Commits in 'other'", "View Commits in 'fourth'"]);
+    click("Updated branches:", "View Commits in 'fourth'");
+    expect(viewCommits).toHaveBeenCalledWith(["c", "d"]);
+  });
+
+  test("with_the_option_off_the_notice_is_intellijs", async () => {
+    ramifyOptions.set({ ...RAMIFY_DEFAULTS, viewUpdatedBranchCommits: false });
+    const backend = api({ updateBranch: vi.fn(async () => ["a", "b"] as [string, string]) });
+
+    await flow(backend, [], vi.fn()).updateBranch("other");
+
+    expect(titled("Updated branch:").body).toBe("other");
+    expect(titled("Updated branch:").actions).toBeUndefined();
   });
 
   test("update_of_another_branch_that_fails_gives_update_failed", async () => {

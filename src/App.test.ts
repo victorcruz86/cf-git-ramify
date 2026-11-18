@@ -106,6 +106,7 @@ const SETTINGS = {
   commitMessageTicket: true,
   notifyExternalChanges: true,
   copyBranchName: true,
+  viewUpdatedBranchCommits: true,
 };
 
 const NON_MODAL = { ...SETTINGS, nonModalCommit: true };

@@ -473,10 +473,12 @@ export interface Settings {
   // `Reopen projects on startup` (`reopenLastProject`).
   reopenProjects: boolean;
   // Ramify's own (the `Ramify` section of Settings): the ticket of the branch name at the start of
-  // an empty commit message, the notice of Git changes made outside Ramify, and `Copy Branch Name`.
+  // an empty commit message, the notice of Git changes made outside Ramify, `Copy Branch Name`, and
+  // `View Commits` after updating a branch that is not the current one.
   commitMessageTicket: boolean;
   notifyExternalChanges: boolean;
   copyBranchName: boolean;
+  viewUpdatedBranchCommits: boolean;
 }
 
 export type CommitMode = "modal" | "non-modal";

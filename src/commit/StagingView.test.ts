@@ -52,6 +52,7 @@ const SETTINGS: Settings = {
   commitMessageTicket: true,
   notifyExternalChanges: true,
   copyBranchName: true,
+  viewUpdatedBranchCommits: true,
 };
 
 const LISTS = {

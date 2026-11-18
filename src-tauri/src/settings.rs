@@ -109,8 +109,11 @@ pub struct Settings {
     pub commit_message_ticket: bool,
     // notify when another program switches the branch, moves HEAD off its commit or touches the stash,
     pub notify_external_changes: bool,
-    // and offer `Copy Branch Name` in the branch menus and ⌘C in the branches popup.
+    // offer `Copy Branch Name` in the branch menus and ⌘C in the branches popup,
     pub copy_branch_name: bool,
+    // and give the notice of a branch updated from the branch menus `View Commits` when it is not
+    // the current one.
+    pub view_updated_branch_commits: bool,
 }
 
 // `GithubSettings.CONNECTION_TIMEOUT`, and the most the page's `0..60` seconds allow.
@@ -155,6 +158,7 @@ impl Default for Settings {
             commit_message_ticket: true,
             notify_external_changes: true,
             copy_branch_name: true,
+            view_updated_branch_commits: true,
         }
     }
 }
@@ -734,6 +738,7 @@ mod tests {
             assert!(settings.commit_message_ticket);
             assert!(settings.notify_external_changes);
             assert!(settings.copy_branch_name);
+            assert!(settings.view_updated_branch_commits);
         }
     }
 
@@ -826,6 +831,7 @@ mod tests {
             commit_message_ticket: false,
             notify_external_changes: false,
             copy_branch_name: false,
+            view_updated_branch_commits: false,
         };
 
         save(dir.path(), &settings).unwrap();

@@ -1,4 +1,4 @@
-import { derived, writable } from "svelte/store";
+import { derived, get, writable } from "svelte/store";
 import {
   branchCurrent,
   branchList,
@@ -40,6 +40,7 @@ import { ABORTED } from "../operation/operation";
 import { errorText } from "../lib/errors";
 import { dismiss, notify, type Notification } from "../lib/notifications";
 import { taskResult } from "../lib/tasks";
+import { ramifyOptions } from "../lib/ramifyOptions";
 
 export const UPDATE_ACTIONS = ["Vcs.UpdateProject", "UpdateFiles", "Git.Fetch", "Git.Pull"] as const;
 export type UpdateAction = (typeof UPDATE_ACTIONS)[number];
@@ -127,7 +128,8 @@ export interface UpdateApi {
   settings(): Promise<Settings>;
   saveSettings(settings: Settings): Promise<unknown>;
   update(method: UpdateMethod, options: UpdateOptions): Promise<UpdateResult>;
-  updateBranch(local: string): Promise<unknown>;
+  // The commits the branch received, as `[before, after]`; `null` if it was up to date.
+  updateBranch(local: string): Promise<[string, string] | null>;
   fetch(): Promise<FetchResult>;
   // The deleted remote branches.
   fetchRemote(remote: string): Promise<string[]>;
@@ -574,13 +576,12 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
   function updateBranches(names: string[]) {
     return exclusive(async () => {
       const current = await api.currentBranch();
-      const updated: string[] = [];
+      const updated: { name: string; range: [string, string] | null }[] = [];
       for (const name of names.filter((name) => name !== current)) {
-        const done = await attempt("Update Failed", async () => {
-          await whileFetching(() => api.updateBranch(name));
-          return true;
-        });
-        if (done) updated.push(name);
+        const done = await attempt("Update Failed", async () => ({
+          range: await whileFetching(() => api.updateBranch(name)),
+        }));
+        if (done) updated.push({ name, range: done.range });
       }
       if (current !== null && names.includes(current)) {
         const { updateMethod } = await api.settings();
@@ -588,8 +589,29 @@ export function updateFlow(ui: UpdateUi, api: UpdateApi = backend) {
       }
       if (updated.length === 0) return;
       const title = updated.length === 1 ? "Updated branch:" : "Updated branches:";
-      notify({ kind: "info", title, body: updated.join("\n") });
+      notify({
+        kind: "info",
+        title,
+        body: updated.map(({ name }) => name).join("\n"),
+        actions: updatedBranchActions(updated),
+      });
     });
+  }
+
+  // Ramify's own (Settings > Ramify, `docs/parity-matrix.md`): `View Commits` opens the `Update Info`
+  // tab with what each branch received, as after Update Project. A branch that was up to date has
+  // none; with several, each one is named.
+  function updatedBranchActions(
+    updated: { name: string; range: [string, string] | null }[],
+  ): Notification["actions"] {
+    const { viewCommits } = ui;
+    if (!viewCommits || !get(ramifyOptions).viewUpdatedBranchCommits) return undefined;
+    const received = updated.flatMap(({ name, range }) => (range ? [{ name, range }] : []));
+    const actions = received.map(({ name, range }) => ({
+      label: updated.length === 1 ? "View Commits" : `View Commits in '${name}'`,
+      run: () => viewCommits(range),
+    }));
+    return actions.length > 0 ? actions : undefined;
   }
 
   const updateBranch = (name: string) => updateBranches([name]);

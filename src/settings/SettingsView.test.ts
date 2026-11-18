@@ -41,6 +41,7 @@ const SETTINGS: Settings = {
   commitMessageTicket: true,
   notifyExternalChanges: true,
   copyBranchName: true,
+  viewUpdatedBranchCommits: true,
 };
 
 function mockCommands(commands: Record<string, (args: never) => unknown> = {}) {
@@ -822,6 +823,7 @@ test("the Ramify group turns each of its own options off", async () => {
     "Start the commit message with the ticket from the branch name",
     "Notify about Git changes made outside Ramify",
     "Show Copy Branch Name in branch menus",
+    "Show View Commits after updating another branch",
   ];
   for (const label of labels) {
     const box = screen.getByLabelText(label) as HTMLInputElement;
@@ -832,9 +834,10 @@ test("the Ramify group turns each of its own options off", async () => {
 
   await waitFor(() => expect(calls("settings_save")).toHaveLength(1));
   const saved = (calls("settings_save")[0][1] as { settings: Settings }).settings;
-  expect([saved.commitMessageTicket, saved.notifyExternalChanges, saved.copyBranchName]).toEqual([
-    false,
-    false,
-    false,
-  ]);
+  expect([
+    saved.commitMessageTicket,
+    saved.notifyExternalChanges,
+    saved.copyBranchName,
+    saved.viewUpdatedBranchCommits,
+  ]).toEqual([false, false, false, false]);
 });

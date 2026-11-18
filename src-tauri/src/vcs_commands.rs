@@ -1852,7 +1852,7 @@ pub async fn update_branch(
         &window,
         kind,
         UPDATING_BRANCHES.to_string(),
-        move |repo| -> Result<(), GitError> {
+        move |repo| -> Result<Option<(String, String)>, GitError> {
             let sync = &handle.state::<AppState>().branch_sync;
             update::update_branch(repo.ctx, sync, &local, &remote, &branch)
         },

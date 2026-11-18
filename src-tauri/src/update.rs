@@ -750,10 +750,15 @@ pub fn update_branch(
     local: &str,
     remote: &str,
     remote_branch: &str,
-) -> Result<(), GitError> {
+) -> Result<Option<(String, String)>, GitError> {
     branches::check_argument(remote, "The remote")?;
     branches::check_branch(ctx, local)?;
     branches::check_branch(ctx, remote_branch)?;
+    let tip = || -> Result<String, GitError> {
+        let output = ctx.git(&["rev-parse", "-q", "--verify", &format!("{HEADS}{local}^{{commit}}")])?;
+        Ok(output.stdout.trim().to_string())
+    };
+    let before = tip()?;
     let refspec = format!("{HEADS}{remote_branch}:{HEADS}{local}");
     let args = [
         "fetch",
@@ -766,7 +771,10 @@ pub fn update_branch(
     ctx.git_loud(&args)?;
     sync.mark_authenticated(ctx.repo(), remote);
     sync.fetched(ctx, ctx.repo(), remote);
-    Ok(())
+    // Ramify's own `View Commits` after the update (Settings > Ramify, `docs/parity-matrix.md`):
+    // the commits it received, as the range of Update Project. The fetch only fast-forwards.
+    let after = tip()?;
+    Ok((before != after).then_some((before, after)))
 }
 
 // `GitUpdateInfoAsLog`: with a path filter, how many of the received commits touch them. They are
@@ -2416,7 +2424,7 @@ mod tests {
             .git(&["checkout", "-q", "-B", "other", "origin/other"]);
     }
 
-    fn update_other(harness: &Harness) -> Result<(), GitError> {
+    fn update_other(harness: &Harness) -> Result<Option<(String, String)>, GitError> {
         let sync = harness.sync.clone();
         harness.in_repo(move |repo| update_branch(repo.ctx, &sync, "other", "origin", "other"))
     }
@@ -2426,10 +2434,11 @@ mod tests {
         let harness = Harness::new();
         tracked_other(&harness);
         harness.write("a.txt", "local\n");
+        let before = harness.git(&["rev-parse", "other"]).trim().to_string();
         let tip = harness.colleague.commit("c.txt", b"c\n", "from outside");
         harness.colleague.git(&["push", "-q", "origin", "other"]);
 
-        assert_eq!(update_other(&harness), Ok(()));
+        assert_eq!(update_other(&harness), Ok(Some((before, tip.clone()))));
 
         assert_eq!(harness.git(&["rev-parse", "other"]).trim(), tip);
         assert_eq!(harness.read("a.txt"), "local\n");
@@ -2438,6 +2447,14 @@ mod tests {
         assert!(harness.ran(
             "fetch origin refs/heads/other:refs/heads/other --recurse-submodules=no --progress --prune"
         ));
+    }
+
+    #[test]
+    fn an_updated_branch_that_was_already_up_to_date_has_no_range() {
+        let harness = Harness::new();
+        tracked_other(&harness);
+
+        assert_eq!(update_other(&harness), Ok(None));
     }
 
     #[test]

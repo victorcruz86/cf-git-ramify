@@ -489,6 +489,11 @@
       <span class="check" data-state={draft.copyBranchName ? "on" : "off"}></span>
       Show Copy Branch Name in branch menus
     </label>
+    <label class="checkbox-label">
+      <input type="checkbox" bind:checked={draft.viewUpdatedBranchCommits} />
+      <span class="check" data-state={draft.viewUpdatedBranchCommits ? "on" : "off"}></span>
+      Show View Commits after updating another branch
+    </label>
   </div>
 
   {#if problem}
