@@ -1,6 +1,10 @@
 Ramify
 ======
 
+Copyright 2026 victorcruz86
+
+Ramify is licensed under the Apache License, Version 2.0. The license text is in LICENSE.
+
 This project includes code ported from IntelliJ IDEA Community Edition, and test data taken
 from that same repository.
 
@@ -29,7 +33,7 @@ data structure, the interface with the rest of the application and the names are
 original ones. The behaviour is preserved, and the graph tests compare it with IntelliJ's
 outputs. Each file states in its comments the class or method it comes from.
 
-A copy of the license is in LICENSE-APACHE.
+A copy of the license is in LICENSE.
 
 Ported code: src-tauri/src/log/
 -------------------------------

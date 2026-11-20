@@ -49,7 +49,9 @@ If Ramify is running, the path goes to the last focused window and through the s
 
 ## License and attribution
 
-Parts of Ramify are ports of code from IntelliJ IDEA Community Edition (Apache License 2.0): phases 1 to 3 from tag `idea/232.10072.27`, phase 4 from tag `idea/241.14494.240`. Among them, `src-tauri/src/log/` is a Rust port; `src/log/` (among others, `draw.ts`, `graphColor.ts` and `labels.ts`), `src/branches/model.ts`, `src/branches/refName.ts` and `src/lib/speedSearch.ts` are TypeScript ports of the same code, and `src-tauri/src/log/testdata/` contains test data from that same repository. The attribution, the changes and the origin files are in `NOTICE`, and the license text in `LICENSE-APACHE`.
+Ramify is licensed under the Apache License 2.0; the text is in `LICENSE`.
+
+Parts of Ramify are ports of code from IntelliJ IDEA Community Edition (Apache License 2.0): phases 1 to 3 from tag `idea/232.10072.27`, phase 4 from tag `idea/241.14494.240`. Among them, `src-tauri/src/log/` is a Rust port; `src/log/` (among others, `draw.ts`, `graphColor.ts` and `labels.ts`), `src/branches/model.ts`, `src/branches/refName.ts` and `src/lib/speedSearch.ts` are TypeScript ports of the same code, and `src-tauri/src/log/testdata/` contains test data from that same repository. The attribution, the changes and the origin files are in `NOTICE`, and the license text in `LICENSE`.
 
 ## Tests
 

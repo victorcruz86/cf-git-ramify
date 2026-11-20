@@ -43,7 +43,7 @@ test("the colour index is the Java hash of the path modulo the nine gradients", 
   expect(projectColorIndex("/ab")).toBe(5);
   expect(projectColorIndex("/Users/me/work/ramify")).toBe(7);
   expect(projectColorIndex("/home/dev/projects/app")).toBe(3);
-  expect(projectColorIndex("/Users/victorcruz/PROJECTS/Experiments/cf-git-ide")).toBe(5);
+  expect(projectColorIndex("/Users/dev/projects/cf-git-ramify")).toBe(5);
 });
 
 test("the palette has the nine gradients of IntelliJ, each of two colours", () => {
