@@ -42,6 +42,7 @@ import { alignSpacers, boundariesOf, withoutSpacers } from "./spacers";
 import { diffHighlight, diffTheme, LINE_HEIGHT, numberColumn } from "./theme";
 import { stripeBlocks } from "./stripe";
 import { StripeLane } from "./stripeLane";
+import { diffSearch } from "./search";
 
 export type HighlightMode = "words" | "lines" | "none";
 
@@ -719,6 +720,7 @@ function commonExtensions(
     EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off" }),
     EditorView.domEventHandlers({ focus: () => handlers.onfocus() }),
     wordMarks,
+    diffSearch(),
   ];
 }
 
